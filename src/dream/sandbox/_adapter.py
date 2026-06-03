@@ -1,0 +1,1 @@
+"""SandboxAdapter Protocol: argv -> ProcessResult."""
