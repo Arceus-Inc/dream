@@ -154,6 +154,47 @@ def test_json_without_schema_key_is_allowed(repo: Path, paths: DreamPaths) -> No
     assert not has_blocking(validate_repo(paths))
 
 
+@pytest.mark.parametrize("target", ["/etc/passwd", "../../../../etc/passwd"])
+def test_link_escaping_repo_blocked(repo: Path, paths: DreamPaths, target: str) -> None:
+    (repo / "AGENTS.md").write_text(f"# r\n\nSee [x]({target}).\n")
+    codes = _codes(validate_repo(paths), "blocking")
+    assert "agents_md_external_link" in codes
+    assert "agents_md_dead_link" not in codes  # refused before existence/content check
+
+
+def test_schema_path_traversal_blocked(repo: Path, paths: DreamPaths) -> None:
+    (repo / "docs" / "item.json").write_text(
+        json.dumps({"$schema": "../../../../etc/hosts", "name": "x"})
+    )
+    assert "schema_path_invalid" in _codes(validate_repo(paths), "blocking")
+
+
+def test_malformed_schema_blocks_not_crashes(repo: Path, paths: DreamPaths) -> None:
+    schemas = repo / "docs" / "_schemas"
+    schemas.mkdir()
+    # Valid JSON, but invalid as a JSON Schema (type must be a string/list).
+    (schemas / "bad.schema.json").write_text(json.dumps({"type": 123}))
+    (repo / "docs" / "item.json").write_text(
+        json.dumps({"$schema": "_schemas/bad.schema.json", "name": "x"})
+    )
+    assert "invalid_schema" in _codes(validate_repo(paths), "blocking")
+
+
+def test_unreadable_docs_file_does_not_crash(repo: Path, paths: DreamPaths) -> None:
+    import os
+
+    if os.geteuid() == 0:  # root bypasses file permissions
+        pytest.skip("permission checks are bypassed as root")
+    locked = repo / "docs" / "locked.md"
+    locked.write_text("data")
+    locked.chmod(0o000)
+    try:
+        findings = validate_repo(paths)  # must not raise
+    finally:
+        locked.chmod(0o644)
+    assert "unreadable_file" in _codes(findings, "info")
+
+
 def test_secret_in_docs_blocks(repo: Path, paths: DreamPaths) -> None:
     (repo / "docs" / "leak.md").write_text(f"key: {AWS_KEY}\n")
     assert "secret_detected" in _codes(validate_repo(paths), "blocking")

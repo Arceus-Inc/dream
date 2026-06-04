@@ -117,6 +117,17 @@ def _check_links(paths: DreamPaths, agents: Path) -> list[Finding]:
         if not rel:
             continue
         dest = (paths.repo / rel).resolve()
+        if not dest.is_relative_to(paths.repo):
+            # Absolute or ../ target escapes the repo: refuse without reading it.
+            findings.append(
+                Finding(
+                    "blocking",
+                    "agents_md_external_link",
+                    f"AGENTS.md link escapes the repo: {rel}",
+                    rel,
+                )
+            )
+            continue
         if not dest.exists():
             findings.append(
                 Finding(
@@ -170,17 +181,24 @@ def _check_docs_json(paths: DreamPaths) -> list[Finding]:
         except (OSError, json.JSONDecodeError) as exc:
             findings.append(Finding("blocking", "invalid_json", f"malformed JSON: {exc}", rel))
             continue
-        findings += _validate_against_schema(jf, rel, data)
+        findings += _validate_against_schema(paths, jf, rel, data)
     return findings
 
 
-def _validate_against_schema(jf: Path, rel: str, data: object) -> list[Finding]:
+def _validate_against_schema(paths: DreamPaths, jf: Path, rel: str, data: object) -> list[Finding]:
     if not isinstance(data, dict):
         return []
     schema_ref = data.get("$schema")
     if not isinstance(schema_ref, str) or "://" in schema_ref:
         return []  # no local schema declared (or a remote URI we don't fetch)
     schema_path = (jf.parent / schema_ref).resolve()
+    if not schema_path.is_relative_to(paths.repo):
+        # Refuse to load a schema from outside the repo (../ or absolute escape).
+        return [
+            Finding(
+                "blocking", "schema_path_invalid", f"$schema escapes the repo: {schema_ref}", rel
+            )
+        ]
     if not schema_path.is_file():
         return [
             Finding("blocking", "schema_missing", f"$schema does not resolve: {schema_ref}", rel)
@@ -188,8 +206,16 @@ def _validate_against_schema(jf: Path, rel: str, data: object) -> list[Finding]:
     try:
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
         jsonschema.validate(data, schema)
-    except json.JSONDecodeError as exc:
-        return [Finding("blocking", "invalid_json", f"malformed $schema file: {exc}", rel)]
+    except (OSError, json.JSONDecodeError) as exc:
+        return [
+            Finding("blocking", "invalid_json", f"unreadable/malformed $schema file: {exc}", rel)
+        ]
+    except jsonschema.SchemaError as exc:
+        return [
+            Finding(
+                "blocking", "invalid_schema", f"$schema is not a valid schema: {exc.message}", rel
+            )
+        ]
     except jsonschema.ValidationError as exc:
         return [
             Finding(
@@ -206,8 +232,13 @@ def _check_secrets(paths: DreamPaths) -> list[Finding]:
     for f in sorted(paths.docs_dir.rglob("*")):
         if not f.is_file() or f.suffix.lower() not in _TEXT_SUFFIXES:
             continue
-        content = f.read_text(encoding="utf-8", errors="ignore")
         rel = str(f.relative_to(paths.repo))
+        try:
+            content = f.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            # A permission error / broken symlink must not abort the whole scan.
+            findings.append(Finding("info", "unreadable_file", "could not read file", rel))
+            continue
         for name, pattern in _SECRET_PATTERNS:
             if pattern.search(content):
                 findings.append(
