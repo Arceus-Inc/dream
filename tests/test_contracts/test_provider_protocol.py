@@ -37,7 +37,6 @@ from dream.contracts.provider import (
 )
 from dream.contracts.tool import Tool
 
-
 # --- ProviderCapabilities ---------------------------------------------------
 
 
@@ -115,7 +114,7 @@ class _ConformingProvider:
     def capabilities(self) -> ProviderCapabilities:
         return ProviderCapabilities()
 
-    async def stream_messages(  # noqa: PLR0913 — Protocol-mandated signature
+    async def stream_messages(
         self,
         history: Sequence[dict[str, Any]],
         *,
