@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -183,6 +184,11 @@ def test_malformed_schema_blocks_not_crashes(repo: Path, paths: DreamPaths) -> N
 def test_unreadable_docs_file_does_not_crash(repo: Path, paths: DreamPaths) -> None:
     import os
 
+    # POSIX-only: NTFS owner-chmod doesn't make files unreadable for the owner,
+    # and `os.geteuid` does not exist on Windows. The validator's
+    # ``except OSError`` path is exercised on POSIX runners.
+    if sys.platform == "win32":
+        pytest.skip("POSIX file permissions semantics required")
     if os.geteuid() == 0:  # root bypasses file permissions
         pytest.skip("permission checks are bypassed as root")
     locked = repo / "docs" / "locked.md"
