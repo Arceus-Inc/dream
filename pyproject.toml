@@ -77,6 +77,15 @@ warn_redundant_casts = true
 module = ["tests.*"]
 disallow_untyped_defs = false
 
+# Optional-extra dependencies — not present unless installed via
+# ``pip install 'dream[openai]'`` / ``[anthropic]``. The adapter modules
+# under ``src/dream/api/`` import them only inside ``TYPE_CHECKING`` blocks
+# or lazily inside ``_build_client``; treat the missing stubs as ignored
+# so the strict run passes against the lean default install.
+[[tool.mypy.overrides]]
+module = ["openai", "openai.*", "anthropic", "anthropic.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
