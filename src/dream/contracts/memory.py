@@ -9,12 +9,12 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 
-class MemoryScope(str, Enum):
+class MemoryScope(StrEnum):
     """Visibility scope for a memory record."""
 
     PRIVATE = "private"
@@ -23,7 +23,7 @@ class MemoryScope(str, Enum):
     COMPANY = "company"
 
 
-class MemoryType(str, Enum):
+class MemoryType(StrEnum):
     """High-level taxonomy of a memory record."""
 
     USER = "user"
