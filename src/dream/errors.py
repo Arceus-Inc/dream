@@ -30,7 +30,7 @@ class SandboxError(DreamError):
     code = "dream.sandbox"
 
 
-class PermissionError(DreamError):  # noqa: A001  -- shadowing is intentional
+class PermissionError(DreamError):
     """Permission check denied the operation."""
 
     code = "dream.permission"

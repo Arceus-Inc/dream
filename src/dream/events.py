@@ -8,7 +8,7 @@ in the per-event payload fields rather than new event classes.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Union
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -79,16 +79,16 @@ class Error:
     message: str
 
 
-Event = Union[
-    TextDelta,
-    ToolUseStart,
-    ToolUseResult,
-    TurnComplete,
-    Compacted,
-    HookBlocked,
-    PermissionDenied,
-    Error,
-]
+Event = (
+    TextDelta
+    | ToolUseStart
+    | ToolUseResult
+    | TurnComplete
+    | Compacted
+    | HookBlocked
+    | PermissionDenied
+    | Error
+)
 
 
 __all__ = [
@@ -98,7 +98,7 @@ __all__ = [
     "HookBlocked",
     "PermissionDenied",
     "TextDelta",
-    "ToolUseStart",
     "ToolUseResult",
+    "ToolUseStart",
     "TurnComplete",
 ]

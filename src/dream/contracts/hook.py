@@ -8,11 +8,11 @@ authors must declare intent before they can veto a turn.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
 
-class HookEvent(str, Enum):
+class HookEvent(StrEnum):
     """Points in the agent loop where hooks fire."""
 
     SESSION_START = "session_start"

@@ -35,5 +35,8 @@ coverage.xml
 .DS_Store
 Thumbs.db
 
+# Dream now-state (git-ignored per spec 01: worktrees, sidecars, coordination)
+.dream/
+
 # uv
 uv.lock
