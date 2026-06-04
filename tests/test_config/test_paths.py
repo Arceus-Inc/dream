@@ -37,6 +37,12 @@ def test_explicit_home_overrides_env(tmp_path: Path) -> None:
     assert paths.home == (tmp_path / "explicit").resolve()
 
 
+def test_empty_dream_home_env_raises(tmp_path: Path) -> None:
+    # Present-but-blank is a misconfiguration, not a silent fallback to ~/.dream.
+    with pytest.raises(ValueError):
+        DreamPaths.resolve(tmp_path, env={DREAM_HOME_ENV: ""})
+
+
 def test_repo_side_now_state_layout(tmp_path: Path) -> None:
     p = DreamPaths.resolve(tmp_path, env={})
     assert p.dream_dir == p.repo / ".dream"
@@ -58,6 +64,17 @@ def test_per_task_paths(tmp_path: Path) -> None:
     p = DreamPaths.resolve(tmp_path, env={})
     assert p.worktree("T1") == p.worktrees_dir / "T1"
     assert p.sidecar("T1") == p.sidecars_dir / "T1"
+
+
+@pytest.mark.parametrize("bad", ["", ".", "..", "../x", "a/b", "a\\b", "/abs"])
+def test_task_id_methods_reject_traversal(tmp_path: Path, bad: str) -> None:
+    p = DreamPaths.resolve(tmp_path, env={})
+    with pytest.raises(ValueError):
+        p.worktree(bad)
+    with pytest.raises(ValueError):
+        p.sidecar(bad)
+    with pytest.raises(ValueError):
+        p.checkpoint_ref(bad, 1)
 
 
 def test_checkpoint_ref_format(tmp_path: Path) -> None:

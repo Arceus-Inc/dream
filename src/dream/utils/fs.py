@@ -12,12 +12,16 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import uuid
 from pathlib import Path
 
 __all__ = ["atomic_write_bytes", "atomic_write_text", "clean_orphan_temp_files"]
 
-_TMP_GLOB = "*.tmp.*"
+# Temp files are named ``{name}.tmp.{uuid4().hex}`` (32 lowercase hex chars).
+# Orphan cleanup matches that exact scheme so it never deletes unrelated files
+# that merely happen to contain ``.tmp.``.
+_ORPHAN_RE = re.compile(r"\.tmp\.[0-9a-f]{32}\Z")
 
 
 def atomic_write_bytes(
@@ -33,8 +37,10 @@ def atomic_write_bytes(
             f.flush()
             os.fsync(f.fileno())
         if mode is not None:
-            with contextlib.suppress(OSError):
-                os.chmod(tmp, mode)
+            # An explicit mode is part of the caller's contract: surface a chmod
+            # failure (the outer handler removes the temp) rather than returning
+            # success with the wrong permissions.
+            os.chmod(tmp, mode)
         os.replace(tmp, dst)
         _fsync_dir(dst.parent)
     except BaseException:
@@ -55,12 +61,18 @@ def atomic_write_text(
 
 
 def clean_orphan_temp_files(directory: str | os.PathLike[str]) -> list[Path]:
-    """Remove leftover ``*.tmp.*`` files from interrupted writes; return removed paths."""
+    """Remove leftover atomic-write temp files; return removed paths.
+
+    Only files matching this writer's exact ``{name}.tmp.{32-hex}`` scheme are
+    removed, so unrelated files that merely contain ``.tmp.`` are left untouched.
+    """
     d = Path(directory)
     removed: list[Path] = []
     if not d.is_dir():
         return removed
-    for p in sorted(d.glob(_TMP_GLOB)):
+    for p in sorted(d.glob("*.tmp.*")):
+        if _ORPHAN_RE.search(p.name) is None:
+            continue  # not our temp scheme — leave it alone
         with contextlib.suppress(OSError):
             p.unlink()
             removed.append(p)

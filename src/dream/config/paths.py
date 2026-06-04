@@ -32,6 +32,24 @@ __all__ = [
 ]
 
 
+def _checked_task_id(task_id: str) -> str:
+    """Reject task ids that could escape the ``.dream/`` roots (path traversal).
+
+    A last-line guard: the worktree manager (#02) validates slugs up front, but
+    these path builders must never join an unsafe segment regardless of caller.
+    """
+    if (
+        not task_id
+        or task_id in {".", ".."}
+        or "/" in task_id
+        or "\\" in task_id
+        or "\x00" in task_id
+        or os.path.isabs(task_id)
+    ):
+        raise ValueError(f"unsafe task_id: {task_id!r}")
+    return task_id
+
+
 @dataclass(frozen=True)
 class DreamPaths:
     """Resolved storage roots and the paths derived from them.
@@ -57,8 +75,14 @@ class DreamPaths:
         repo_path = Path(repo).expanduser().resolve()
         if home is not None:
             home_path = Path(home)
-        elif env.get(DREAM_HOME_ENV):
-            home_path = Path(env[DREAM_HOME_ENV])
+        elif DREAM_HOME_ENV in env:
+            # Key presence, not truthiness: an explicitly set value is honoured.
+            # A present-but-blank value is a misconfiguration we fail loud on
+            # rather than silently falling back to ~/.dream.
+            raw = env[DREAM_HOME_ENV]
+            if not raw.strip():
+                raise ValueError(f"{DREAM_HOME_ENV} is set but empty")
+            home_path = Path(raw)
         else:
             home_path = Path.home() / DEFAULT_HOME_DIRNAME
         return cls(repo=repo_path, home=home_path.expanduser().resolve())
@@ -106,13 +130,13 @@ class DreamPaths:
     # --- per-task derived paths ---
 
     def worktree(self, task_id: str) -> Path:
-        return self.worktrees_dir / task_id
+        return self.worktrees_dir / _checked_task_id(task_id)
 
     def sidecar(self, task_id: str) -> Path:
-        return self.sidecars_dir / task_id
+        return self.sidecars_dir / _checked_task_id(task_id)
 
     def checkpoint_ref(self, task_id: str, n: int | str) -> str:
-        return f"{CHECKPOINT_REF_PREFIX}/{task_id}/{n}"
+        return f"{CHECKPOINT_REF_PREFIX}/{_checked_task_id(task_id)}/{n}"
 
     # --- home-side: per-user global ---
 

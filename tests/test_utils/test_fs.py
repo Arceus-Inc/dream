@@ -70,17 +70,35 @@ def test_atomic_write_mode_applied(tmp_path: Path) -> None:
     assert stat.S_IMODE(os.stat(target).st_mode) == 0o600
 
 
-def test_clean_orphan_temp_files_removes_only_temps(tmp_path: Path) -> None:
+def test_clean_orphan_temp_files_removes_only_scheme_matches(tmp_path: Path) -> None:
     real = tmp_path / "state.json"
     real.write_text("{}")
-    orphan = tmp_path / "state.json.tmp.deadbeef"
+    # Contains ".tmp." but is NOT our {name}.tmp.{32-hex} scheme — must survive.
+    not_ours = tmp_path / "report.tmp.backup"
+    not_ours.write_text("keep me")
+    orphan = tmp_path / ("state.json.tmp." + "a" * 32)  # exact scheme: 32 hex
     orphan.write_text("partial")
 
     removed = clean_orphan_temp_files(tmp_path)
 
     assert not orphan.exists()
     assert real.read_text() == "{}"
-    assert orphan in removed
+    assert not_ours.read_text() == "keep me"  # broad match would have deleted it
+    assert removed == [orphan]
+
+
+def test_explicit_mode_failure_surfaces(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    target = tmp_path / "secret"
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise OSError("chmod denied")
+
+    monkeypatch.setattr("dream.utils.fs.os.chmod", boom)
+    with pytest.raises(OSError):
+        atomic_write_bytes(target, b"x", mode=0o600)
+
+    assert not target.exists()  # write must not report success with wrong perms
+    assert list(tmp_path.glob("*.tmp.*")) == []  # temp cleaned by the error path
 
 
 def test_clean_orphan_temp_files_empty_dir_returns_empty(tmp_path: Path) -> None:

@@ -11,6 +11,7 @@ both race-free and crash-safe.
 from __future__ import annotations
 
 import os
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from enum import Enum, auto
@@ -97,7 +98,14 @@ def _windows_lock(
             fh.write(b"\0")
             fh.flush()
         fh.seek(0)
-        msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)  # type: ignore[attr-defined]
+        # LK_LOCK gives up after ~10s and raises OSError; retry so a long
+        # critical section blocks until acquired (parity with POSIX LOCK_EX).
+        while True:
+            try:
+                msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)  # type: ignore[attr-defined]
+                break
+            except OSError:
+                time.sleep(0.1)
         try:
             yield
         finally:
