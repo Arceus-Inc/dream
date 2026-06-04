@@ -64,12 +64,12 @@ def test_substrate_interface_is_exactly_five_methods() -> None:
 
     expected = {"complete", "stream", "count_tokens", "max_window", "health"}
     actual = {
-        name for name, _ in inspect.getmembers(Substrate, predicate=inspect.isfunction)
+        name
+        for name, _ in inspect.getmembers(Substrate, predicate=inspect.isfunction)
         if not name.startswith("_")
     }
     assert actual == expected, (
-        f"substrate surface drifted: missing={expected - actual} "
-        f"extra={actual - expected}"
+        f"substrate surface drifted: missing={expected - actual} extra={actual - expected}"
     )
 
 
@@ -86,22 +86,20 @@ def test_substrate_is_a_protocol() -> None:
 # --- Decision 3: ResolvedAuth uniform shape --------------------------------
 
 
-@_PENDING
 def test_resolved_auth_uniform_shape() -> None:
     """All auth normalises to one shape so the client constructor never
     branches on provider. Spec 02 decision 3 enumerates exactly these fields.
     """
-    from dream.config.from_file import ResolvedAuth  # type: ignore[import-not-found]
+    from dream.config.from_file import ResolvedAuth
 
     hints = get_type_hints(ResolvedAuth)
     expected = {"provider", "auth_kind", "value", "source", "state"}
     assert expected.issubset(set(hints)), f"missing fields: {expected - set(hints)}"
 
 
-@_PENDING
 def test_resolved_auth_kind_covers_documented_families() -> None:
     """``auth_kind`` ∈ {api_key, oauth_device, external_oauth} — decision 3."""
-    from dream.config.from_file import ResolvedAuth  # type: ignore[import-not-found]
+    from dream.config.from_file import ResolvedAuth
 
     samples = [
         ResolvedAuth(provider="openai", auth_kind="api_key", value="x", source="env"),
@@ -114,23 +112,21 @@ def test_resolved_auth_kind_covers_documented_families() -> None:
 # --- Decision 2 / criterion 4: ProviderProfile + #04 handshake -----------
 
 
-@_PENDING
 def test_provider_profile_carries_context_window_handshake_fields() -> None:
     """Decision 2 + criterion 4: the profile carries ``context_window_tokens``
     and ``auto_compact_threshold_tokens`` as the handshake to Spec 04.
     Without these, the context-budgeting layer has no input.
     """
-    from dream.config.from_file import ProviderProfile  # type: ignore[import-not-found]
+    from dream.config.from_file import ProviderProfile
 
     hints = get_type_hints(ProviderProfile)
     assert "context_window_tokens" in hints
     assert "auto_compact_threshold_tokens" in hints
 
 
-@_PENDING
 def test_provider_profile_has_documented_core_fields() -> None:
     """Decision 2 enumerates the minimum field set."""
-    from dream.config.from_file import ProviderProfile  # type: ignore[import-not-found]
+    from dream.config.from_file import ProviderProfile
 
     hints = get_type_hints(ProviderProfile)
     required = {"label", "provider", "api_format", "auth_source", "default_model"}
@@ -140,40 +136,36 @@ def test_provider_profile_has_documented_core_fields() -> None:
 # --- Decision 4: registry-driven provider detection -----------------------
 
 
-@_PENDING
 def test_provider_spec_registry_is_an_ordered_table() -> None:
     """Decision 4: order = detection priority. A *new* provider is added as a
     table row, not a new code path. A list (ordered) — not a dict — makes the
     priority explicit.
     """
-    from dream.api._registry import PROVIDERS  # type: ignore[import-not-found]
+    from dream.api._registry import PROVIDERS
 
     assert isinstance(PROVIDERS, list)
     assert len(PROVIDERS) > 0
 
 
-@_PENDING
 def test_detect_provider_by_model_keyword() -> None:
     """Decision 4 + criterion 3: detection by model-name keyword."""
-    from dream.api._registry import detect_provider  # type: ignore[import-not-found]
+    from dream.api._registry import detect_provider
 
     info = detect_provider(model="claude-sonnet-4-6")
     assert info is not None
     assert "anthropic" in info.name.lower() or info.backend_type == "anthropic"
 
 
-@_PENDING
 def test_detect_provider_by_key_prefix() -> None:
-    from dream.api._registry import detect_provider  # type: ignore[import-not-found]
+    from dream.api._registry import detect_provider
 
     info = detect_provider(api_key="sk-ant-test-key")
     assert info is not None
     assert "anthropic" in info.name.lower() or info.backend_type == "anthropic"
 
 
-@_PENDING
 def test_detect_provider_by_base_url() -> None:
-    from dream.api._registry import detect_provider  # type: ignore[import-not-found]
+    from dream.api._registry import detect_provider
 
     info = detect_provider(base_url="https://api.anthropic.com")
     assert info is not None
