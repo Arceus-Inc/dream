@@ -74,8 +74,16 @@ def write_done(paths: DreamPaths, task_id: str) -> str:
     return sha
 
 
+def _checkpoint_order(item: tuple[str, str]) -> tuple[int, int, str]:
+    """Order numeric turns by integer value; non-numeric names (e.g. ``done``) last."""
+    name = item[0]
+    if name.isdigit():
+        return (0, int(name), "")
+    return (1, 0, name)
+
+
 def list_checkpoints(paths: DreamPaths, task_id: str) -> list[tuple[str, str]]:
-    """Return sorted ``(name, sha)`` for a task's checkpoints (name = ref leaf)."""
+    """Return ``(name, sha)`` for a task's checkpoints (name = ref leaf), turn-ordered."""
     prefix = _checkpoint_prefix(paths, task_id)
     _, out, _ = run_git(
         ["for-each-ref", "--format=%(refname) %(objectname)", prefix], cwd=paths.repo
@@ -84,7 +92,7 @@ def list_checkpoints(paths: DreamPaths, task_id: str) -> list[tuple[str, str]]:
     for line in out.splitlines():
         refname, sha = line.split(" ", 1)
         result.append((refname[len(prefix) + 1 :], sha))
-    return sorted(result)
+    return sorted(result, key=_checkpoint_order)
 
 
 def resume_from(
@@ -102,17 +110,24 @@ def resume_from(
     """
     if paths.worktree(new_task_id).exists() or paths.sidecar(new_task_id).exists():
         raise ValueError(f"task-id already in use: {new_task_id!r}")
-    info = WorktreeManager(paths).create_worktree(new_task_id, start_point=source_ref)
-    if base_branch is None:
-        code, branch, _ = run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=paths.repo)
-        base_branch = branch if code == 0 and branch else "main"
-    create_sidecar(
-        paths,
-        new_task_id,
-        base_branch=base_branch,
-        harness_version=harness_version,
-        parent_checkpoint_ref=source_ref,
-    )
+    manager = WorktreeManager(paths)
+    info = manager.create_worktree(new_task_id, start_point=source_ref)
+    try:
+        if base_branch is None:
+            code, branch, _ = run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=paths.repo)
+            base_branch = branch if code == 0 and branch else "main"
+        create_sidecar(
+            paths,
+            new_task_id,
+            base_branch=base_branch,
+            harness_version=harness_version,
+            parent_checkpoint_ref=source_ref,
+        )
+    except BaseException:
+        # Roll back the just-created worktree so the task-id is not left in a
+        # half-created state that blocks reuse.
+        manager.remove_worktree(new_task_id)
+        raise
     return info
 
 

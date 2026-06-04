@@ -98,6 +98,32 @@ def test_checkpoint_ref_per_turn(paths: DreamPaths, mgr: WorktreeManager) -> Non
     assert names == ["1", "2", "3"]
 
 
+def test_list_checkpoints_numeric_turn_order(paths: DreamPaths, mgr: WorktreeManager) -> None:
+    mgr.create_worktree("T1")
+    for turn in (1, 2, 10):  # would mis-sort as ["1","10","2"] lexically
+        write_checkpoint(paths, "T1", turn)
+    write_done(paths, "T1")
+    names = [name for name, _ in list_checkpoints(paths, "T1")]
+    assert names == ["1", "2", "10", "done"]
+
+
+def test_resume_rolls_back_worktree_on_sidecar_failure(
+    paths: DreamPaths, mgr: WorktreeManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mgr.create_worktree("T1")
+    write_checkpoint(paths, "T1", 1)
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise RuntimeError("sidecar boom")
+
+    monkeypatch.setattr("dream.state.checkpoints.create_sidecar", boom)
+    with pytest.raises(RuntimeError, match="sidecar boom"):
+        resume_from(paths, "refs/dream/checkpoints/T1/1", "T2", harness_version="0.1.0")
+    # The worktree must be rolled back so the task-id is reusable.
+    assert not paths.worktree("T2").exists()
+    assert not paths.sidecar("T2").exists()
+
+
 def test_write_done_creates_done_ref(paths: DreamPaths, mgr: WorktreeManager) -> None:
     mgr.create_worktree("T1")
     write_checkpoint(paths, "T1", 1)
