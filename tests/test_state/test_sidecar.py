@@ -76,6 +76,19 @@ def test_remove_sidecar(paths: DreamPaths) -> None:
     assert not paths.sidecar("T1").exists()
 
 
+def test_remove_nonexistent_does_not_recreate(paths: DreamPaths) -> None:
+    remove_sidecar(paths, "never-made")  # idempotent, no lock-induced recreate
+    assert not paths.sidecar("never-made").exists()
+
+
+def test_update_rejects_invalid_value(paths: DreamPaths) -> None:
+    create_sidecar(paths, "T1", base_branch="main", harness_version="0.1.0")
+    with pytest.raises(ValueError):
+        update_state(paths, "T1", status="bogus")
+    # state.json must remain valid and unchanged (no corrupt write).
+    assert read_state(paths, "T1").status == "running"
+
+
 def test_read_state_missing_raises(paths: DreamPaths) -> None:
     with pytest.raises(FileNotFoundError):
         read_state(paths, "never-made")

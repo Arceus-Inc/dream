@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import shutil
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel
@@ -73,6 +74,16 @@ def create_sidecar(
     return state
 
 
+def _lock_path(paths: DreamPaths, task_id: str) -> Path:
+    """The per-task state lock — a *sibling* of the sidecar, not inside it.
+
+    Keeping the lock file outside the sidecar means acquiring it never recreates
+    a sidecar that ``remove_sidecar`` just deleted.
+    """
+    sidecar = paths.sidecar(task_id)  # validates task_id (PR1 traversal guard)
+    return sidecar.parent / f"{sidecar.name}.lock"
+
+
 def read_state(paths: DreamPaths, task_id: str) -> TaskState:
     """Load and validate ``state.json`` for a task (raises if absent)."""
     state_path = paths.sidecar(task_id) / "state.json"
@@ -80,20 +91,29 @@ def read_state(paths: DreamPaths, task_id: str) -> TaskState:
 
 
 def update_state(paths: DreamPaths, task_id: str, **changes: object) -> TaskState:
-    """Atomically apply ``changes`` to ``state.json`` under an exclusive lock."""
-    sidecar = paths.sidecar(task_id)
-    state_path = sidecar / "state.json"
-    lock_path = sidecar / "state.json.lock"
-    with exclusive_file_lock(lock_path):
+    """Atomically apply ``changes`` to ``state.json`` under an exclusive lock.
+
+    The merged result is re-validated through ``TaskState`` before writing, so an
+    invalid update (e.g. an unsupported status) is rejected instead of corrupting
+    ``state.json``.
+    """
+    state_path = paths.sidecar(task_id) / "state.json"
+    with exclusive_file_lock(_lock_path(paths, task_id)):
         current = TaskState.model_validate_json(state_path.read_text())
-        updated = current.model_copy(update=changes)
+        data = current.model_dump()
+        data.update(changes)
+        updated = TaskState.model_validate(data)  # re-validate the merged values
         atomic_write_text(state_path, updated.model_dump_json(indent=2))
     return updated
 
 
 def remove_sidecar(paths: DreamPaths, task_id: str) -> None:
-    """Delete the sidecar bundle (idempotent)."""
-    shutil.rmtree(paths.sidecar(task_id), ignore_errors=True)
+    """Delete the sidecar bundle, serialized with ``update_state`` (idempotent)."""
+    sidecar = paths.sidecar(task_id)
+    if not sidecar.exists():
+        return
+    with exclusive_file_lock(_lock_path(paths, task_id)):
+        shutil.rmtree(sidecar, ignore_errors=True)
 
 
 def ensure_version_compatible(state: TaskState, current_version: str) -> None:
