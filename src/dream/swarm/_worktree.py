@@ -179,8 +179,13 @@ class WorktreeManager:
         slug: str | WorktreeSlug,
         *,
         agent_id: str | None = None,
+        start_point: str = "HEAD",
     ) -> WorktreeInfo:
-        """Create (or fast-resume) the worktree for ``slug``."""
+        """Create (or fast-resume) the worktree for ``slug`` from ``start_point``.
+
+        ``start_point`` is the commit/ref to check out (default ``HEAD``); resume
+        passes a checkpoint ref here.
+        """
         wt = slug if isinstance(slug, WorktreeSlug) else WorktreeSlug(slug)
         repo = self._paths.repo
         self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -200,7 +205,7 @@ class WorktreeManager:
 
         # -B resets an orphan branch left by a prior remove rather than colliding.
         code, _, stderr = _run_git(
-            ["worktree", "add", "-B", wt.branch, str(path), "HEAD"], cwd=repo
+            ["worktree", "add", "-B", wt.branch, str(path), start_point], cwd=repo
         )
         if code != 0:
             raise RuntimeError(f"git worktree add failed: {stderr}")
