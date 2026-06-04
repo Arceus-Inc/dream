@@ -216,18 +216,10 @@ def test_two_tasks_have_disjoint_storage(paths: DreamPaths, mgr: WorktreeManager
     assert paths.checkpoint_ref("T1", 1) != paths.checkpoint_ref("T2", 1)
 
 
-# --- spec gap: sidecar bundle is missing db.sqlite ------------------------
+# --- spec gap closed: sidecar bundle now includes db.sqlite ---------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Spec 01 decision 8 lists `db.sqlite` as part of the sidecar bundle "
-        "(per-task structured state). Current create_sidecar only creates "
-        "logs/, metrics/, scratch/, state.json. When db.sqlite is added, "
-        "remove this xfail."
-    ),
-)
 def test_sidecar_includes_db_sqlite_per_spec(paths: DreamPaths) -> None:
+    """Spec 01 decision 8: per-task structured state lives in ``db.sqlite``."""
     create_sidecar(paths, "T1", base_branch="main", harness_version="0.1.0")
-    assert (paths.sidecar("T1") / "db.sqlite").exists()
+    assert (paths.sidecar("T1") / "db.sqlite").is_file()

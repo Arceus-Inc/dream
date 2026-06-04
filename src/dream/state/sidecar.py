@@ -20,10 +20,11 @@ from pydantic import BaseModel
 
 from dream.config.paths import DreamPaths
 from dream.utils.file_lock import exclusive_file_lock
-from dream.utils.fs import atomic_write_text
+from dream.utils.fs import atomic_write_bytes, atomic_write_text, clean_orphan_temp_files
 
 __all__ = [
     "TaskState",
+    "assert_no_version_conflicts",
     "create_sidecar",
     "ensure_version_compatible",
     "read_state",
@@ -32,6 +33,7 @@ __all__ = [
 ]
 
 _SIDECAR_SUBDIRS = ("logs", "metrics", "scratch")
+_SIDECAR_DB = "db.sqlite"  # spec 01 decision 8 — per-task structured state
 TaskStatus = Literal["running", "paused", "completed", "failed"]
 
 
@@ -59,10 +61,27 @@ def create_sidecar(
     harness_version: str,
     parent_checkpoint_ref: str | None = None,
 ) -> TaskState:
-    """Create the sidecar bundle and write the initial ``state.json``."""
+    """Create the sidecar bundle and write the initial ``state.json``.
+
+    At task start this also (a) refuses to coexist with sidecars stamped at a
+    different ``harness_version`` (spec criterion 21) and (b) sweeps any orphan
+    ``.tmp.*`` files left in the now-state dirs by an interrupted prior write
+    (spec criterion 13).
+    """
+    paths.ensure()
+    assert_no_version_conflicts(paths, harness_version)
+    clean_orphan_temp_files(paths.worktrees_dir)
+    clean_orphan_temp_files(paths.sidecars_dir)
+
     sidecar = paths.sidecar(task_id)  # validates task_id (PR1 traversal guard)
     for sub in _SIDECAR_SUBDIRS:
         (sidecar / sub).mkdir(parents=True, exist_ok=True)
+    # Per-task structured state (spec decision 8). Created empty; schema is
+    # owned by whatever component first opens it. An atomic write means a
+    # concurrent reader never sees a torn header.
+    db_path = sidecar / _SIDECAR_DB
+    if not db_path.exists():
+        atomic_write_bytes(db_path, b"")
     state = TaskState(
         task_id=task_id,
         base_branch=base_branch,
@@ -123,3 +142,32 @@ def ensure_version_compatible(state: TaskState, current_version: str) -> None:
             f"harness version mismatch: task was written by "
             f"{state.harness_version!r}, current is {current_version!r}"
         )
+
+
+def assert_no_version_conflicts(paths: DreamPaths, current_version: str) -> None:
+    """Refuse to start if any existing sidecar was written by a different harness version.
+
+    Implements spec 01 criterion 21 ("mismatched harness versions MUST refuse
+    to coexist in one repo") and its acceptance scenario at task start. Silently
+    skips sidecars with no/malformed ``state.json`` — they're already corrupt
+    and a separate problem from a clean version conflict.
+    """
+    sidecars = paths.sidecars_dir
+    if not sidecars.is_dir():
+        return
+    for child in sorted(sidecars.iterdir()):
+        if not child.is_dir():
+            continue
+        state_path = child / "state.json"
+        if not state_path.is_file():
+            continue
+        try:
+            other = TaskState.model_validate_json(state_path.read_text())
+        except (OSError, ValueError):
+            continue
+        if other.harness_version != current_version:
+            raise ValueError(
+                f"refusing to start: task {other.task_id!r} in this repo is at "
+                f"harness {other.harness_version!r}, current runner is "
+                f"{current_version!r}"
+            )

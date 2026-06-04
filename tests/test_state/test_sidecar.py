@@ -14,12 +14,14 @@ import pytest
 from dream.config.paths import DreamPaths
 from dream.state.sidecar import (
     TaskState,
+    assert_no_version_conflicts,
     create_sidecar,
     ensure_version_compatible,
     read_state,
     remove_sidecar,
     update_state,
 )
+from dream.utils.fs import atomic_write_text
 
 
 @pytest.fixture
@@ -121,3 +123,69 @@ def test_taskstate_rejects_bad_status() -> None:
             harness_version="0.1.0",
             status="bogus",  # type: ignore[arg-type]
         )
+
+
+# --- spec 01 decision 8: per-task structured state ------------------------
+
+
+def test_create_sidecar_creates_db_sqlite(paths: DreamPaths) -> None:
+    create_sidecar(paths, "T1", base_branch="main", harness_version="0.1.0")
+    db = paths.sidecar("T1") / "db.sqlite"
+    assert db.is_file()
+    assert db.read_bytes() == b""  # created empty; schema owned by first opener
+
+
+# --- spec 01 criterion 21: two harness versions refuse to coexist ---------
+
+
+def test_create_sidecar_refuses_mismatched_existing_version(paths: DreamPaths) -> None:
+    create_sidecar(paths, "T1", base_branch="main", harness_version="0.1.0")
+    with pytest.raises(ValueError, match="refusing to start"):
+        create_sidecar(paths, "T2", base_branch="main", harness_version="0.2.0")
+    assert not paths.sidecar("T2").exists()
+
+
+def test_assert_no_version_conflicts_no_op_when_empty(paths: DreamPaths) -> None:
+    assert_no_version_conflicts(paths, "0.1.0")  # no sidecars yet, no raise
+
+
+def test_assert_no_version_conflicts_passes_on_matching_version(paths: DreamPaths) -> None:
+    create_sidecar(paths, "T1", base_branch="main", harness_version="0.1.0")
+    assert_no_version_conflicts(paths, "0.1.0")  # no raise
+
+
+def test_assert_no_version_conflicts_ignores_corrupt_state(paths: DreamPaths) -> None:
+    """A corrupt state.json is a separate failure mode, not a version conflict."""
+    paths.ensure()
+    bad = paths.sidecar("T1")
+    bad.mkdir(parents=True)
+    (bad / "state.json").write_text("not json")
+    assert_no_version_conflicts(paths, "0.1.0")  # no raise
+
+
+# --- spec 01 criterion 13: orphan .tmp.* swept at task start --------------
+
+
+def test_create_sidecar_sweeps_orphan_temp_files(paths: DreamPaths) -> None:
+    paths.ensure()
+    suffix = "0123456789abcdef" * 2  # 32 lowercase hex chars, matches writer scheme
+    orphan_wt = paths.worktrees_dir / f"T0.meta.json.tmp.{suffix}"
+    orphan_wt.write_text("partial")
+    orphan_sc = paths.sidecars_dir / f"T0_state.json.tmp.{suffix}"
+    orphan_sc.write_text("partial")
+
+    create_sidecar(paths, "T1", base_branch="main", harness_version="0.1.0")
+
+    assert not orphan_wt.exists()
+    assert not orphan_sc.exists()
+
+
+def test_create_sidecar_does_not_touch_real_files(paths: DreamPaths) -> None:
+    """Sweep must remove only ``.tmp.*`` files — real files are untouched."""
+    paths.ensure()
+    real = paths.sidecars_dir / "keep.json"
+    real.write_text("{}")
+    atomic_write_text(paths.sidecars_dir / "also-keep.json", "{}")
+    create_sidecar(paths, "T1", base_branch="main", harness_version="0.1.0")
+    assert real.read_text() == "{}"
+    assert (paths.sidecars_dir / "also-keep.json").read_text() == "{}"
