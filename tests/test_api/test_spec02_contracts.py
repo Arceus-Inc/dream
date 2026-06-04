@@ -35,17 +35,15 @@ the *contracts* asserted below are spec-derived and stable.
 from __future__ import annotations
 
 import inspect
+import sys
 from typing import Protocol, get_type_hints
 
 import pytest
 
-# Strict-mode xfail: the test is expected to fail today (mostly ImportError
-# against modules that don't exist yet) and the moment it starts passing,
-# pytest will flip it to a hard failure so the decorator gets removed.
-_PENDING = pytest.mark.xfail(
-    strict=True,
-    reason="Spec 02 implementation pending — see docs/specs/divo/02-config-and-providers.md",
-)
+# All Spec 02 contracts are now implemented; the xfail scaffolding that
+# protected this file during incremental delivery (Stages 1-3) is gone.
+# New contract tests should be added as plain ``def test_…`` — failing
+# tests are now failing tests, not expected absences.
 
 
 # --- Decision 5: substrate interface is exactly five methods --------------
@@ -173,14 +171,17 @@ def test_detect_provider_by_base_url() -> None:
 # --- Decision 7 / criterion 7: startup discipline ------------------------
 
 
-@_PENDING
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX permission bits; Windows owner-only ACL check is deferred.",
+)
 def test_loose_credentials_file_refuses_startup(tmp_path) -> None:
     """Criterion 7: if ``credentials.toml`` is wider than owner-only, abort
     naming the file and offending permission. This is safety-critical.
     """
     import os
 
-    from dream.api.credentials import load_credential_pools  # type: ignore[import-not-found]
+    from dream.api.credentials import load_credential_pools
 
     creds = tmp_path / "credentials.toml"
     creds.write_text('[[openai]]\nkey = "sk-test"\n', encoding="utf-8")
@@ -190,13 +191,12 @@ def test_loose_credentials_file_refuses_startup(tmp_path) -> None:
         load_credential_pools(creds)
 
 
-@_PENDING
 def test_empty_active_pool_refuses_startup(tmp_path) -> None:
     """Criterion 7: refuse to start with an empty pool for the active
     substrate. Better to surface early than to "start and immediately fail
     over" — that loses the operator's intent.
     """
-    from dream.api.credentials import load_credential_pools  # type: ignore[import-not-found]
+    from dream.api.credentials import load_credential_pools
 
     creds = tmp_path / "credentials.toml"
     creds.write_text("", encoding="utf-8")
@@ -208,13 +208,12 @@ def test_empty_active_pool_refuses_startup(tmp_path) -> None:
 # --- Decision 9-10: inner SDK retry vs outer cooldown are two layers ----
 
 
-@_PENDING
 def test_inner_retry_smooths_single_429_without_benching() -> None:
     """Decisions 9-10: a single 429 + retry-success must not bench the
     credential. This pins the *separation* between the inner SDK-retry layer
     and the outer cooldown ladder — conflating them is the bug to prevent.
     """
-    from dream.api.credentials import CredentialPool  # type: ignore[import-not-found]
+    from dream.api.credentials import CredentialPool
 
     pool = CredentialPool.from_keys("openai", ["primary"])
     pool.record_attempt("primary", outcome="transient_retried_success")
@@ -224,12 +223,11 @@ def test_inner_retry_smooths_single_429_without_benching() -> None:
     assert not cred.is_benched()
 
 
-@_PENDING
 def test_inner_retry_exhaustion_benches_at_rung_1() -> None:
     """Decision 10: when inner retries are exhausted, bench at rung 1 (the
     30-s transient rung). One failure = one rung — not three.
     """
-    from dream.api.credentials import CredentialPool  # type: ignore[import-not-found]
+    from dream.api.credentials import CredentialPool
 
     pool = CredentialPool.from_keys("openai", ["primary"])
     pool.record_attempt("primary", outcome="transient_exhausted")
@@ -237,13 +235,12 @@ def test_inner_retry_exhaustion_benches_at_rung_1() -> None:
     assert pool.get("primary").rung == 1
 
 
-@_PENDING
 def test_auth_error_benches_at_rung_3_no_inner_retry() -> None:
     """Decision 11: 401/403 short-circuits inner retry and benches at rung 3
     immediately. Treating an auth error as transient burns through the inner
     retry budget on a request that will never succeed.
     """
-    from dream.api.credentials import CredentialPool  # type: ignore[import-not-found]
+    from dream.api.credentials import CredentialPool
 
     pool = CredentialPool.from_keys("openai", ["primary"])
     pool.record_attempt("primary", outcome="auth")
@@ -251,12 +248,11 @@ def test_auth_error_benches_at_rung_3_no_inner_retry() -> None:
     assert pool.get("primary").rung == 3
 
 
-@_PENDING
 def test_hard_refusal_not_retried_not_benched() -> None:
     """Decision 11: a 400-malformed or content-filter refusal is the agent's
     bug, not the credential's — neither retry nor bench.
     """
-    from dream.api.credentials import CredentialPool  # type: ignore[import-not-found]
+    from dream.api.credentials import CredentialPool
 
     pool = CredentialPool.from_keys("openai", ["primary"])
     pool.record_attempt("primary", outcome="hard_refusal")
@@ -264,12 +260,11 @@ def test_hard_refusal_not_retried_not_benched() -> None:
     assert pool.get("primary").rung == 0
 
 
-@_PENDING
 def test_success_resets_rung_to_zero() -> None:
     """Decision 10: a successful call resets the rung — otherwise a
     recovered credential stays benched forever after a transient blip.
     """
-    from dream.api.credentials import CredentialPool  # type: ignore[import-not-found]
+    from dream.api.credentials import CredentialPool
 
     pool = CredentialPool.from_keys("openai", ["primary"])
     pool.record_attempt("primary", outcome="transient_exhausted")
@@ -281,12 +276,11 @@ def test_success_resets_rung_to_zero() -> None:
 # --- Decision 8: round-robin over live pool ------------------------------
 
 
-@_PENDING
 def test_round_robin_skips_benched_credential() -> None:
     """Decision 8: a benched credential is *skipped*, not retried until its
     cooldown elapses. Otherwise the bench is purely decorative.
     """
-    from dream.api.credentials import CredentialPool  # type: ignore[import-not-found]
+    from dream.api.credentials import CredentialPool
 
     pool = CredentialPool.from_keys("openai", ["primary", "secondary"])
     pool.record_attempt("primary", outcome="auth")  # benched
@@ -298,38 +292,35 @@ def test_round_robin_skips_benched_credential() -> None:
 # --- Decision 12-13: failover is transparent, turn-boundary only ---------
 
 
-@_PENDING
 def test_failover_when_all_credentials_for_active_substrate_benched() -> None:
     """Decision 12: all active-substrate credentials benched → advance to the
     next substrate. The whole point of the cooldown ladder is to make this
     determination cheap and automatic.
     """
-    from dream.api.failover import FailoverPolicy  # type: ignore[import-not-found]
+    from dream.api.failover import FailoverPolicy
 
     policy = FailoverPolicy(order=["openai", "anthropic"])
     chosen = policy.next_substrate(after="openai")
     assert chosen == "anthropic"
 
 
-@_PENDING
 def test_no_live_substrate_returns_graceful_failure() -> None:
     """Criterion 17: total exhaustion returns a typed failure to the FSM —
     *not* a crash, *not* a silent retry-forever loop. The FSM (#03) decides
     whether to retry the turn or end the task.
     """
-    from dream.api.failover import FailoverPolicy, NoLiveSubstrate  # type: ignore[import-not-found]
+    from dream.api.failover import FailoverPolicy, NoLiveSubstrate
 
     policy = FailoverPolicy(order=["openai"])  # only one, exhausted
     with pytest.raises(NoLiveSubstrate):
         policy.next_substrate(after="openai")
 
 
-@_PENDING
 def test_failover_event_is_emitted() -> None:
     """Criterion 15: ``substrate.failover {from, to, reason}`` is observable.
     Without this event the operator can't tell why latency suddenly tripled.
     """
-    from dream.api.failover import FailoverPolicy  # type: ignore[import-not-found]
+    from dream.api.failover import FailoverPolicy
 
     events: list[dict] = []
     policy = FailoverPolicy(order=["openai", "anthropic"], on_event=events.append)
@@ -338,13 +329,12 @@ def test_failover_event_is_emitted() -> None:
     assert any(e.get("type") == "substrate.failover" for e in events)
 
 
-@_PENDING
 def test_mid_turn_substrate_switch_refused_by_default() -> None:
     """Decision 13 / criterion 16: switch only at turn boundaries unless the
     caller passes an explicit override. Mid-turn switching breaks tool-call
     correlation and replays cost.
     """
-    from dream.api.failover import FailoverPolicy  # type: ignore[import-not-found]
+    from dream.api.failover import FailoverPolicy
 
     policy = FailoverPolicy(order=["openai", "anthropic"])
     assert policy.allow_mid_turn_switch() is False
@@ -353,13 +343,12 @@ def test_mid_turn_substrate_switch_refused_by_default() -> None:
 # --- Decision 16: probe-don't-flap on recovery ---------------------------
 
 
-@_PENDING
 def test_health_recovered_does_not_auto_switch_back() -> None:
     """Decision 16: a recovered substrate emits ``health.recovered`` but the
     runner stays on the failover substrate. Auto-switch-back creates a
     flapping loop the operator can't reason about.
     """
-    from dream.api.failover import FailoverPolicy  # type: ignore[import-not-found]
+    from dream.api.failover import FailoverPolicy
 
     policy = FailoverPolicy(order=["openai", "anthropic"])
     policy.next_substrate(after="openai", reason="pool_exhausted")
