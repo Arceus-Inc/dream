@@ -58,9 +58,33 @@ def test_validate_slug_rejects_bad_charset(slug: str) -> None:
         validate_worktree_slug(slug)
 
 
+@pytest.mark.parametrize(
+    "slug",
+    [
+        "a..b",  # consecutive dots
+        ".hidden",  # leading dot
+        ".hidden/x",  # leading dot in a segment
+        "topic.lock",  # .lock suffix
+        "feat/topic.lock",  # .lock suffix in a segment
+        "trailing.",  # trailing dot
+    ],
+)
+def test_validate_slug_rejects_invalid_git_ref(slug: str) -> None:
+    # Passes path checks but git check-ref-format would reject it.
+    with pytest.raises(ValueError):
+        validate_worktree_slug(slug)
+
+
 def test_flatten_slug_replaces_slash_with_plus() -> None:
     assert flatten_slug("feature/login/v2") == "feature+login+v2"
 
 
 def test_flatten_slug_noop_without_slash() -> None:
     assert flatten_slug("task-123") == "task-123"
+
+
+@pytest.mark.parametrize("slug", ["../escape", "/abs", "a..b", ".hidden", ""])
+def test_flatten_slug_validates_first(slug: str) -> None:
+    # flatten must not let an unsafe slug bypass the security boundary.
+    with pytest.raises(ValueError):
+        flatten_slug(slug)
