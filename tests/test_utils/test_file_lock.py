@@ -62,5 +62,5 @@ def test_lock_serializes_concurrent_writers(tmp_path: Path) -> None:
 
 def test_lock_raises_on_unsupported_platform(tmp_path: Path) -> None:
     with pytest.raises(LockUnavailableError):
-        with exclusive_file_lock(tmp_path / "x.lock", platform="plan9"):
+        with exclusive_file_lock(tmp_path / "x.lock", os_name="plan9"):
             pass

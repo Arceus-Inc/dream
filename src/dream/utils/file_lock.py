@@ -10,9 +10,10 @@ both race-free and crash-safe.
 
 from __future__ import annotations
 
-import sys
+import os
 from collections.abc import Iterator
 from contextlib import contextmanager
+from enum import Enum, auto
 from pathlib import Path
 
 __all__ = ["LockError", "LockUnavailableError", "exclusive_file_lock"]
@@ -26,29 +27,41 @@ class LockUnavailableError(LockError):
     """Raised when file locking is unavailable on the current platform."""
 
 
-def _detect_platform() -> str:
-    """Map sys.platform onto 'windows' | 'posix'."""
-    return "windows" if sys.platform == "win32" else "posix"
+class _LockBackend(Enum):
+    """Which OS locking primitive to use. Replaces stringly-typed dispatch."""
+
+    POSIX = auto()
+    WINDOWS = auto()
+
+    @classmethod
+    def for_os(cls, os_name: str) -> _LockBackend:
+        """Map ``os.name`` onto a backend; raise on anything unsupported."""
+        if os_name == "posix":
+            return cls.POSIX
+        if os_name == "nt":
+            return cls.WINDOWS
+        raise LockUnavailableError(f"file locking is not supported on os.name={os_name!r}")
 
 
 @contextmanager
 def exclusive_file_lock(
     lock_path: str | Path,
     *,
-    platform: str | None = None,
+    os_name: str | None = None,
 ) -> Iterator[None]:
-    """Hold an OS-level exclusive lock on ``lock_path`` for the context body."""
-    resolved = platform or _detect_platform()
+    """Hold an OS-level exclusive lock on ``lock_path`` for the context body.
+
+    ``os_name`` defaults to :data:`os.name`; pass it explicitly to exercise a
+    specific backend (or an unsupported one) in tests.
+    """
+    backend = _LockBackend.for_os(os.name if os_name is None else os_name)
     path = Path(lock_path)
-    if resolved == "windows":  # pragma: no cover - not exercised on posix CI
+    if backend is _LockBackend.WINDOWS:  # pragma: no cover - not exercised on posix CI
         with _windows_lock(path):
             yield
-        return
-    if resolved == "posix":
+    else:
         with _posix_lock(path):
             yield
-        return
-    raise LockUnavailableError(f"file locking is not supported on platform {resolved!r}")
 
 
 @contextmanager
