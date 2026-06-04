@@ -66,3 +66,24 @@ def test_atomic_write_mode_applied(tmp_path: Path) -> None:
     target = tmp_path / "secret"
     atomic_write_bytes(target, b"x", mode=0o600)
     assert stat.S_IMODE(os.stat(target).st_mode) == 0o600
+
+
+def test_clean_orphan_temp_files_removes_only_temps(tmp_path: Path) -> None:
+    real = tmp_path / "state.json"
+    real.write_text("{}")
+    orphan = tmp_path / "state.json.tmp.deadbeef"
+    orphan.write_text("partial")
+
+    removed = clean_orphan_temp_files(tmp_path)
+
+    assert not orphan.exists()
+    assert real.read_text() == "{}"
+    assert orphan in removed
+
+
+def test_clean_orphan_temp_files_empty_dir_returns_empty(tmp_path: Path) -> None:
+    assert clean_orphan_temp_files(tmp_path) == []
+
+
+def test_clean_orphan_temp_files_missing_dir_returns_empty(tmp_path: Path) -> None:
+    assert clean_orphan_temp_files(tmp_path / "nope") == []
