@@ -9,8 +9,15 @@ change.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
+from pathlib import Path
 
-__all__ = ["flatten_slug", "validate_worktree_slug"]
+__all__ = [
+    "WorktreeInfo",
+    "WorktreeSlug",
+    "flatten_slug",
+    "validate_worktree_slug",
+]
 
 _VALID_SEGMENT = re.compile(r"^[a-zA-Z0-9._-]+$")
 _MAX_SLUG_LENGTH = 64
@@ -69,3 +76,39 @@ def flatten_slug(slug: str) -> str:
     """
     validate_worktree_slug(slug)
     return slug.replace("/", "+")
+
+
+@dataclass(frozen=True)
+class WorktreeSlug:
+    """A validated slug. Constructing one *is* the security check.
+
+    Downstream worktree operations take this type rather than a raw ``str``, so
+    an unvalidated slug cannot reach a filesystem or git operation.
+    """
+
+    value: str
+
+    def __post_init__(self) -> None:
+        validate_worktree_slug(self.value)
+
+    @property
+    def flat(self) -> str:
+        """Flat directory form: ``a/b`` -> ``a+b``."""
+        return self.value.replace("/", "+")
+
+    @property
+    def branch(self) -> str:
+        """The generated git branch name for this worktree."""
+        return f"worktree-{self.flat}"
+
+
+@dataclass(frozen=True)
+class WorktreeInfo:
+    """Metadata describing a managed git worktree."""
+
+    slug: str
+    path: Path
+    branch: str
+    original_path: Path
+    created_at: float
+    agent_id: str | None = None
