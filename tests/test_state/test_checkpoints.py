@@ -33,7 +33,9 @@ def _git(repo: Path, *args: str) -> str:
 
 def _ref_resolves(repo: Path, ref: str) -> bool:
     return (
-        subprocess.run(["git", "rev-parse", "--verify", ref], cwd=repo, capture_output=True).returncode
+        subprocess.run(
+            ["git", "rev-parse", "--verify", ref], cwd=repo, capture_output=True
+        ).returncode
         == 0
     )
 
@@ -67,6 +69,25 @@ def test_write_checkpoint_creates_ref(paths: DreamPaths, mgr: WorktreeManager) -
     sha = write_checkpoint(paths, "T1", 1)
     assert _ref_resolves(paths.repo, "refs/dream/checkpoints/T1/1")
     assert _git(paths.repo, "rev-parse", "refs/dream/checkpoints/T1/1") == sha
+
+
+def test_write_checkpoint_raises_on_commit_failure_no_ref(
+    paths: DreamPaths, mgr: WorktreeManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dream.utils.git import run_git as real_run_git
+
+    mgr.create_worktree("T1")
+
+    def fake(args: list[str], *, cwd: Path) -> tuple[int, str, str]:
+        if args[:1] == ["commit"]:
+            return 1, "", "pre-commit hook rejected"
+        return real_run_git(args, cwd=cwd)
+
+    monkeypatch.setattr("dream.state.checkpoints.run_git", fake)
+    with pytest.raises(RuntimeError, match="git commit failed"):
+        write_checkpoint(paths, "T1", 1)
+    # No false checkpoint: the ref must not exist for a turn that wasn't recorded.
+    assert not _ref_resolves(paths.repo, "refs/dream/checkpoints/T1/1")
 
 
 def test_checkpoint_ref_per_turn(paths: DreamPaths, mgr: WorktreeManager) -> None:
@@ -105,9 +126,7 @@ def test_resume_creates_new_worktree_with_parent_lineage(
     write_checkpoint(paths, "T1", 1)
     sha2 = write_checkpoint(paths, "T1", 2)
 
-    info = resume_from(
-        paths, "refs/dream/checkpoints/T1/2", "T2", harness_version="0.1.0"
-    )
+    info = resume_from(paths, "refs/dream/checkpoints/T1/2", "T2", harness_version="0.1.0")
     assert info.slug == "T2"
     assert paths.worktree("T2").is_dir()
     state = read_state(paths, "T2")
@@ -115,9 +134,7 @@ def test_resume_creates_new_worktree_with_parent_lineage(
     assert _git(paths.worktree("T2"), "rev-parse", "HEAD") == sha2  # tree at checkpoint
 
 
-def test_resumed_tree_byte_matches_checkpoint(
-    paths: DreamPaths, mgr: WorktreeManager
-) -> None:
+def test_resumed_tree_byte_matches_checkpoint(paths: DreamPaths, mgr: WorktreeManager) -> None:
     wt = mgr.create_worktree("T1").path
     (wt / "data.txt").write_text("v1")
     write_checkpoint(paths, "T1", 1)

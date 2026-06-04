@@ -34,29 +34,43 @@ def _checkpoint_prefix(paths: DreamPaths, task_id: str) -> str:
     return paths.checkpoint_ref(task_id, 0).rsplit("/", 1)[0]
 
 
+def _checked(result: tuple[int, str, str], what: str) -> tuple[int, str, str]:
+    """Raise if a git command failed, so a checkpoint is all-or-nothing."""
+    code, out, err = result
+    if code != 0:
+        raise RuntimeError(f"{what} failed: {err or out}")
+    return result
+
+
 def write_checkpoint(paths: DreamPaths, task_id: str, turn: int) -> str:
     """Commit the worktree and pin ``refs/dream/checkpoints/{task}/{turn}``.
 
-    Returns the checkpoint commit SHA. Uses ``--allow-empty`` so every successful
+    All-or-nothing: every git step is checked, so the returned SHA is only ever a
+    commit that was actually recorded. Uses ``--allow-empty`` so every successful
     turn produces a checkpoint even when no files changed.
     """
     worktree = paths.worktree(task_id)
-    run_git(["add", "-A"], cwd=worktree)
-    run_git(["commit", "--allow-empty", "-m", f"checkpoint: turn {turn}"], cwd=worktree)
-    code, sha, err = run_git(["rev-parse", "HEAD"], cwd=worktree)
-    if code != 0:
-        raise RuntimeError(f"could not read worktree HEAD: {err}")
-    run_git(["update-ref", paths.checkpoint_ref(task_id, turn), sha], cwd=worktree)
+    _checked(run_git(["add", "-A"], cwd=worktree), "git add")
+    _checked(
+        run_git(["commit", "--allow-empty", "-m", f"checkpoint: turn {turn}"], cwd=worktree),
+        "git commit",
+    )
+    _, sha, _ = _checked(run_git(["rev-parse", "HEAD"], cwd=worktree), "git rev-parse HEAD")
+    _checked(
+        run_git(["update-ref", paths.checkpoint_ref(task_id, turn), sha], cwd=worktree),
+        "git update-ref",
+    )
     return sha
 
 
 def write_done(paths: DreamPaths, task_id: str) -> str:
     """Pin the final ``refs/dream/checkpoints/{task}/done`` at the current HEAD."""
     worktree = paths.worktree(task_id)
-    code, sha, err = run_git(["rev-parse", "HEAD"], cwd=worktree)
-    if code != 0:
-        raise RuntimeError(f"could not read worktree HEAD: {err}")
-    run_git(["update-ref", paths.checkpoint_ref(task_id, DONE_CHECKPOINT), sha], cwd=worktree)
+    _, sha, _ = _checked(run_git(["rev-parse", "HEAD"], cwd=worktree), "git rev-parse HEAD")
+    _checked(
+        run_git(["update-ref", paths.checkpoint_ref(task_id, DONE_CHECKPOINT), sha], cwd=worktree),
+        "git update-ref",
+    )
     return sha
 
 
