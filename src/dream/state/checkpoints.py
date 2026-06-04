@@ -19,12 +19,16 @@ from dream.state.sidecar import create_sidecar
 from dream.swarm._worktree import WorktreeInfo, WorktreeManager
 
 __all__ = [
+    "DONE_CHECKPOINT",
     "gc_checkpoints",
     "list_checkpoints",
     "resume_from",
     "write_checkpoint",
     "write_done",
 ]
+
+# The ref leaf for the final success checkpoint; never garbage-collected.
+DONE_CHECKPOINT = "done"
 
 
 def _git(args: list[str], *, cwd: Path) -> tuple[int, str, str]:
@@ -66,7 +70,7 @@ def write_done(paths: DreamPaths, task_id: str) -> str:
     code, sha, err = _git(["rev-parse", "HEAD"], cwd=worktree)
     if code != 0:
         raise RuntimeError(f"could not read worktree HEAD: {err}")
-    _git(["update-ref", paths.checkpoint_ref(task_id, "done"), sha], cwd=worktree)
+    _git(["update-ref", paths.checkpoint_ref(task_id, DONE_CHECKPOINT), sha], cwd=worktree)
     return sha
 
 
@@ -115,7 +119,7 @@ def gc_checkpoints(paths: DreamPaths, task_id: str, *, older_than_days: int = 30
     cutoff = time.time() - older_than_days * 86400
     removed: list[str] = []
     for name, sha in list_checkpoints(paths, task_id):
-        if name == "done":
+        if name == DONE_CHECKPOINT:
             continue
         code, committed_at, _ = _git(["show", "-s", "--format=%ct", sha], cwd=paths.repo)
         if code == 0 and committed_at and int(committed_at) < cutoff:
