@@ -78,10 +78,22 @@ def test_home_side_paths(tmp_path: Path) -> None:
 def test_reading_properties_creates_nothing(tmp_path: Path) -> None:
     p = DreamPaths.resolve(tmp_path, home=tmp_path / "h", env={})
     _ = (
-        p.dream_dir, p.worktrees_dir, p.sidecars_dir, p.coordination_dir,
-        p.coordination_board, p.docs_dir, p.exec_plans_active, p.schemas_dir,
-        p.agents_md, p.settings_file, p.sessions_dir, p.tasks_dir,
-        p.memory_dir, p.skills_dir, p.worktree("T1"), p.sidecar("T1"),
+        p.dream_dir,
+        p.worktrees_dir,
+        p.sidecars_dir,
+        p.coordination_dir,
+        p.coordination_board,
+        p.docs_dir,
+        p.exec_plans_active,
+        p.schemas_dir,
+        p.agents_md,
+        p.settings_file,
+        p.sessions_dir,
+        p.tasks_dir,
+        p.memory_dir,
+        p.skills_dir,
+        p.worktree("T1"),
+        p.sidecar("T1"),
     )
     assert not p.dream_dir.exists()
     assert not p.home.exists()

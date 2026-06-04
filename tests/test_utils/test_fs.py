@@ -46,7 +46,9 @@ def test_no_temp_file_left_after_success(tmp_path: Path) -> None:
     assert list(tmp_path.glob("*.tmp.*")) == []
 
 
-def test_failure_at_rename_preserves_existing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_failure_at_rename_preserves_existing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     target = tmp_path / "f.txt"
     atomic_write_text(target, "v1")
 
@@ -57,7 +59,7 @@ def test_failure_at_rename_preserves_existing(tmp_path: Path, monkeypatch: pytes
     with pytest.raises(OSError):
         atomic_write_text(target, "v2")
 
-    assert target.read_text() == "v1"            # old version intact
+    assert target.read_text() == "v1"  # old version intact
     assert list(tmp_path.glob("*.tmp.*")) == []  # temp cleaned by error path
 
 

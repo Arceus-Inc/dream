@@ -82,7 +82,9 @@ def _posix_lock(lock_path: Path) -> Iterator[None]:
 
 
 @contextmanager
-def _windows_lock(lock_path: Path) -> Iterator[None]:  # pragma: no cover - not exercised on posix CI
+def _windows_lock(
+    lock_path: Path,
+) -> Iterator[None]:  # pragma: no cover - not exercised on posix CI
     try:
         import msvcrt
     except ImportError as exc:

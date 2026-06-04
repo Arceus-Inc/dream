@@ -20,7 +20,9 @@ __all__ = ["atomic_write_bytes", "atomic_write_text", "clean_orphan_temp_files"]
 _TMP_GLOB = "*.tmp.*"
 
 
-def atomic_write_bytes(path: str | os.PathLike[str], data: bytes, *, mode: int | None = None) -> None:
+def atomic_write_bytes(
+    path: str | os.PathLike[str], data: bytes, *, mode: int | None = None
+) -> None:
     """Write ``data`` to ``path`` atomically (temp -> fsync -> rename)."""
     dst = Path(path)
     dst.parent.mkdir(parents=True, exist_ok=True)
