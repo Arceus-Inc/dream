@@ -10,16 +10,15 @@ from __future__ import annotations
 
 import contextlib
 import json
-import os
 import re
 import shutil
-import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from dream.config.paths import DreamPaths
 from dream.utils.fs import atomic_write_text
+from dream.utils.git import run_git
 
 __all__ = [
     "WorktreeInfo",
@@ -125,19 +124,6 @@ class WorktreeInfo:
     agent_id: str | None = None
 
 
-def _run_git(args: list[str], *, cwd: Path) -> tuple[int, str, str]:
-    """Run a git command, returning ``(returncode, stdout, stderr)``."""
-    proc = subprocess.run(
-        ["git", *args],
-        cwd=str(cwd),
-        capture_output=True,
-        text=True,
-        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
-        check=False,
-    )
-    return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
-
-
 def _symlink_common_dirs(repo: Path, worktree: Path) -> None:
     """Symlink large shared dirs into the worktree; failures are non-fatal."""
     for name in _COMMON_SYMLINK_DIRS:
@@ -192,7 +178,7 @@ class WorktreeManager:
         path = self.base_dir / wt.flat
 
         # Fast resume: an existing valid worktree is returned as-is.
-        if path.exists() and _run_git(["rev-parse", "--git-dir"], cwd=path)[0] == 0:
+        if path.exists() and run_git(["rev-parse", "--git-dir"], cwd=path)[0] == 0:
             agent, created = self._read_meta(wt.flat)
             return WorktreeInfo(
                 slug=wt.value,
@@ -204,7 +190,7 @@ class WorktreeManager:
             )
 
         # -B resets an orphan branch left by a prior remove rather than colliding.
-        code, _, stderr = _run_git(
+        code, _, stderr = run_git(
             ["worktree", "add", "-B", wt.branch, str(path), start_point], cwd=repo
         )
         if code != 0:
@@ -229,7 +215,7 @@ class WorktreeManager:
         if not path.exists():
             return False
         _remove_symlinks(path)
-        _run_git(["worktree", "remove", "--force", str(path)], cwd=self._paths.repo)
+        run_git(["worktree", "remove", "--force", str(path)], cwd=self._paths.repo)
         if path.exists():
             shutil.rmtree(path, ignore_errors=True)
         self._meta_path(wt.flat).unlink(missing_ok=True)
@@ -243,11 +229,11 @@ class WorktreeManager:
         for child in sorted(self.base_dir.iterdir()):
             if not child.is_dir():
                 continue
-            if _run_git(["rev-parse", "--git-dir"], cwd=child)[0] != 0:
+            if run_git(["rev-parse", "--git-dir"], cwd=child)[0] != 0:
                 continue
-            rc, branch_out, _ = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=child)
+            rc, branch_out, _ = run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=child)
             branch = branch_out if rc == 0 else "unknown"
-            rc2, common, _ = _run_git(["rev-parse", "--git-common-dir"], cwd=child)
+            rc2, common, _ = run_git(["rev-parse", "--git-common-dir"], cwd=child)
             original = Path(common).resolve().parent if rc2 == 0 and common else child
             agent, created = self._read_meta(child.name)
             out.append(

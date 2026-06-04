@@ -151,9 +151,7 @@ def test_cleanup_stale_none_sweeps_all_agent_owned(mgr: WorktreeManager) -> None
 def test_create_raises_when_git_add_fails(
     mgr: WorktreeManager, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(
-        "dream.swarm._worktree._run_git", lambda *_a, **_k: (1, "", "boom")
-    )
+    monkeypatch.setattr("dream.swarm._worktree.run_git", lambda *_a, **_k: (1, "", "boom"))
     with pytest.raises(RuntimeError, match="git worktree add failed"):
         mgr.create_worktree("T1")
 

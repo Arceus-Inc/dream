@@ -9,14 +9,12 @@ fresh worktree at any checkpoint with parent lineage recorded in its state.json.
 
 from __future__ import annotations
 
-import os
-import subprocess
 import time
-from pathlib import Path
 
 from dream.config.paths import DreamPaths
 from dream.state.sidecar import create_sidecar
 from dream.swarm._worktree import WorktreeInfo, WorktreeManager
+from dream.utils.git import run_git
 
 __all__ = [
     "DONE_CHECKPOINT",
@@ -31,18 +29,6 @@ __all__ = [
 DONE_CHECKPOINT = "done"
 
 
-def _git(args: list[str], *, cwd: Path) -> tuple[int, str, str]:
-    proc = subprocess.run(
-        ["git", *args],
-        cwd=str(cwd),
-        capture_output=True,
-        text=True,
-        env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
-        check=False,
-    )
-    return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
-
-
 def _checkpoint_prefix(paths: DreamPaths, task_id: str) -> str:
     """``refs/dream/checkpoints/{task}`` (validates task_id via paths)."""
     return paths.checkpoint_ref(task_id, 0).rsplit("/", 1)[0]
@@ -55,29 +41,31 @@ def write_checkpoint(paths: DreamPaths, task_id: str, turn: int) -> str:
     turn produces a checkpoint even when no files changed.
     """
     worktree = paths.worktree(task_id)
-    _git(["add", "-A"], cwd=worktree)
-    _git(["commit", "--allow-empty", "-m", f"checkpoint: turn {turn}"], cwd=worktree)
-    code, sha, err = _git(["rev-parse", "HEAD"], cwd=worktree)
+    run_git(["add", "-A"], cwd=worktree)
+    run_git(["commit", "--allow-empty", "-m", f"checkpoint: turn {turn}"], cwd=worktree)
+    code, sha, err = run_git(["rev-parse", "HEAD"], cwd=worktree)
     if code != 0:
         raise RuntimeError(f"could not read worktree HEAD: {err}")
-    _git(["update-ref", paths.checkpoint_ref(task_id, turn), sha], cwd=worktree)
+    run_git(["update-ref", paths.checkpoint_ref(task_id, turn), sha], cwd=worktree)
     return sha
 
 
 def write_done(paths: DreamPaths, task_id: str) -> str:
     """Pin the final ``refs/dream/checkpoints/{task}/done`` at the current HEAD."""
     worktree = paths.worktree(task_id)
-    code, sha, err = _git(["rev-parse", "HEAD"], cwd=worktree)
+    code, sha, err = run_git(["rev-parse", "HEAD"], cwd=worktree)
     if code != 0:
         raise RuntimeError(f"could not read worktree HEAD: {err}")
-    _git(["update-ref", paths.checkpoint_ref(task_id, DONE_CHECKPOINT), sha], cwd=worktree)
+    run_git(["update-ref", paths.checkpoint_ref(task_id, DONE_CHECKPOINT), sha], cwd=worktree)
     return sha
 
 
 def list_checkpoints(paths: DreamPaths, task_id: str) -> list[tuple[str, str]]:
     """Return sorted ``(name, sha)`` for a task's checkpoints (name = ref leaf)."""
     prefix = _checkpoint_prefix(paths, task_id)
-    _, out, _ = _git(["for-each-ref", "--format=%(refname) %(objectname)", prefix], cwd=paths.repo)
+    _, out, _ = run_git(
+        ["for-each-ref", "--format=%(refname) %(objectname)", prefix], cwd=paths.repo
+    )
     result: list[tuple[str, str]] = []
     for line in out.splitlines():
         refname, sha = line.split(" ", 1)
@@ -102,7 +90,7 @@ def resume_from(
         raise ValueError(f"task-id already in use: {new_task_id!r}")
     info = WorktreeManager(paths).create_worktree(new_task_id, start_point=source_ref)
     if base_branch is None:
-        code, branch, _ = _git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=paths.repo)
+        code, branch, _ = run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=paths.repo)
         base_branch = branch if code == 0 and branch else "main"
     create_sidecar(
         paths,
@@ -121,8 +109,8 @@ def gc_checkpoints(paths: DreamPaths, task_id: str, *, older_than_days: int = 30
     for name, sha in list_checkpoints(paths, task_id):
         if name == DONE_CHECKPOINT:
             continue
-        code, committed_at, _ = _git(["show", "-s", "--format=%ct", sha], cwd=paths.repo)
+        code, committed_at, _ = run_git(["show", "-s", "--format=%ct", sha], cwd=paths.repo)
         if code == 0 and committed_at and int(committed_at) < cutoff:
-            _git(["update-ref", "-d", paths.checkpoint_ref(task_id, name)], cwd=paths.repo)
+            run_git(["update-ref", "-d", paths.checkpoint_ref(task_id, name)], cwd=paths.repo)
             removed.append(name)
     return removed
