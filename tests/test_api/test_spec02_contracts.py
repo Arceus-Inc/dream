@@ -51,7 +51,6 @@ _PENDING = pytest.mark.xfail(
 # --- Decision 5: substrate interface is exactly five methods --------------
 
 
-@_PENDING
 def test_substrate_interface_is_exactly_five_methods() -> None:
     """Spec 02 decision 5: ``complete``, ``stream``, ``count_tokens``,
     ``max_window``, ``health`` — and nothing else. A sixth method "requires a
@@ -60,7 +59,7 @@ def test_substrate_interface_is_exactly_five_methods() -> None:
     # The implementor may name this ``Substrate`` (preferred per the spec)
     # or fold it into the existing Provider Protocol — either way the
     # five-method shape must be discoverable from one symbol.
-    from dream.api.substrate import Substrate  # type: ignore[import-not-found]
+    from dream.api.substrate import Substrate
 
     expected = {"complete", "stream", "count_tokens", "max_window", "health"}
     actual = {
@@ -73,12 +72,11 @@ def test_substrate_interface_is_exactly_five_methods() -> None:
     )
 
 
-@_PENDING
 def test_substrate_is_a_protocol() -> None:
     """A Protocol (not an ABC) so adapters in ``.dream/substrate-adapters/``
     can satisfy it structurally without inheritance — decision 6.
     """
-    from dream.api.substrate import Substrate  # type: ignore[import-not-found]
+    from dream.api.substrate import Substrate
 
     assert issubclass(Substrate, Protocol)
 
