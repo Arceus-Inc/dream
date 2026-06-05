@@ -1,17 +1,30 @@
-"""``run_session`` — the outer session orchestrator (Spec 03 stage 3a).
+"""``run_session`` — the outer session orchestrator (Spec 03 stages 3a + 3b).
 
 Wraps the inner ``run_query`` act-loop with the session FSM:
-``starting -> orienting -> working*N -> sealing -> done | aborted``.
+``starting -> orienting -> working*N -> sealing -> done | done-with-warnings
+| aborted``.
 
-Each user message drives one turn; each turn walks
-``read → plan → act → verify → record`` and produces exactly one
-``TurnRecord``. Every transition is fired on the optional ``TransitionBus``
-and also yielded inline so callers that don't want to register a bus can
-filter on ``isinstance(ev, TransitionEvent)``.
+Each user message (and each reviewer-driven re-entry) drives one turn;
+each turn walks ``read -> plan -> act -> verify -> record`` and produces
+exactly one ``TurnRecord``. Every transition is fired on the optional
+``TransitionBus`` and also yielded inline so callers that don't want to
+register a bus can filter on ``isinstance(ev, TransitionEvent)``.
 
-This stage (3a) is the deterministic machinery only — orientation summary,
-heartbeat coma detection, and reviewer back-edges are stage 3b. A real
-provider adapter for ``TurnStreamer`` is stage 3c.
+Stage 3a brought the deterministic machinery (FSM, timeouts, records,
+crash resume, hook bus, checkpoints). Stage 3b layers the rituals on
+top, all opt-in via optional ``SessionConfig`` fields:
+
+- ``orientation`` — runs the orientation ritual once at session start,
+  prepends the brief, aborts on blocking validator findings.
+- ``heartbeat`` — wraps each turn's stream with a coma detector; a
+  ``ComaDetected`` cancels the turn and aborts the session with
+  ``reason="coma"``.
+- ``reviewer`` — once user messages are exhausted, runs the
+  Ralph-Wiggum loop: ``accept`` -> seal as ``done``; ``request_changes``
+  injects items and re-enters ``working``; at ``max_rounds`` it
+  force-closes as ``done-with-warnings``.
+
+A real provider adapter for ``TurnStreamer`` is stage 3c.
 """
 
 from __future__ import annotations
@@ -29,6 +42,11 @@ from dream.engine._events import (
     StreamEvent,
     ToolExecutionStarted,
 )
+from dream.engine._heartbeat import (
+    ComaDetected,
+    HeartbeatConfig,
+    HeartbeatMonitor,
+)
 from dream.engine._loop import (
     QueryContext,
     ToolDispatcher,
@@ -40,7 +58,14 @@ from dream.engine._messages import (
     has_pending_continuation,
     sanitize_conversation_messages,
 )
-from dream.engine._records import SessionEnd, TurnRecord
+from dream.engine._orientation import OrientationConfig, run_orientation
+from dream.engine._records import (
+    SessionEnd,
+    SessionOutcome,
+    TurnOutcome,
+    TurnRecord,
+)
+from dream.engine._reviewer import ReviewerConfig
 from dream.engine._transitions import TransitionBus, TransitionEvent
 
 
@@ -53,7 +78,10 @@ class SessionConfig:
     """Everything ``run_session`` needs for one session.
 
     ``now`` is injectable so tests get a deterministic timestamp stream;
-    production defaults to UTC wall-clock.
+    production defaults to UTC wall-clock. ``orientation`` / ``heartbeat``
+    / ``reviewer`` are the stage 3b ritual hooks; each defaults to
+    ``None`` so a config with only the 3a fields behaves identically to
+    the 3a orchestrator.
     """
 
     client: TurnStreamer
@@ -64,6 +92,9 @@ class SessionConfig:
     session_id: str = "s_default"
     checkpoint: Callable[[TurnRecord], None] | None = None
     now: Callable[[], datetime] = field(default=_default_now)
+    orientation: OrientationConfig | None = None
+    heartbeat: HeartbeatConfig | None = None
+    reviewer: ReviewerConfig | None = None
 
 
 SessionEvent = StreamEvent | TransitionEvent | TurnRecord | SessionEnd
@@ -75,6 +106,59 @@ def _fire(
     if bus is not None:
         bus.fire(event)
     return event
+
+
+async def _drive_turn_with_heartbeat(
+    inner: AsyncGenerator[StreamEvent, None],
+    heartbeat: HeartbeatConfig | None,
+) -> AsyncIterator[StreamEvent]:
+    """Yield events from ``inner`` while a heartbeat polls in the background.
+
+    When the heartbeat trips, the in-flight ``__anext__`` task is
+    cancelled and ``ComaDetected`` is raised so the caller can
+    short-circuit the turn. With ``heartbeat=None`` this degenerates to
+    a plain ``async for`` over ``inner``.
+    """
+    if heartbeat is None:
+        async for ev in inner:
+            yield ev
+        return
+
+    monitor = HeartbeatMonitor(
+        health=heartbeat.health,
+        interval=heartbeat.interval_seconds,
+        threshold=heartbeat.failure_threshold,
+    )
+    monitor_task = asyncio.create_task(monitor.run())
+    aiter_ = inner.__aiter__()
+
+    async def _next() -> StreamEvent:
+        return await aiter_.__anext__()
+
+    try:
+        while True:
+            next_task: asyncio.Task[StreamEvent] = asyncio.create_task(_next())
+            done, _pending = await asyncio.wait(
+                {next_task, monitor_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if monitor_task in done:
+                next_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await next_task
+                # Re-raise ComaDetected from the monitor task.
+                monitor_task.result()
+                return  # unreachable; appeases the type checker
+            try:
+                ev = next_task.result()
+            except StopAsyncIteration:
+                return
+            yield ev
+    finally:
+        if not monitor_task.done():
+            monitor_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await monitor_task
 
 
 async def run_session(
@@ -93,14 +177,11 @@ async def run_session(
     """
     session_started_at = config.now()
 
-    # Substrate transitions: starting → orienting → working.
+    # starting -> orienting (always fired; the orientation ritual runs
+    # between this transition and the orienting -> working one below).
     yield _fire(
         transitions,
         TransitionEvent(kind="session", from_state="starting", to_state="orienting"),
-    )
-    yield _fire(
-        transitions,
-        TransitionEvent(kind="session", from_state="orienting", to_state="working"),
     )
 
     # Seed the transcript. ``sanitize`` drops any dangling trailing tool_use
@@ -109,20 +190,67 @@ async def run_session(
         sanitize_conversation_messages(resume_messages) if resume_messages else []
     )
 
+    # Orientation ritual: skipped on resume (the prior incarnation
+    # already oriented; re-orienting would duplicate the brief and
+    # violate "orientation runs exactly once per session").
+    if config.orientation is not None and resume_messages is None:
+        brief = await run_orientation(config.orientation)
+        if brief.has_blocking_findings:
+            yield _fire(
+                transitions,
+                TransitionEvent(
+                    kind="session", from_state="orienting", to_state="aborted"
+                ),
+            )
+            yield SessionEnd(
+                session_id=config.session_id,
+                started_at=session_started_at,
+                ended_at=config.now(),
+                turns=0,
+                total_usage=UsageSnapshot(),
+                outcome="aborted",
+                reason="validator-blocking",
+            )
+            return
+        transcript.insert(0, brief.to_user_message())
+
+    yield _fire(
+        transitions,
+        TransitionEvent(kind="session", from_state="orienting", to_state="working"),
+    )
+
     total_usage = UsageSnapshot()
     consecutive_timeouts = 0
     turn_number = 0
     user_idx = 0
     abort_reason: str | None = None
+    review_rounds = 0
+    last_review_items: list[str] = []
+    seal_warnings = False
 
     while True:
-        # If the transcript owes the model a continuation we re-enter without
-        # consuming a new user message; otherwise we need one to make progress.
-        if not has_pending_continuation(transcript):
-            if user_idx >= len(user_messages):
-                break
+        # Decide what drives the next turn:
+        # 1. Pending continuation -> re-enter the model with no new user msg.
+        # 2. A user message available -> consume it.
+        # 3. Otherwise, ask the reviewer (if any). accept -> seal;
+        #    request_changes -> inject + re-enter; max_rounds -> warnings.
+        if has_pending_continuation(transcript):
+            pass
+        elif user_idx < len(user_messages):
             transcript.append(user_messages[user_idx])
             user_idx += 1
+        else:
+            if config.reviewer is None or turn_number == 0:
+                break
+            verdict = await config.reviewer.reviewer.review(transcript)
+            if verdict.verdict == "accept":
+                break
+            review_rounds += 1
+            last_review_items = list(verdict.items)
+            if review_rounds >= config.reviewer.max_rounds:
+                seal_warnings = True
+                break
+            transcript.append(verdict.to_user_message())
 
         turn_number += 1
         if turn_number > 1:
@@ -133,7 +261,7 @@ async def run_session(
                 ),
             )
 
-        # Turn FSM: read → plan → act → verify → record.
+        # Turn FSM: read -> plan -> act -> verify -> record.
         yield _fire(
             transitions,
             TransitionEvent(kind="turn", from_state="read", to_state="plan"),
@@ -147,6 +275,7 @@ async def run_session(
         tools_called: list[str] = []
         turn_usage = UsageSnapshot()
         timed_out = False
+        turn_coma = False
 
         ctx = QueryContext(
             client=config.client, tools=config.tools, max_turns=config.max_turns
@@ -159,15 +288,20 @@ async def run_session(
         )
         try:
             async with asyncio.timeout(config.turn_timeout_seconds):
-                async for ev in inner:
+                async for ev in _drive_turn_with_heartbeat(
+                    inner, config.heartbeat
+                ):
                     yield ev
                     if isinstance(ev, ToolExecutionStarted):
                         tools_called.append(ev.tool)
                     elif isinstance(ev, AssistantTurnComplete):
                         turn_usage = turn_usage + ev.usage
+        except ComaDetected:
+            turn_coma = True
+            with contextlib.suppress(Exception):
+                await inner.aclose()
         except TimeoutError:
             timed_out = True
-            # Ensure the async generator is closed promptly.
             await inner.aclose()
 
         yield _fire(
@@ -180,11 +314,14 @@ async def run_session(
         )
 
         turn_ended_at = config.now()
-        if timed_out:
-            outcome = "timeout"
+        turn_outcome: TurnOutcome
+        if turn_coma:
+            turn_outcome = "aborted"
+        elif timed_out:
+            turn_outcome = "timeout"
             consecutive_timeouts += 1
         else:
-            outcome = "complete"
+            turn_outcome = "complete"
             consecutive_timeouts = 0
 
         record = TurnRecord(
@@ -193,7 +330,7 @@ async def run_session(
             ended_at=turn_ended_at,
             tools_called=tools_called,
             verification_result="skipped",
-            outcome=outcome,  # type: ignore[arg-type]
+            outcome=turn_outcome,
             usage=turn_usage,
         )
         yield record
@@ -201,9 +338,13 @@ async def run_session(
 
         # Checkpoint only on a successful turn (spec 03 #4).
         # Best-effort: a snapshot writer crash must not break the session.
-        if outcome == "complete" and config.checkpoint is not None:
+        if turn_outcome == "complete" and config.checkpoint is not None:
             with contextlib.suppress(Exception):
                 config.checkpoint(record)
+
+        if turn_coma:
+            abort_reason = "coma"
+            break
 
         if consecutive_timeouts >= config.max_consecutive_timeouts:
             abort_reason = "repeated-timeout"
@@ -235,13 +376,28 @@ async def run_session(
         transitions,
         TransitionEvent(kind="session", from_state="sealing", to_state="done"),
     )
+
+    session_outcome: SessionOutcome
+    reason: str | None
+    if seal_warnings:
+        session_outcome = "done-with-warnings"
+        reason = (
+            "unresolved: " + "; ".join(last_review_items)
+            if last_review_items
+            else "unresolved (no items)"
+        )
+    else:
+        session_outcome = "done"
+        reason = None
+
     yield SessionEnd(
         session_id=config.session_id,
         started_at=session_started_at,
         ended_at=config.now(),
         turns=turn_number,
         total_usage=total_usage,
-        outcome="done",
+        outcome=session_outcome,
+        reason=reason,
     )
 
 
