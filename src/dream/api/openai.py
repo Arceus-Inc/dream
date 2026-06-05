@@ -107,7 +107,7 @@ class OpenAIChatSubstrate:
     def complete(self, prompt: str, params: dict[str, Any] | None = None) -> CompletionResult:
         merged = self._merged_params(params)
         max_tokens = int(merged.pop("max_tokens", 1024))
-        model = str(merged.pop("model", self._model))
+        model = str(merged.pop("model", None) or self._model)
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
@@ -121,6 +121,11 @@ class OpenAIChatSubstrate:
             self._reraise_timeout(exc)
             raise
 
+        if not response.choices:
+            raise RuntimeError(
+                f"substrate {self.name!r} returned no choices for model {model!r} "
+                "(possible content filter or malformed gateway response)"
+            )
         choice = response.choices[0]
         text = (choice.message.content or "") if choice.message else ""
         usage = response.usage
@@ -135,7 +140,7 @@ class OpenAIChatSubstrate:
     def stream(self, prompt: str, params: dict[str, Any] | None = None) -> Iterator[str]:
         merged = self._merged_params(params)
         max_tokens = int(merged.pop("max_tokens", 1024))
-        model = str(merged.pop("model", self._model))
+        model = str(merged.pop("model", None) or self._model)
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
@@ -146,17 +151,19 @@ class OpenAIChatSubstrate:
         }
         try:
             stream = self._client.chat.completions.create(**kwargs)
+            for chunk in stream:
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                piece = getattr(delta, "content", None)
+                if piece:
+                    yield piece
         except Exception as exc:
+            # Wrap the *iteration* too: OpenAI streams lazily, so a read timeout
+            # surfaces while consuming `stream` (not at create()) — classify it
+            # the same as a non-streaming timeout instead of leaking a raw error.
             self._reraise_timeout(exc)
             raise
-
-        for chunk in stream:
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta
-            piece = getattr(delta, "content", None)
-            if piece:
-                yield piece
 
     def count_tokens(self, text: str) -> int:
         return _approx_token_count(text)

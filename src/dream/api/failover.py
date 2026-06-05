@@ -88,6 +88,14 @@ class FailoverPolicy:
         active substrate mid-session — deferred to next start, but the
         in-memory chain is what we honour).
         """
+        if after != self._active:
+            # Advance only from the true current position; a stale caller value
+            # could otherwise cause a no-op or backward switch and break chain
+            # exhaustion.
+            raise ValueError(
+                f"next_substrate(after={after!r}) does not match the active "
+                f"substrate {self._active!r}; advance from the current active only"
+            )
         try:
             idx = self.order.index(after)
         except ValueError as exc:

@@ -21,6 +21,7 @@ refusals are spec criteria 7, both surface before any model call.
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 import tomllib
@@ -231,6 +232,7 @@ def load_credential_pools(
         if not isinstance(entries, list):
             continue
         creds: list[Credential] = []
+        seen_labels: set[str] = set()
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
@@ -238,6 +240,13 @@ def load_credential_pools(
             if not key:
                 continue
             label = str(entry.get("label", key))
+            if label in seen_labels:
+                # Operations address credentials by label; duplicates would make
+                # benching/cooldown target the wrong key. Fail loud at load time.
+                raise ValueError(
+                    f"duplicate credential label {label!r} for substrate {substrate!r} in {p}"
+                )
+            seen_labels.add(label)
             creds.append(Credential(label=label, key=key, substrate=substrate))
         pools[substrate] = CredentialPool(substrate, creds)
 
@@ -253,9 +262,16 @@ def load_credential_pools(
 
 def _enforce_permissions(path: Path) -> None:
     if sys.platform == "win32":
-        # NTFS ACL audit not implemented — see Windows note in
-        # load_credential_pools docstring.
-        return
+        # No portable owner-only ACL check yet (st_mode is meaningless on NTFS).
+        # Fail *closed* rather than silently trusting a possibly world-readable
+        # file: an operator who has secured the ACL out-of-band can acknowledge
+        # the gap explicitly via the env override.
+        if os.environ.get("DREAM_ALLOW_INSECURE_WINDOWS_CREDS") == "1":
+            return
+        raise LooseCredentialsFile(
+            f"cannot verify owner-only permissions for {path} on Windows. Secure the "
+            "file's ACL, then set DREAM_ALLOW_INSECURE_WINDOWS_CREDS=1 to proceed."
+        )
     mode = path.stat().st_mode & 0o777
     if mode & 0o077:
         raise LooseCredentialsFile(

@@ -251,6 +251,29 @@ def test_empty_active_pool_refuses_startup(tmp_path) -> None:
         load_credential_pools(creds, active="openai")
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Windows perm check fails closed before the label check is reached.",
+)
+def test_duplicate_credential_label_refuses_startup(tmp_path) -> None:
+    """Operations address credentials by label, so two entries sharing a label
+    would misroute benching/cooldown. Reject duplicates at load time."""
+    import os
+
+    from dream.api.credentials import load_credential_pools
+
+    creds = tmp_path / "credentials.toml"
+    creds.write_text(
+        '[[openai]]\nkey = "sk-a"\nlabel = "dup"\n'
+        '[[openai]]\nkey = "sk-b"\nlabel = "dup"\n',
+        encoding="utf-8",
+    )
+    os.chmod(creds, 0o600)  # pass the perms check so we reach the label check
+
+    with pytest.raises(ValueError, match=r"(?i)duplicate.*label"):
+        load_credential_pools(creds)
+
+
 # --- Decision 9-10: inner SDK retry vs outer cooldown are two layers ----
 
 
@@ -360,6 +383,17 @@ def test_no_live_substrate_returns_graceful_failure() -> None:
     policy = FailoverPolicy(order=["openai"])  # only one, exhausted
     with pytest.raises(NoLiveSubstrate):
         policy.next_substrate(after="openai")
+
+
+def test_next_substrate_rejects_stale_after() -> None:
+    """Logic: advance only from the true active substrate — a stale ``after``
+    must not cause a no-op or backward switch that breaks chain exhaustion."""
+    from dream.api.failover import FailoverPolicy
+
+    policy = FailoverPolicy(order=["openai", "anthropic", "litellm"])
+    assert policy.next_substrate(after="openai") == "anthropic"  # active advances
+    with pytest.raises(ValueError, match=r"(?i)active"):
+        policy.next_substrate(after="openai")  # stale — openai is no longer active
 
 
 def test_failover_event_is_emitted() -> None:
