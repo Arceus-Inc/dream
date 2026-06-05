@@ -195,6 +195,15 @@ class Settings(BaseModel):
             chosen = next(iter(profiles))
         return chosen, profiles[chosen].model_copy(deep=True)
 
+    @staticmethod
+    def _auth_kind_for_source(auth_source: str) -> str:
+        """Map an auth source to its ``ResolvedAuth.auth_kind`` family (decision 3).
+
+        OAuth-backed sources (e.g. ``copilot_oauth``) must not be reported as
+        ``api_key``, or the adapter dispatches the wrong auth flow.
+        """
+        return "external_oauth" if "oauth" in auth_source else "api_key"
+
     def resolve_auth(self, profile: ProviderProfile | None = None) -> ResolvedAuth:
         """Resolve credentials for the active (or supplied) profile.
 
@@ -209,11 +218,13 @@ class Settings(BaseModel):
             profile.provider, profile.api_format
         )
 
+        auth_kind = self._auth_kind_for_source(auth_source)
+
         # 1. flat override on Settings (set by CLI / programmatic callers).
         if self.api_key:
             return ResolvedAuth(
                 provider=profile.provider,
-                auth_kind="api_key",
+                auth_kind=auth_kind,
                 value=self.api_key,
                 source="settings.api_key",
             )
@@ -224,7 +235,7 @@ class Settings(BaseModel):
             env_var, env_value = env_resolved
             return ResolvedAuth(
                 provider=profile.provider,
-                auth_kind="api_key",
+                auth_kind=auth_kind,
                 value=env_value,
                 source=f"env:{env_var}",
             )

@@ -179,16 +179,20 @@ def _match_by_model(model: str) -> ProviderSpec | None:
     model_prefix = model_lower.split("/", 1)[0] if "/" in model_lower else ""
     normalized_prefix = model_prefix.replace("-", "_")
 
-    candidates = [s for s in PROVIDERS if not s.is_local and not s.is_oauth]
+    cloud = [s for s in PROVIDERS if not s.is_local and not s.is_oauth]
+    local_or_oauth = [s for s in PROVIDERS if s.is_local or s.is_oauth]
 
-    for spec in candidates:
-        if model_prefix and normalized_prefix == spec.name:
-            return spec
-
-    for spec in candidates:
-        for kw in spec.keywords:
-            if kw in model_lower or kw.replace("-", "_") in model_normalized:
+    # Cloud specs match first, so a bare model keyword (e.g. a Claude model) is
+    # never shadowed by a local provider. Local/OAuth specs are a fallback group,
+    # so an explicit local model or prefix (e.g. "ollama/llama3") still resolves.
+    for group in (cloud, local_or_oauth):
+        for spec in group:
+            if model_prefix and normalized_prefix == spec.name:
                 return spec
+        for spec in group:
+            for kw in spec.keywords:
+                if kw in model_lower or kw.replace("-", "_") in model_normalized:
+                    return spec
     return None
 
 

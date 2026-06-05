@@ -168,6 +168,52 @@ def test_detect_provider_by_base_url() -> None:
     assert "anthropic" in info.name.lower() or info.backend_type == "anthropic"
 
 
+def test_local_provider_detected_by_model_prefix() -> None:
+    """Criterion 3: local providers (e.g. ollama) are keyword/prefix detectable,
+    not silently filtered out of model matching."""
+    from dream.api._registry import _match_by_model
+
+    spec = _match_by_model("ollama/llama3")
+    assert spec is not None
+    assert spec.name == "ollama"
+
+
+def test_default_auth_source_prefers_named_provider_over_api_format() -> None:
+    """An OpenAI-*compatible* provider maps to its OWN key env, not openai's;
+    api_format is only a fallback when the provider identity is unknown."""
+    from dream.config.from_env import default_auth_source_for_provider
+
+    assert default_auth_source_for_provider("groq", "openai") == "groq_api_key"
+    assert default_auth_source_for_provider("openai", "openai") == "openai_api_key"
+    assert default_auth_source_for_provider("", "openai") == "openai_api_key"
+
+
+def test_resolve_auth_kind_follows_oauth_source() -> None:
+    """Decision 3: an OAuth source (copilot_oauth) resolves auth_kind=external_oauth,
+    not api_key, so the adapter dispatches the right auth flow."""
+    from dream.config.from_file import ProviderProfile, Settings
+
+    oauth = ProviderProfile(
+        label="cp", provider="copilot", api_format="openai", auth_source="", default_model="gpt-4o"
+    )
+    assert (
+        Settings(api_key="ghp_token", active_profile="cp", profiles={"cp": oauth})
+        .resolve_auth()
+        .auth_kind
+        == "external_oauth"
+    )
+
+    key = ProviderProfile(
+        label="oa", provider="openai", api_format="openai", auth_source="", default_model="gpt-4o"
+    )
+    assert (
+        Settings(api_key="sk-x", active_profile="oa", profiles={"oa": key})
+        .resolve_auth()
+        .auth_kind
+        == "api_key"
+    )
+
+
 # --- Decision 7 / criterion 7: startup discipline ------------------------
 
 

@@ -65,9 +65,16 @@ def default_auth_source_for_provider(provider: str, api_format: str | None = Non
         return "azure_openai_api_key"
     if provider == "anthropic":
         return "anthropic_api_key"
-    if provider == "openai" or api_format == "openai":
+    if provider == "openai":
         return "openai_api_key"
-    return f"{provider}_api_key"
+    if provider:
+        # A named OpenAI-compatible provider (groq, openrouter, deepseek, …) gets
+        # its OWN key env, not openai's — api_format is not provider identity.
+        return f"{provider}_api_key"
+    # Provider unknown — only now use api_format as a last-resort hint.
+    if api_format == "openai":
+        return "openai_api_key"
+    return "api_key"
 
 
 __all__ = [
