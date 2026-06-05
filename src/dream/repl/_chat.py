@@ -156,6 +156,12 @@ class Dispatcher:
     ) -> None:
         if not specs:
             raise ValueError("Dispatcher requires at least one substrate spec")
+        names = [s.name for s in specs]
+        if len(set(names)) != len(names):
+            dupes = sorted({n for n in names if names.count(n) > 1})
+            raise ValueError(
+                f"Dispatcher requires unique substrate names; duplicates: {dupes}"
+            )
         self._specs: dict[str, SubstrateSpec] = {s.name: s for s in specs}
         self._pools: dict[str, CredentialPool] = {
             s.name: CredentialPool(s.name, s.credentials) for s in specs
@@ -522,9 +528,10 @@ def run_chat(
     max_tokens: int = 1024,
     initial_stream: bool = True,
 ) -> int:
+    spec_list = list(specs)  # materialize once — consumed for both event + dispatcher
     sink = EventSink(events_path)
-    sink.emit("repl.started", substrates=[s.name for s in specs])
-    dispatcher = Dispatcher(list(specs), sink, max_tokens=max_tokens)
+    sink.emit("repl.started", substrates=[s.name for s in spec_list])
+    dispatcher = Dispatcher(spec_list, sink, max_tokens=max_tokens)
     transcript = Transcript()
     state: dict[str, Any] = {"stream": initial_stream, "events_path": str(events_path)}
 

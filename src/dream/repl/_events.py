@@ -36,11 +36,14 @@ class EventSink:
         return self._path
 
     def emit(self, event_type: str, **payload: Any) -> dict[str, Any]:
+        # Reserved fields are written *last* so a caller-supplied payload key
+        # (type/ts/pid) can never clobber the sink's stable discriminator,
+        # timestamp, or pid.
         record = {
+            **payload,
             "ts": datetime.now(UTC).isoformat(timespec="milliseconds"),
             "pid": os.getpid(),
             "type": event_type,
-            **payload,
         }
         line = json.dumps(record, default=str, separators=(",", ":"))
         with self._lock, self._path.open("a", encoding="utf-8") as fh:

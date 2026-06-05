@@ -83,6 +83,16 @@ def test_event_sink_writes_jsonl(tmp_path: Path) -> None:
     assert records[1]["x"] is True
 
 
+def test_event_sink_reserved_keys_are_authoritative(tmp_path: Path) -> None:
+    """A payload key must never clobber the reserved type/ts/pid discriminators."""
+    sink = EventSink(tmp_path / "events.jsonl")
+    record = sink.emit("real.type", type="spoofed", ts="spoofed", pid="spoofed", k=1)
+    assert record["type"] == "real.type"
+    assert record["ts"] != "spoofed"
+    assert record["pid"] != "spoofed"
+    assert record["k"] == 1
+
+
 def test_event_sink_failover_callback(tmp_path: Path) -> None:
     sink = EventSink(tmp_path / "events.jsonl")
     sink.callback({"type": "substrate.failover", "from": "a", "to": "b", "reason": "x"})
@@ -174,6 +184,14 @@ def test_dispatcher_fails_over_to_next_substrate(tmp_path: Path) -> None:
     assert "turn.attempt_failed" in types
     assert "substrate.failover" in types
     assert "turn.completed" in types
+
+
+def test_dispatcher_rejects_duplicate_substrate_names(tmp_path: Path) -> None:
+    """Duplicate names break FailoverPolicy (list.index re-selects the same
+    entry, so failover never progresses) — reject at construction."""
+    sink = EventSink(tmp_path / "events.jsonl")
+    with pytest.raises(ValueError, match=r"(?i)unique|duplicate"):
+        Dispatcher([_ok_spec("dup"), _ok_spec("dup")], sink)
 
 
 def test_dispatcher_chain_exhaustion_raises(tmp_path: Path) -> None:
