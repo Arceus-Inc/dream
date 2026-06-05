@@ -375,6 +375,18 @@ def test_runner_does_not_branch_on_substrate_name() -> None:
 
     runner_dir = Path(__file__).resolve().parents[2] / "src" / "dream" / "api"
     offenders: list[str] = []
+    names = {"substrate", "provider", "provider_name"}
+
+    def _is_ref(n: ast.expr) -> bool:
+        # Catch both bare names (`provider`) and attribute access
+        # (`self.provider`, `config.substrate`).
+        return (isinstance(n, ast.Name) and n.id in names) or (
+            isinstance(n, ast.Attribute) and n.attr in names
+        )
+
+    def _is_str(n: ast.expr) -> bool:
+        return isinstance(n, ast.Constant) and isinstance(n.value, str)
+
     for path in runner_dir.rglob("*.py"):
         if "substrate-adapters" in path.parts or "adapters" in path.parts:
             continue  # adapters are *allowed* to branch on themselves
@@ -383,9 +395,15 @@ def test_runner_does_not_branch_on_substrate_name() -> None:
         except SyntaxError:
             continue
         for node in ast.walk(tree):
-            if isinstance(node, ast.Compare) and isinstance(node.left, ast.Name):
-                if node.left.id in {"substrate", "provider", "provider_name"}:
-                    for cmp_op, comparator in zip(node.ops, node.comparators, strict=False):
-                        if isinstance(cmp_op, ast.Eq) and isinstance(comparator, ast.Constant):
-                            offenders.append(f"{path}:{node.lineno}")
+            if not isinstance(node, ast.Compare):
+                continue
+            operands = [node.left, *node.comparators]
+            # ops has len N; operands has N+1, so (operands, operands[1:]) pairs
+            # each comparison with its right-hand operand.
+            for cmp_op, lhs, rhs in zip(node.ops, operands, operands[1:]):
+                # Flag either ordering: `provider == "x"` and `"x" == provider`.
+                if isinstance(cmp_op, ast.Eq) and (
+                    (_is_ref(lhs) and _is_str(rhs)) or (_is_ref(rhs) and _is_str(lhs))
+                ):
+                    offenders.append(f"{path}:{node.lineno}")
     assert not offenders, f"runner branches on substrate name: {offenders}"

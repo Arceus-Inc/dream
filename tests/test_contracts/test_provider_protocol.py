@@ -124,10 +124,10 @@ class _ConformingProvider:
         max_output_tokens: int | None = None,
         extra: dict[str, Any] | None = None,
     ) -> AsyncIterator[ProviderEvent]:
-        async def _gen() -> AsyncIterator[ProviderEvent]:
-            yield ProviderEvent(type="end")
-
-        return _gen()
+        # A direct async generator: ``async for e in provider.stream_messages(...)``
+        # works without an intermediate ``await``. The previous ``return _gen()``
+        # form produced a coroutine resolving to an iterator — the wrong contract.
+        yield ProviderEvent(type="end")
 
 
 class _MissingStreamMessages:
@@ -173,10 +173,13 @@ def test_contracts_provider_module_does_not_import_vendor_sdks() -> None:
     it must stay free of provider/I/O deps. A regression here would force
     chorus / lattice / horizon to install ``httpx`` etc.
     """
-    # Drop any cached vendor imports so re-importing the contract module is a
-    # fair test of *its* import graph, not the whole test runner's.
+    # Drop any cached vendor imports AND the contract module itself, so the
+    # import below actually re-executes the module's import graph rather than
+    # returning the cached object (whose import-time side effects already ran).
     for name in list(sys.modules):
-        if any(name == v or name.startswith(f"{v}.") for v in _VENDOR_MODULES):
+        if name == "dream.contracts.provider" or any(
+            name == v or name.startswith(f"{v}.") for v in _VENDOR_MODULES
+        ):
             sys.modules.pop(name, None)
 
     importlib.import_module("dream.contracts.provider")
