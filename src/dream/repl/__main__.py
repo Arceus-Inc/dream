@@ -3,12 +3,37 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 from dream.repl._chat import build_specs, run_chat
 from dream.repl._watch import run_watch
 
 _DEFAULT_EVENTS = Path(".dream") / "repl-events.jsonl"
+_DEFAULT_ENV_FILE = Path(".env.local")
+
+
+def _load_env_file(path: Path) -> int:
+    """Load ``KEY=VALUE`` lines from ``path`` into ``os.environ`` (no overwrite).
+
+    Tiny ad-hoc parser — no quoting, no escapes, no ``export`` prefix. Just
+    enough for the dev REPL. Lines starting with ``#`` or blank are skipped.
+    Returns the number of keys set; missing file returns 0.
+    """
+    if not path.is_file():
+        return 0
+    n = 0
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+            n += 1
+    return n
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -72,6 +97,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _load_env_file(_DEFAULT_ENV_FILE)
     args = _build_parser().parse_args(argv)
     if args.command == "chat":
         specs = build_specs(
