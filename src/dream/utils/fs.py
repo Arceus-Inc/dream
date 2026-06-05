@@ -60,17 +60,23 @@ def atomic_write_text(
     atomic_write_bytes(path, text.encode(encoding), mode=mode)
 
 
-def clean_orphan_temp_files(directory: str | os.PathLike[str]) -> list[Path]:
+def clean_orphan_temp_files(
+    directory: str | os.PathLike[str], *, recursive: bool = False
+) -> list[Path]:
     """Remove leftover atomic-write temp files; return removed paths.
 
     Only files matching this writer's exact ``{name}.tmp.{32-hex}`` scheme are
     removed, so unrelated files that merely contain ``.tmp.`` are left untouched.
+    With ``recursive=True`` the sweep descends into subdirectories — needed for
+    per-task sidecar folders, where ``state.json.tmp.*`` orphans live one level
+    down (not in the top-level ``sidecars/`` dir).
     """
     d = Path(directory)
     removed: list[Path] = []
     if not d.is_dir():
         return removed
-    for p in sorted(d.glob("*.tmp.*")):
+    candidates = d.rglob("*.tmp.*") if recursive else d.glob("*.tmp.*")
+    for p in sorted(candidates):
         if _ORPHAN_RE.search(p.name) is None:
             continue  # not our temp scheme — leave it alone
         with contextlib.suppress(OSError):

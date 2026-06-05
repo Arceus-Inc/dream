@@ -71,7 +71,8 @@ def create_sidecar(
     paths.ensure()
     assert_no_version_conflicts(paths, harness_version)
     clean_orphan_temp_files(paths.worktrees_dir)
-    clean_orphan_temp_files(paths.sidecars_dir)
+    # Recursive: per-task state.json temp orphans live in sidecars/<task-id>/.
+    clean_orphan_temp_files(paths.sidecars_dir, recursive=True)
 
     sidecar = paths.sidecar(task_id)  # validates task_id (PR1 traversal guard)
     for sub in _SIDECAR_SUBDIRS:

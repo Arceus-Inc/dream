@@ -172,8 +172,14 @@ def test_resume_rolls_back_worktree_on_sidecar_failure(
         resume_from(paths, ref, "T2", harness_version="0.1.0", base_branch="main")
 
     # The worktree that resume_from created before the sidecar step must be gone,
-    # and the task-id must be reusable for a fresh attempt.
+    # AND no sidecar may be left behind — resume_from rejects a reused task-id if
+    # either exists, so both must be cleaned for the id to be genuinely reusable.
     assert not paths.worktree("T2").exists()
+    assert not paths.sidecar("T2").exists()
+    # The contract in full: the id must actually be reusable for a fresh attempt.
+    monkeypatch.undo()  # restore the real create_sidecar
+    resume_from(paths, ref, "T2", harness_version="0.1.0", base_branch="main")
+    assert paths.worktree("T2").is_dir()
 
 
 # --- system-of-record invariant: now-state stays out of git ---------------

@@ -180,6 +180,20 @@ def test_create_sidecar_sweeps_orphan_temp_files(paths: DreamPaths) -> None:
     assert not orphan_sc.exists()
 
 
+def test_create_sidecar_sweeps_orphan_in_task_subdir(paths: DreamPaths) -> None:
+    """state.json temp orphans live one level down: sidecars/<task-id>/state.json.tmp.*"""
+    paths.ensure()
+    suffix = "0123456789abcdef" * 2  # 32 lowercase hex, matches the writer scheme
+    task_dir = paths.sidecars_dir / "T0"
+    task_dir.mkdir(parents=True)
+    orphan = task_dir / f"state.json.tmp.{suffix}"
+    orphan.write_text("partial")
+
+    create_sidecar(paths, "T1", base_branch="main", harness_version="0.1.0")
+
+    assert not orphan.exists()  # recursive sweep reached the per-task subdir
+
+
 def test_create_sidecar_does_not_touch_real_files(paths: DreamPaths) -> None:
     """Sweep must remove only ``.tmp.*`` files — real files are untouched."""
     paths.ensure()
