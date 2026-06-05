@@ -78,9 +78,11 @@ def test_no_logging_in_src() -> None:
     assert not violators, f"logging imported in src: {violators}"
 
 
-def _files_calling_print() -> list[Path]:
+def _files_calling_print(*, exempt: set[Path]) -> list[Path]:
     hits: list[Path] = []
     for f in _py_files():
+        if f in exempt:
+            continue
         try:
             tree = ast.parse(f.read_text(encoding="utf-8"))
         except SyntaxError:
@@ -97,8 +99,16 @@ def _files_calling_print() -> list[Path]:
 
 
 def test_no_print_calls_in_src() -> None:
-    """Spec 00 rule 4: no ``print()`` in the SDK."""
-    violators = _files_calling_print()
+    """Spec 00 rule 4: no ``print()`` in the SDK.
+
+    The ``dream.repl`` package is an interactive developer CLI, not part of
+    the SDK consumed by client code — its whole job is to render to stdout.
+    Exempt the subtree (and only the subtree) rather than rerouting every
+    print through a wrapper for show.
+    """
+    repl_dir = SRC / "repl"
+    exempt = {p for p in _py_files() if repl_dir in p.parents or p == repl_dir}
+    violators = _files_calling_print(exempt=exempt)
     assert not violators, f"print() called in src: {violators}"
 
 
