@@ -17,6 +17,7 @@ engine translates those into typed ``StreamEvent``s here.
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
+from typing import get_args
 
 import pytest
 
@@ -127,8 +128,13 @@ def test_stream_event_union_members_are_assignable() -> None:
         CompactProgressEvent(pct=0.5),
         ErrorEvent(message="m"),
     ]
-    # Each one is acceptable as a StreamEvent (statically — and runtime sanity check).
-    assert all(v is not None for v in variants)
+    members = get_args(StreamEvent)
+    # Each constructed variant really is a member of the union...
+    for v in variants:
+        assert isinstance(v, members), f"{type(v).__name__} is not a StreamEvent member"
+    # ...and every union member is represented above, so adding a variant to the
+    # union without testing it (or dropping one) fails here too.
+    assert {type(v) for v in variants} == set(members)
 
 
 def test_event_types_are_distinct() -> None:

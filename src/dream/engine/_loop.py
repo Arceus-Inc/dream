@@ -22,6 +22,7 @@ The loop is bounded by ``max_turns`` (acceptance #6).
 
 from __future__ import annotations
 
+import copy
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -115,9 +116,12 @@ async def run_query(
 
         results: list[ContentBlock] = []
         for tu in tool_uses:
-            yield ToolExecutionStarted(tool=tu.name, id=tu.id, input=dict(tu.input))
+            # Deep copy: the transcript block, the emitted event payload, and the
+            # dispatch argument must each be isolated, so an in-place mutation by a
+            # dispatcher can never rewrite history or an already-emitted event.
+            yield ToolExecutionStarted(tool=tu.name, id=tu.id, input=copy.deepcopy(tu.input))
             try:
-                content, is_error = await ctx.tools.dispatch(tu.name, dict(tu.input))
+                content, is_error = await ctx.tools.dispatch(tu.name, copy.deepcopy(tu.input))
             except Exception as exc:  # never crash the loop on a tool failure
                 content, is_error = f"tool error: {exc}", True
             yield ToolExecutionCompleted(

@@ -173,6 +173,29 @@ async def test_run_query_appends_assistant_message_with_full_block_content() -> 
     assert first_assistant.text == "thinking"
 
 
+async def test_run_query_deep_copies_tool_input_so_history_is_immutable() -> None:
+    """A dispatcher that mutates nested input in place must not rewrite the
+    transcript's tool-use block or the already-emitted ToolExecutionStarted."""
+    nested = {"opts": {"flag": "original"}}
+    tool_use = ToolUseBlock(id="t1", name="mut", input=nested)
+    client = FakeStreamer(turns=[FakeTurn(tool_uses=[tool_use]), FakeTurn(text_chunks=["done"])])
+
+    class _MutatingDispatcher:
+        async def dispatch(self, name: str, input: dict[str, Any]) -> tuple[str, bool]:
+            input["opts"]["flag"] = "MUTATED"  # in-place nested mutation
+            return "ok", False
+
+    ctx = QueryContext(client=client, tools=_MutatingDispatcher(), max_turns=8)
+    messages: list[ConversationMessage] = [
+        ConversationMessage(role="user", content=[TextBlock(text="go")])
+    ]
+    events = await _drain(ctx, messages)
+
+    assert tool_use.input["opts"]["flag"] == "original"  # transcript untouched
+    started = [e for e in events if isinstance(e, ToolExecutionStarted)]
+    assert started and started[0].input["opts"]["flag"] == "original"  # event payload untouched
+
+
 # --- run_query: tool round ---------------------------------------------------
 
 
