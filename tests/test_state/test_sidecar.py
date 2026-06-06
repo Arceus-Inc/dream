@@ -7,13 +7,17 @@ stamps the harness version so mismatched versions refuse to coexist.
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 import pytest
 
+import dream.state.sidecar as sidecar_module
 from dream.config.paths import DreamPaths
 from dream.state.sidecar import (
     TaskState,
+    # private API: test verifies create/update/remove share one lock
+    _lock_path,
     assert_no_version_conflicts,
     create_sidecar,
     ensure_version_compatible,
@@ -21,6 +25,7 @@ from dream.state.sidecar import (
     remove_sidecar,
     update_state,
 )
+from dream.utils.file_lock import exclusive_file_lock
 from dream.utils.fs import atomic_write_text
 
 
@@ -203,3 +208,60 @@ def test_create_sidecar_does_not_touch_real_files(paths: DreamPaths) -> None:
     create_sidecar(paths, "T1", base_branch="main", harness_version="0.1.0")
     assert real.read_text() == "{}"
     assert (paths.sidecars_dir / "also-keep.json").read_text() == "{}"
+
+
+# --- the state.json write must happen under the per-task exclusive lock ----
+
+
+def test_create_sidecar_holds_lock_during_state_write(
+    paths: DreamPaths,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``create_sidecar``'s ``state.json`` write must run under the per-task lock.
+
+    A daemon thread races to grab the same lock the moment the write is invoked.
+    If the write were unlocked, the thread would acquire immediately; we assert it
+    is still blocked during the write, then acquires once ``create_sidecar`` exits.
+    """
+    paths.ensure()  # create sidecars_dir so _lock_path's parent exists for the rival
+    lock_path = _lock_path(paths, "T1")
+
+    real_atomic_write_text = sidecar_module.atomic_write_text
+    contended = threading.Event()  # set right before the rival tries to acquire
+    rival_blocked = threading.Event()  # set once the rival reaches the lock barrier
+    rival_acquired = threading.Event()  # set once the rival holds the lock
+
+    def rival() -> None:
+        contended.wait(timeout=5.0)
+        rival_blocked.set()  # at the contention point, about to block on the lock
+        with exclusive_file_lock(lock_path):
+            rival_acquired.set()
+
+    rival_thread = threading.Thread(target=rival, daemon=True)
+    rival_thread.start()
+
+    def spy_write(path: Path, text: str) -> None:
+        contended.set()  # tell the rival to start contending for the lock now
+        # Happens-before, no timing race: wait until the rival has reached the
+        # lock barrier, then assert it has NOT acquired — it cannot, because we
+        # (inside create_sidecar) still hold the lock.
+        assert rival_blocked.wait(timeout=5.0), "rival never reached the lock barrier"
+        # Bounded wait, not a bare is_set(): in GREEN the rival is blocked in
+        # ``flock`` and never sets the event, so this returns False deterministically;
+        # in RED (unlocked) the uncontended rival acquires within the window and the
+        # assertion fires. The barrier above guarantees the rival is actually racing.
+        assert not rival_acquired.wait(timeout=0.5), "lock was not held during state.json write"
+        real_atomic_write_text(path, text)
+
+    monkeypatch.setattr(sidecar_module, "atomic_write_text", spy_write)
+
+    create_sidecar(paths, "T1", base_branch="main", harness_version="0.1.0")
+
+    # Lock released on return: the rival now acquires promptly.
+    assert rival_acquired.wait(timeout=5.0), "lock was not released after create_sidecar returned"
+    rival_thread.join(timeout=5.0)
+    assert not rival_thread.is_alive()
+
+    # The write still produced a valid sidecar.
+    assert read_state(paths, "T1").task_id == "T1"
+    assert (paths.sidecar("T1") / "db.sqlite").is_file()

@@ -75,14 +75,6 @@ def create_sidecar(
     clean_orphan_temp_files(paths.sidecars_dir, recursive=True)
 
     sidecar = paths.sidecar(task_id)  # validates task_id (PR1 traversal guard)
-    for sub in _SIDECAR_SUBDIRS:
-        (sidecar / sub).mkdir(parents=True, exist_ok=True)
-    # Per-task structured state (spec decision 8). Created empty; schema is
-    # owned by whatever component first opens it. An atomic write means a
-    # concurrent reader never sees a torn header.
-    db_path = sidecar / _SIDECAR_DB
-    if not db_path.exists():
-        atomic_write_bytes(db_path, b"")
     state = TaskState(
         task_id=task_id,
         base_branch=base_branch,
@@ -90,7 +82,22 @@ def create_sidecar(
         harness_version=harness_version,
         parent_checkpoint_ref=parent_checkpoint_ref,
     )
-    atomic_write_text(sidecar / "state.json", state.model_dump_json(indent=2))
+    # Serialise the per-task writes (db.sqlite init + state.json) under the same
+    # lock ``update_state``/``remove_sidecar`` hold, so a concurrent update can't
+    # interleave and clobber state.json, and two creators can't both win the
+    # ``db_path.exists()`` check-then-act. ``paths.ensure()`` above already made
+    # ``sidecars_dir`` (the lock file's parent), so acquiring is safe here.
+    with exclusive_file_lock(_lock_path(paths, task_id)):
+        for sub in _SIDECAR_SUBDIRS:
+            (sidecar / sub).mkdir(parents=True, exist_ok=True)
+        # Per-task structured state (spec decision 8). Created empty; schema is
+        # owned by whatever component first opens it. An atomic write means a
+        # concurrent reader never sees a torn header. The existence guard
+        # preserves an existing db on a resume-style re-create.
+        db_path = sidecar / _SIDECAR_DB
+        if not db_path.exists():
+            atomic_write_bytes(db_path, b"")
+        atomic_write_text(sidecar / "state.json", state.model_dump_json(indent=2))
     return state
 
 
