@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 from dream.engine._events import (
     AssistantTextDelta,
     AssistantTurnComplete,
+    CompactionDoneEvent,
     CompactProgressEvent,
     ErrorEvent,
     StatusEvent,
@@ -44,6 +45,7 @@ from dream.engine._messages import (
 )
 from dream.engine._session import run_session
 from dream.events import (
+    Compacted,
     Error,
     Event,
     TextDelta,
@@ -256,6 +258,12 @@ class Session:
 
         if isinstance(ev, ErrorEvent):
             return Error(code="engine", message=ev.message)
+
+        if isinstance(ev, CompactionDoneEvent):
+            return Compacted(
+                removed_messages=ev.removed_messages,
+                summary_tokens=ev.freed_tokens,
+            )
 
         if isinstance(ev, CompactProgressEvent | StatusEvent):
             # Informational; not surfaced publicly. Slice E will route

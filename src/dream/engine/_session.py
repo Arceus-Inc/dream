@@ -36,9 +36,11 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import cast
 
+from dream.contracts.provider import ProviderCapabilities
 from dream.engine._cost import UsageSnapshot
 from dream.engine._events import (
     AssistantTurnComplete,
+    CompactionDoneEvent,
     StreamEvent,
     ToolExecutionStarted,
 )
@@ -73,6 +75,13 @@ from dream.engine._records import (
 )
 from dream.engine._reviewer import ReviewerConfig
 from dream.engine._transitions import TransitionBus, TransitionEvent
+from dream.services.compact import DEFAULT_KEEP_RECENT
+from dream.services.compact._orchestrator import (
+    AutoCompactState,
+    auto_compact_if_needed,
+    begin_turn,
+)
+from dream.services.token_estimation import estimate_conversation_tokens, utilisation
 
 
 def _default_now() -> datetime:
@@ -101,6 +110,10 @@ class SessionConfig:
     orientation: OrientationConfig | None = None
     heartbeat: HeartbeatConfig | None = None
     reviewer: ReviewerConfig | None = None
+    compactor: AutoCompactState | None = None
+    compaction_threshold: float = 0.7
+    compaction_preserve_recent: int = DEFAULT_KEEP_RECENT
+    compaction_capabilities: ProviderCapabilities | None = None
 
     def __post_init__(self) -> None:
         # 0/negative would satisfy ``consecutive_timeouts >= max`` immediately
@@ -112,9 +125,7 @@ class SessionConfig:
 SessionEvent = StreamEvent | TransitionEvent | TurnRecord | SessionEnd
 
 
-def _fire(
-    bus: TransitionBus | None, event: TransitionEvent
-) -> TransitionEvent:
+def _fire(bus: TransitionBus | None, event: TransitionEvent) -> TransitionEvent:
     if bus is not None:
         bus.fire(event)
     return event
@@ -296,6 +307,32 @@ async def run_session(
                 _session_transition(SessionState.WORKING, SessionState.WORKING),
             )
 
+        # Spec 04 #1: per-turn auto-compaction. Runs after the new user
+        # message has been appended and before the model is re-entered, so
+        # the streamer sees the post-compaction transcript. Resets the
+        # cooldown via ``begin_turn`` so the first compaction this turn is
+        # allowed even if the previous turn already compacted.
+        if config.compactor is not None:
+            begin_turn(config.compactor, turn_id=f"t{turn_number}")
+            pre_count = len(transcript)
+            pre_tokens = estimate_conversation_tokens(transcript)
+            new_transcript, result = auto_compact_if_needed(
+                transcript,
+                capabilities=config.compaction_capabilities,
+                state=config.compactor,
+                threshold=config.compaction_threshold,
+                preserve_recent=config.compaction_preserve_recent,
+            )
+            if result is not None:
+                transcript = new_transcript
+                post_tokens = estimate_conversation_tokens(transcript)
+                yield CompactionDoneEvent(
+                    tier=result.tier,
+                    removed_messages=max(0, pre_count - len(transcript)),
+                    freed_tokens=max(0, pre_tokens - post_tokens),
+                    resulting_utilisation=utilisation(transcript, config.compaction_capabilities),
+                )
+
         # Turn FSM: read -> plan -> act -> verify -> record.
         yield _fire(
             transitions,
@@ -313,20 +350,14 @@ async def run_session(
         turn_coma = False
         turn_error: str | None = None
 
-        ctx = QueryContext(
-            client=config.client, tools=config.tools, max_turns=config.max_turns
-        )
+        ctx = QueryContext(client=config.client, tools=config.tools, max_turns=config.max_turns)
         # ``run_query`` is declared as ``AsyncIterator`` but is in fact an
         # async generator; the cast lets us call ``aclose()`` on timeout to
         # release the inner streamer promptly.
-        inner = cast(
-            AsyncGenerator[StreamEvent, None], run_query(ctx, transcript)
-        )
+        inner = cast(AsyncGenerator[StreamEvent, None], run_query(ctx, transcript))
         try:
             async with asyncio.timeout(config.turn_timeout_seconds):
-                async for ev in _drive_turn_with_heartbeat(
-                    inner, config.heartbeat
-                ):
+                async for ev in _drive_turn_with_heartbeat(inner, config.heartbeat):
                     yield ev
                     if isinstance(ev, ToolExecutionStarted):
                         tools_called.append(ev.tool)

@@ -433,3 +433,28 @@ async def test_tool_use_start_input_is_independent_of_dispatcher_mutation() -> N
     # The event payload must not be affected by the dispatcher's later
     # mutation -- the engine already deep-copies on emit.
     assert start_ev.input == {"k": "v"}
+
+
+# --- compaction translation (slice E) ---------------------------------------
+
+
+def test_translate_compaction_done_event_yields_public_compacted() -> None:
+    """``Session._translate`` maps the internal ``CompactionDoneEvent`` to
+    the public ``Compacted`` value, carrying through the removed-message
+    count and freed-token estimate.
+    """
+    from dream.engine._events import CompactionDoneEvent
+    from dream.events import Compacted
+
+    session = Session(id="s_translate")
+    pending: list = []
+    ev = CompactionDoneEvent(
+        tier="microcompact",
+        removed_messages=3,
+        freed_tokens=480,
+        resulting_utilisation=0.42,
+    )
+    out = session._translate(ev, pending)
+    assert isinstance(out, Compacted)
+    assert out.removed_messages == 3
+    assert out.summary_tokens == 480

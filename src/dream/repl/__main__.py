@@ -1,4 +1,4 @@
-"""``python -m dream.repl`` — subcommands ``chat`` and ``watch``."""
+"""``python -m dream.repl`` — subcommands ``chat``, ``session``, and ``watch``."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 from dream.repl._chat import build_specs, run_chat
+from dream.repl._session import run_session_repl
 from dream.repl._watch import run_watch
 
 _DEFAULT_EVENTS = Path(".dream") / "repl-events.jsonl"
@@ -97,6 +98,33 @@ def _build_parser() -> argparse.ArgumentParser:
         help="disable ANSI colour even if stdout is a TTY",
     )
 
+    session = sub.add_parser(
+        "session",
+        help="interactive Spec 05 Session loop against a real provider",
+    )
+    session.add_argument(
+        "--events",
+        type=Path,
+        default=_DEFAULT_EVENTS,
+        help=f"JSONL event file (default: {_DEFAULT_EVENTS})",
+    )
+    session.add_argument(
+        "--model",
+        default=None,
+        help="override DREAM_SMOKE_MODEL for this session",
+    )
+    session.add_argument(
+        "--system",
+        default=None,
+        help="system prompt prepended to every turn",
+    )
+    session.add_argument(
+        "--max-turns",
+        type=int,
+        default=8,
+        help="hard cap on assistant turns per send (default: 8)",
+    )
+
     return parser
 
 
@@ -119,6 +147,13 @@ def main(argv: list[str] | None = None) -> int:
             args.events,
             from_start=args.from_start,
             use_colour=False if args.no_colour else None,
+        )
+    if args.command == "session":
+        return run_session_repl(
+            events_path=args.events,
+            model=args.model,
+            system=args.system,
+            max_turns=args.max_turns,
         )
     return 2
 
