@@ -19,10 +19,10 @@ from __future__ import annotations
 import os
 import sys
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from dream.api.credentials import (
     Credential,
@@ -139,6 +139,15 @@ class DispatchResult:
     elapsed_ms: float = 0.0
 
 
+class _Attempt(NamedTuple):
+    """One resolved failover attempt: the substrate/credential to call next."""
+
+    substrate_name: str
+    pool: CredentialPool
+    cred: Credential
+    substrate: Substrate
+
+
 class Dispatcher:
     """Walks the failover chain on every turn.
 
@@ -204,8 +213,12 @@ class Dispatcher:
 
     # --- main dispatch -------------------------------------------------------
 
-    def complete(self, prompt: str) -> DispatchResult:
-        """Run a non-streaming turn, failing over until success or chain exhausted."""
+    def _next_live(self) -> _Attempt:
+        """Advance the failover chain until a live credential is found.
+
+        Raises ``NoLiveSubstrate`` (from ``next_substrate``) once every
+        substrate's pool is exhausted; the REPL catches and reports it.
+        """
         while True:
             active = self.policy.active()
             pool = self._pools[active]
@@ -213,46 +226,65 @@ class Dispatcher:
                 cred = pool.pick_live()
             except NoLiveCredential:
                 # All creds for this substrate are benched — advance the chain.
-                # next_substrate raises NoLiveSubstrate when exhausted; let it
-                # propagate to the REPL which catches and reports.
                 self.policy.next_substrate(after=active, reason="pool_exhausted")
                 continue
-            substrate = self._adapters[(active, cred.label)]
+            return _Attempt(
+                substrate_name=active,
+                pool=pool,
+                cred=cred,
+                substrate=self._adapters[(active, cred.label)],
+            )
+
+    def _record_failure(
+        self, attempt: _Attempt, exc: Exception, started: float, **extra: object
+    ) -> Outcome:
+        """Classify a failed attempt, apply the cooldown ladder, emit the event.
+
+        ``extra`` carries mode-specific fields (e.g. ``chunks`` for streaming).
+        """
+        outcome = _classify_exception(exc)
+        elapsed_ms = (time.monotonic() - started) * 1000.0
+        attempt.pool.record_attempt(attempt.cred.label, outcome=outcome)
+        self._sink.emit(
+            "turn.attempt_failed",
+            substrate=attempt.substrate_name,
+            label=attempt.cred.label,
+            outcome=outcome,
+            error=type(exc).__name__,
+            detail=str(exc)[:200],
+            elapsed_ms=round(elapsed_ms, 1),
+            **extra,
+        )
+        return outcome
+
+    def complete(self, prompt: str) -> DispatchResult:
+        """Run a non-streaming turn, failing over until success or chain exhausted."""
+        while True:
+            attempt = self._next_live()
             started = time.monotonic()
             try:
-                result = substrate.complete(prompt, params={"max_tokens": self.max_tokens})
-            except Exception as exc:
-                outcome = _classify_exception(exc)
-                elapsed_ms = (time.monotonic() - started) * 1000.0
-                pool.record_attempt(cred.label, outcome=outcome)
-                self._sink.emit(
-                    "turn.attempt_failed",
-                    substrate=active,
-                    label=cred.label,
-                    outcome=outcome,
-                    error=type(exc).__name__,
-                    detail=str(exc)[:200],
-                    elapsed_ms=round(elapsed_ms, 1),
+                result = attempt.substrate.complete(
+                    prompt, params={"max_tokens": self.max_tokens}
                 )
-                if outcome == "hard_refusal":
-                    # Malformed input — retrying on another credential will
-                    # produce the same error. Surface to the operator.
+            except Exception as exc:
+                if self._record_failure(attempt, exc, started) == "hard_refusal":
+                    # Malformed input — another credential would fail identically.
                     raise
                 continue
             elapsed_ms = (time.monotonic() - started) * 1000.0
-            pool.record_attempt(cred.label, outcome="success")
+            attempt.pool.record_attempt(attempt.cred.label, outcome="success")
             self._sink.emit(
                 "turn.completed",
-                substrate=active,
-                label=cred.label,
+                substrate=attempt.substrate_name,
+                label=attempt.cred.label,
                 in_tokens=result.input_tokens,
                 out_tokens=result.output_tokens,
                 finish=result.finish_reason,
                 elapsed_ms=round(elapsed_ms, 1),
             )
             return DispatchResult(
-                substrate=active,
-                label=cred.label,
+                substrate=attempt.substrate_name,
+                label=attempt.cred.label,
                 text=result.text,
                 in_tokens=result.input_tokens,
                 out_tokens=result.output_tokens,
@@ -263,35 +295,18 @@ class Dispatcher:
     def stream(self, prompt: str) -> DispatchResult:
         """Run a streaming turn, printing as chunks arrive."""
         while True:
-            active = self.policy.active()
-            pool = self._pools[active]
-            try:
-                cred = pool.pick_live()
-            except NoLiveCredential:
-                self.policy.next_substrate(after=active, reason="pool_exhausted")
-                continue
-            substrate = self._adapters[(active, cred.label)]
+            attempt = self._next_live()
             started = time.monotonic()
             chunks: list[str] = []
             try:
-                for piece in substrate.stream(prompt, params={"max_tokens": self.max_tokens}):
+                for piece in attempt.substrate.stream(
+                    prompt, params={"max_tokens": self.max_tokens}
+                ):
                     chunks.append(piece)
                     sys.stdout.write(piece)
                     sys.stdout.flush()
             except Exception as exc:
-                outcome = _classify_exception(exc)
-                elapsed_ms = (time.monotonic() - started) * 1000.0
-                pool.record_attempt(cred.label, outcome=outcome)
-                self._sink.emit(
-                    "turn.attempt_failed",
-                    substrate=active,
-                    label=cred.label,
-                    outcome=outcome,
-                    error=type(exc).__name__,
-                    chunks=len(chunks),
-                    detail=str(exc)[:200],
-                    elapsed_ms=round(elapsed_ms, 1),
-                )
+                outcome = self._record_failure(attempt, exc, started, chunks=len(chunks))
                 if chunks:
                     # Mid-turn failover would replay tokens at cost; spec §13
                     # forbids it unless allow_mid_turn is True. Surface and
@@ -305,17 +320,17 @@ class Dispatcher:
             sys.stdout.write("\n")
             sys.stdout.flush()
             elapsed_ms = (time.monotonic() - started) * 1000.0
-            pool.record_attempt(cred.label, outcome="success")
+            attempt.pool.record_attempt(attempt.cred.label, outcome="success")
             self._sink.emit(
                 "turn.completed",
-                substrate=active,
-                label=cred.label,
+                substrate=attempt.substrate_name,
+                label=attempt.cred.label,
                 chunks=len(chunks),
                 elapsed_ms=round(elapsed_ms, 1),
             )
             return DispatchResult(
-                substrate=active,
-                label=cred.label,
+                substrate=attempt.substrate_name,
+                label=attempt.cred.label,
                 text="".join(chunks),
                 elapsed_ms=elapsed_ms,
             )
@@ -407,7 +422,151 @@ def _format_pool(pool: CredentialPool) -> str:
     return "\n".join(lines)
 
 
-def _slash(line: str, *, dispatcher: Dispatcher, transcript: Transcript, state: dict[str, Any]) -> bool:
+@dataclass
+class _SlashContext:
+    """Everything a slash-command handler may need; built once per invocation."""
+
+    arg: str
+    dispatcher: Dispatcher
+    transcript: Transcript
+    state: dict[str, Any]
+
+
+def _cmd_help(ctx: _SlashContext) -> bool:
+    print(_HELP, end="")
+    return True
+
+
+def _cmd_reset(ctx: _SlashContext) -> bool:
+    ctx.transcript.reset()
+    print("[reset]")
+    return True
+
+
+def _cmd_system(ctx: _SlashContext) -> bool:
+    if not ctx.arg:
+        print(f"system = {ctx.transcript.system!r}")
+    else:
+        ctx.transcript.system = ctx.arg
+        print(f"[system set: {len(ctx.arg)} chars]")
+    return True
+
+
+def _cmd_health(ctx: _SlashContext) -> bool:
+    for name, spec in ctx.dispatcher.specs.items():
+        # Probe each credential's adapter; first one wins for display.
+        cred = spec.credentials[0] if spec.credentials else None
+        if cred is None:
+            print(f"  {name}: <no credentials>")
+            continue
+        substrate = ctx.dispatcher.adapter(name, cred.label)
+        report = substrate.health()
+        ctx.dispatcher.policy.record_probe(name, healthy=(report.state == "ok"))
+        print(f"  {name}: {report.state} ({report.detail}) {report.latency_ms:.0f}ms")
+    return True
+
+
+def _cmd_pool(ctx: _SlashContext) -> bool:
+    for pool in ctx.dispatcher.pools.values():
+        print(_format_pool(pool))
+    return True
+
+
+def _cmd_sub(ctx: _SlashContext) -> bool:
+    active = ctx.dispatcher.policy.active()
+    order = ctx.dispatcher.policy.order
+    formatted = " > ".join(f"*{n}*" if n == active else n for n in order)
+    print(f"  order: {formatted}")
+    return True
+
+
+def _cmd_fail(ctx: _SlashContext) -> bool:
+    fail_parts = ctx.arg.split()
+    if not fail_parts:
+        print("usage: /fail <label> [auth|transient|hard]")
+        return True
+    label = fail_parts[0]
+    kind = fail_parts[1] if len(fail_parts) > 1 else "auth"
+    outcome_map: dict[str, Outcome] = {
+        "auth": "auth",
+        "transient": "transient_exhausted",
+        "hard": "hard_refusal",
+    }
+    outcome = outcome_map.get(kind)
+    if outcome is None:
+        print(f"unknown kind {kind!r}; use auth|transient|hard")
+        return True
+    # Find the pool containing this label.
+    for pool in ctx.dispatcher.pools.values():
+        try:
+            pool.get(label)
+        except KeyError:
+            continue
+        pool.record_attempt(label, outcome=outcome)
+        print(f"[recorded {outcome} on {pool.substrate}:{label}]")
+        return True
+    print(f"no credential labelled {label!r} in any pool")
+    return True
+
+
+def _cmd_use(ctx: _SlashContext) -> bool:
+    if not ctx.arg or ctx.arg not in ctx.dispatcher.policy.order:
+        print(f"unknown substrate {ctx.arg!r}; known: {ctx.dispatcher.policy.order}")
+        return True
+    # Operator-driven switch-back — bypass next_substrate's chain advance.
+    ctx.dispatcher.set_active(ctx.arg)
+    print(f"[active = {ctx.arg}]")
+    return True
+
+
+def _cmd_stream(ctx: _SlashContext) -> bool:
+    arg = ctx.arg.lower()
+    if arg in ("on", "true", "1"):
+        ctx.state["stream"] = True
+    elif arg in ("off", "false", "0"):
+        ctx.state["stream"] = False
+    else:
+        print(f"stream = {ctx.state['stream']}")
+        return True
+    print(f"[stream = {ctx.state['stream']}]")
+    return True
+
+
+def _cmd_info(ctx: _SlashContext) -> bool:
+    print(f"  active substrate: {ctx.dispatcher.policy.active()}")
+    print(f"  failover order:   {ctx.dispatcher.policy.order}")
+    print(f"  stream:           {ctx.state['stream']}")
+    print(
+        f"  messages:         {len(ctx.transcript.messages)} "
+        f"(system: {bool(ctx.transcript.system)})"
+    )
+    print(f"  events file:      {ctx.state['events_path']}")
+    print("  pools:")
+    for pool in ctx.dispatcher.pools.values():
+        print(_format_pool(pool))
+    return True
+
+
+# Command → handler. ``/quit`` and ``/exit`` are handled inline in ``_slash``
+# because they alone return False (leave the loop); every handler here returns
+# True (keep looping).
+_SLASH_COMMANDS: dict[str, Callable[[_SlashContext], bool]] = {
+    "/help": _cmd_help,
+    "/reset": _cmd_reset,
+    "/system": _cmd_system,
+    "/health": _cmd_health,
+    "/pool": _cmd_pool,
+    "/sub": _cmd_sub,
+    "/fail": _cmd_fail,
+    "/use": _cmd_use,
+    "/stream": _cmd_stream,
+    "/info": _cmd_info,
+}
+
+
+def _slash(
+    line: str, *, dispatcher: Dispatcher, transcript: Transcript, state: dict[str, Any]
+) -> bool:
     """Dispatch one slash command. Returns True to keep looping, False to quit."""
     parts = line.strip().split(maxsplit=1)
     cmd = parts[0].lower()
@@ -416,109 +575,13 @@ def _slash(line: str, *, dispatcher: Dispatcher, transcript: Transcript, state: 
     if cmd in ("/quit", "/exit"):
         return False
 
-    if cmd == "/help":
-        print(_HELP, end="")
+    handler = _SLASH_COMMANDS.get(cmd)
+    if handler is None:
+        print(f"unknown command {cmd!r}; /help for list")
         return True
-
-    if cmd == "/reset":
-        transcript.reset()
-        print("[reset]")
-        return True
-
-    if cmd == "/system":
-        if not arg:
-            print(f"system = {transcript.system!r}")
-        else:
-            transcript.system = arg
-            print(f"[system set: {len(arg)} chars]")
-        return True
-
-    if cmd == "/health":
-        for name, spec in dispatcher.specs.items():
-            # Probe each credential's adapter; first one wins for display.
-            cred = spec.credentials[0] if spec.credentials else None
-            if cred is None:
-                print(f"  {name}: <no credentials>")
-                continue
-            substrate = dispatcher.adapter(name, cred.label)
-            report = substrate.health()
-            dispatcher.policy.record_probe(name, healthy=(report.state == "ok"))
-            print(f"  {name}: {report.state} ({report.detail}) {report.latency_ms:.0f}ms")
-        return True
-
-    if cmd == "/pool":
-        for pool in dispatcher.pools.values():
-            print(_format_pool(pool))
-        return True
-
-    if cmd == "/sub":
-        active = dispatcher.policy.active()
-        order = dispatcher.policy.order
-        formatted = " > ".join(f"*{n}*" if n == active else n for n in order)
-        print(f"  order: {formatted}")
-        return True
-
-    if cmd == "/fail":
-        fail_parts = arg.split()
-        if not fail_parts:
-            print("usage: /fail <label> [auth|transient|hard]")
-            return True
-        label = fail_parts[0]
-        kind = fail_parts[1] if len(fail_parts) > 1 else "auth"
-        outcome_map: dict[str, Outcome] = {
-            "auth": "auth",
-            "transient": "transient_exhausted",
-            "hard": "hard_refusal",
-        }
-        outcome = outcome_map.get(kind)
-        if outcome is None:
-            print(f"unknown kind {kind!r}; use auth|transient|hard")
-            return True
-        # Find the pool containing this label.
-        for pool in dispatcher.pools.values():
-            try:
-                pool.get(label)
-            except KeyError:
-                continue
-            pool.record_attempt(label, outcome=outcome)
-            print(f"[recorded {outcome} on {pool.substrate}:{label}]")
-            return True
-        print(f"no credential labelled {label!r} in any pool")
-        return True
-
-    if cmd == "/use":
-        if not arg or arg not in dispatcher.policy.order:
-            print(f"unknown substrate {arg!r}; known: {dispatcher.policy.order}")
-            return True
-        # Operator-driven switch-back — bypass next_substrate's chain advance.
-        dispatcher.set_active(arg)
-        print(f"[active = {arg}]")
-        return True
-
-    if cmd == "/stream":
-        if arg.lower() in ("on", "true", "1"):
-            state["stream"] = True
-        elif arg.lower() in ("off", "false", "0"):
-            state["stream"] = False
-        else:
-            print(f"stream = {state['stream']}")
-            return True
-        print(f"[stream = {state['stream']}]")
-        return True
-
-    if cmd == "/info":
-        print(f"  active substrate: {dispatcher.policy.active()}")
-        print(f"  failover order:   {dispatcher.policy.order}")
-        print(f"  stream:           {state['stream']}")
-        print(f"  messages:         {len(transcript.messages)} (system: {bool(transcript.system)})")
-        print(f"  events file:      {state['events_path']}")
-        print("  pools:")
-        for pool in dispatcher.pools.values():
-            print(_format_pool(pool))
-        return True
-
-    print(f"unknown command {cmd!r}; /help for list")
-    return True
+    return handler(
+        _SlashContext(arg=arg, dispatcher=dispatcher, transcript=transcript, state=state)
+    )
 
 
 def run_chat(

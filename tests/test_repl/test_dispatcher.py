@@ -17,6 +17,7 @@ from dream.repl._chat import (
     SubstrateSpec,
     Transcript,
     _classify_exception,
+    _slash,
 )
 from dream.repl._events import EventSink
 from dream.repl._fake import FakeFailingSubstrate
@@ -251,3 +252,39 @@ def test_transcript_reset_drops_messages_keeps_system() -> None:
     t.reset()
     assert t.messages == []
     assert t.system == "keep me"
+
+
+# --- _slash dispatch table -----------------------------------------------
+
+
+def _slash_fixtures(tmp_path: Path) -> tuple[Dispatcher, Transcript, dict[str, Any]]:
+    sink = EventSink(tmp_path / "events.jsonl")
+    disp = Dispatcher([_ok_spec("primary")], sink)
+    state: dict[str, Any] = {"stream": True, "events_path": str(tmp_path / "events.jsonl")}
+    return disp, Transcript(), state
+
+
+def test_slash_quit_returns_false(tmp_path: Path) -> None:
+    disp, transcript, state = _slash_fixtures(tmp_path)
+    assert _slash("/quit", dispatcher=disp, transcript=transcript, state=state) is False
+    assert _slash("/exit", dispatcher=disp, transcript=transcript, state=state) is False
+
+
+def test_slash_unknown_command_keeps_looping(tmp_path: Path) -> None:
+    disp, transcript, state = _slash_fixtures(tmp_path)
+    assert _slash("/nope", dispatcher=disp, transcript=transcript, state=state) is True
+
+
+def test_slash_reset_clears_transcript(tmp_path: Path) -> None:
+    disp, transcript, state = _slash_fixtures(tmp_path)
+    transcript.add_user("a")
+    assert _slash("/reset", dispatcher=disp, transcript=transcript, state=state) is True
+    assert transcript.messages == []
+
+
+def test_slash_stream_toggle_mutates_state(tmp_path: Path) -> None:
+    disp, transcript, state = _slash_fixtures(tmp_path)
+    _slash("/stream off", dispatcher=disp, transcript=transcript, state=state)
+    assert state["stream"] is False
+    _slash("/stream on", dispatcher=disp, transcript=transcript, state=state)
+    assert state["stream"] is True
