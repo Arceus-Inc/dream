@@ -37,6 +37,15 @@ from dream.api.openai import OpenAIChatSubstrate
 from dream.api.substrate import Substrate
 from dream.repl._events import EventSink
 from dream.repl._fake import FakeFailingSubstrate
+from dream.tasks import (
+    PLAN_STATES,
+    BackgroundTaskManager,
+    get_cron_job,
+    load_cron_jobs,
+    plan_dir,
+    read_plan,
+    set_job_enabled,
+)
 from dream.tools._context import ToolExecutionContext
 from dream.tools._registry import ToolRegistry
 from dream.tools.builtin import default_registry
@@ -420,6 +429,14 @@ slash commands:
   /tools                         list registered tools
   /tool <name> [json-args]       invoke one tool against the live registry
   /info                          full status dump
+  /task list [status]            list background tasks
+  /task output <id>              dump tail of a task's output_file
+  /task stop <id>                stop a running task
+  /cron list                     list cron jobs in the registry
+  /cron show <name>              show one cron job's full details
+  /cron toggle <name>            flip a cron job's enabled flag
+  /plan list                     list exec-plans grouped by state
+  /plan show <task_id>           show one plan's sections + ledger
 """
 
 
@@ -457,6 +474,9 @@ class ReplState:
     registry: ToolRegistry | None = None
     cwd: Path = field(default_factory=Path.cwd)
     sink: EventSink | None = None
+    task_manager: BackgroundTaskManager | None = None
+    cron_registry_path: Path | None = None
+    plans_root: Path | None = None
 
 
 @dataclass
@@ -678,6 +698,173 @@ def _cmd_tool(ctx: _SlashContext) -> bool:
     return True
 
 
+# --- slice-3: /task /cron /plan -----------------------------------------
+
+
+def _task_usage() -> None:
+    print("usage: /task list [status] | /task output <id> | /task stop <id>")
+
+
+def _cmd_task(ctx: _SlashContext) -> bool:
+    mgr = ctx.state.task_manager
+    if mgr is None:
+        print("task manager not configured for this session")
+        return True
+    parts = ctx.arg.split()
+    if not parts:
+        _task_usage()
+        return True
+    sub, rest = parts[0], parts[1:]
+    if sub == "list":
+        status = rest[0] if rest else None
+        tasks = mgr.list_tasks(status=status)  # type: ignore[arg-type]
+        if not tasks:
+            print("(no tasks)")
+            return True
+        for t in tasks:
+            print(f"  {t.id} [{t.status}] {t.description}")
+        return True
+    if sub == "output":
+        if not rest:
+            _task_usage()
+            return True
+        task_id = rest[0]
+        if mgr.get_task(task_id) is None:
+            print(f"unknown task {task_id!r}")
+            return True
+        print(mgr.read_task_output(task_id))
+        return True
+    if sub == "stop":
+        if not rest:
+            _task_usage()
+            return True
+        task_id = rest[0]
+        if mgr.get_task(task_id) is None:
+            print(f"unknown task {task_id!r}")
+            return True
+        asyncio.run(mgr.stop_task(task_id))
+        print(f"[stopped {task_id}]")
+        return True
+    _task_usage()
+    return True
+
+
+def _cron_usage() -> None:
+    print("usage: /cron list | /cron show <name> | /cron toggle <name>")
+
+
+def _cmd_cron(ctx: _SlashContext) -> bool:
+    registry = ctx.state.cron_registry_path
+    if registry is None:
+        print("cron registry not configured for this session")
+        return True
+    parts = ctx.arg.split()
+    if not parts:
+        _cron_usage()
+        return True
+    sub, rest = parts[0], parts[1:]
+    if sub == "list":
+        jobs = load_cron_jobs(registry)
+        if not jobs:
+            print("(no cron jobs)")
+            return True
+        for j in jobs:
+            state = "enabled" if j.enabled else "disabled"
+            tz = f" tz={j.timezone}" if j.timezone else ""
+            nxt = f" next={j.next_run.isoformat()}" if j.next_run else ""
+            print(f"  {j.name}  {j.schedule!r}{tz}  [{state}]{nxt}")
+        return True
+    if sub == "show":
+        if not rest:
+            _cron_usage()
+            return True
+        name = rest[0]
+        job = get_cron_job(registry, name)
+        if job is None:
+            print(f"unknown cron job {name!r}")
+            return True
+        print(f"  name:           {job.name}")
+        print(f"  schedule:       {job.schedule}")
+        print(f"  timezone:       {job.timezone or '<none>'}")
+        print(f"  enabled:        {job.enabled}")
+        print(f"  tier_required:  {job.tier_required or '<none>'}")
+        print(f"  description:    {job.description or '<none>'}")
+        print(f"  next_run:       {job.next_run.isoformat() if job.next_run else '<unset>'}")
+        print(f"  last_run:       {job.last_run.isoformat() if job.last_run else '<never>'}")
+        print(f"  last_status:    {job.last_status or '<none>'}")
+        return True
+    if sub == "toggle":
+        if not rest:
+            _cron_usage()
+            return True
+        name = rest[0]
+        job = get_cron_job(registry, name)
+        if job is None:
+            print(f"unknown cron job {name!r}")
+            return True
+        new_state = not job.enabled
+        set_job_enabled(registry, name, enabled=new_state)
+        print(f"[{name} now {'enabled' if new_state else 'disabled'}]")
+        return True
+    _cron_usage()
+    return True
+
+
+def _plan_usage() -> None:
+    print("usage: /plan list | /plan show <task_id>")
+
+
+def _cmd_plan(ctx: _SlashContext) -> bool:
+    root = ctx.state.plans_root
+    if root is None:
+        print("plan store not configured for this session")
+        return True
+    parts = ctx.arg.split()
+    if not parts:
+        _plan_usage()
+        return True
+    sub, rest = parts[0], parts[1:]
+    if sub == "list":
+        any_found = False
+        for state in PLAN_STATES:
+            d = plan_dir(root, state=state)
+            if not d.is_dir():
+                continue
+            tasks = sorted(p.stem for p in d.glob("*.json"))
+            if not tasks:
+                continue
+            any_found = True
+            print(f"  [{state}]")
+            for task_id in tasks:
+                print(f"    {task_id}")
+        if not any_found:
+            print("(no plans)")
+        return True
+    if sub == "show":
+        if not rest:
+            _plan_usage()
+            return True
+        task_id = rest[0]
+        for state in PLAN_STATES:
+            d = plan_dir(root, state=state)
+            if not (d / f"{task_id}.json").exists():
+                continue
+            plan = read_plan(d, task_id=task_id)
+            print(f"# {plan.task_id}  [{plan.ledger.state}]")
+            for section in plan.sections:
+                body = plan.sections[section].strip()
+                first = body.splitlines()[0] if body else ""
+                print(f"  {section}: {first}")
+            print("  entries:")
+            for e in plan.ledger.entries:
+                print(f"    - {e.id} [{e.status}] {e.description}")
+            return True
+        print(f"unknown plan {task_id!r}")
+        return True
+    _plan_usage()
+    return True
+
+
 # Command → handler. ``/quit`` and ``/exit`` are handled inline in ``_slash``
 # because they alone return False (leave the loop); every handler here returns
 # True (keep looping).
@@ -694,6 +881,9 @@ _SLASH_COMMANDS: dict[str, Callable[[_SlashContext], bool]] = {
     "/tools": _cmd_tools,
     "/tool": _cmd_tool,
     "/info": _cmd_info,
+    "/task": _cmd_task,
+    "/cron": _cmd_cron,
+    "/plan": _cmd_plan,
 }
 
 
