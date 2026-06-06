@@ -1,0 +1,112 @@
+{
+  "$defs": {
+    "LedgerEntry": {
+      "additionalProperties": false,
+      "description": "One ordered sub-step of work inside a task.",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "steps": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Steps",
+          "type": "array"
+        },
+        "status": {
+          "default": "pending",
+          "enum": [
+            "pending",
+            "in_progress",
+            "done",
+            "blocked"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "passes": {
+          "default": false,
+          "title": "Passes",
+          "type": "boolean"
+        },
+        "notes": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Notes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "description"
+      ],
+      "title": "LedgerEntry",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "The JSON half of an exec-plan (Spec 07 \u00a7Artefact shapes).",
+  "properties": {
+    "task_id": {
+      "title": "Task Id",
+      "type": "string"
+    },
+    "state": {
+      "enum": [
+        "draft",
+        "active",
+        "completed",
+        "archived"
+      ],
+      "title": "State",
+      "type": "string"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "updated_at": {
+      "format": "date-time",
+      "title": "Updated At",
+      "type": "string"
+    },
+    "entries": {
+      "items": {
+        "$ref": "#/$defs/LedgerEntry"
+      },
+      "title": "Entries",
+      "type": "array"
+    },
+    "evaluator_enabled": {
+      "default": false,
+      "title": "Evaluator Enabled",
+      "type": "boolean"
+    },
+    "weights": {
+      "additionalProperties": {
+        "type": "number"
+      },
+      "title": "Weights",
+      "type": "object"
+    }
+  },
+  "required": [
+    "task_id",
+    "state",
+    "created_at",
+    "updated_at",
+    "entries"
+  ],
+  "title": "Ledger",
+  "type": "object"
+}
