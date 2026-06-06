@@ -24,9 +24,13 @@ Acceptance pinned here:
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from dream.engine._cost import UsageSnapshot
+from dream.engine._loop import ToolDispatcher
 from dream.engine._messages import (
     ConversationMessage,
     TextBlock,
@@ -65,7 +69,7 @@ def _ticking_clock(start_seconds: int = 0, step_seconds: int = 1):
 def _basic_config(
     streamer: FakeStreamer,
     *,
-    tools: FakeDispatcher | None = None,
+    tools: ToolDispatcher | None = None,
     turn_timeout_seconds: float | None = None,
     max_consecutive_timeouts: int = 3,
     session_id: str = "s_test",
@@ -243,7 +247,7 @@ async def test_turn_record_carries_tools_called_in_dispatch_order() -> None:
     config = _basic_config(streamer, tools=FakeDispatcher())
     events = await _drain(config, [_user("go")])
     rec = next(e for e in events if isinstance(e, TurnRecord))
-    assert rec.tools_called == ["read", "bash"]
+    assert rec.tools_called == ("read", "bash")
 
 
 async def test_turn_record_usage_reflects_that_turn_only() -> None:
@@ -527,3 +531,65 @@ async def test_exactly_one_turn_record_per_turn_on_timeout() -> None:
     records = [e for e in events if isinstance(e, TurnRecord)]
     assert len(records) == 2
     assert records[1].outcome == "timeout"
+
+
+# --- review lock-ins: config validation + non-timeout abort + atom safety ----
+
+
+def test_session_config_rejects_nonpositive_max_consecutive_timeouts() -> None:
+    """0/negative would satisfy ``consecutive >= max`` from turn 1 and false-abort."""
+    streamer = FakeStreamer(turns=[])
+    with pytest.raises(ValueError, match="max_consecutive_timeouts"):
+        _basic_config(streamer, max_consecutive_timeouts=0)
+
+
+async def test_non_timeout_turn_failure_still_emits_aborted_session_end() -> None:
+    """A non-timeout exception from the turn must not crash the stream; the
+    caller is still owed a terminal SessionEnd (spec 03 #2)."""
+    streamer = FakeStreamer(turns=[])  # first stream_turn raises AssertionError
+    config = _basic_config(streamer)
+    events = await _drain(config, [_user("go")])
+
+    ends = [e for e in events if isinstance(e, SessionEnd)]
+    assert len(ends) == 1
+    assert ends[0].outcome == "aborted"
+    assert ends[0].reason is not None and ends[0].reason.startswith("error:")
+
+
+async def test_timeout_mid_tool_dispatch_does_not_leak_dangling_tool_use() -> None:
+    """CRITICAL: if a turn times out while a tool dispatch is in flight,
+    ``run_query`` has appended the assistant tool_use but not the matching
+    tool_result. The next turn must re-enter the model with that atom
+    re-sanitised away — never a dangling tool_use plus a fresh user message."""
+
+    class _HangingDispatcher:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        async def dispatch(self, name: str, input: dict[str, object]) -> tuple[str, bool]:
+            self.calls.append((name, dict(input)))
+            await asyncio.sleep(10)  # hang so the timeout lands mid-dispatch
+            return "never", False
+
+    tu = ToolUseBlock(id="t1", name="read", input={"path": "/x"})
+    streamer = FakeStreamer(
+        turns=[
+            FakeTurn(tool_uses=[tu]),       # turn 1: emits tool_use, dispatch hangs
+            FakeTurn(text_chunks=["done"]),  # turn 2: must see a clean transcript
+        ]
+    )
+    config = _basic_config(
+        streamer,
+        tools=_HangingDispatcher(),
+        turn_timeout_seconds=0.05,
+        max_consecutive_timeouts=5,
+    )
+    await _drain(config, [_user("first"), _user("second")])
+
+    assert len(streamer.calls) >= 2, "session did not re-enter the model after the timeout"
+    second_turn_msgs = streamer.calls[1]
+    assert not any(
+        msg.role == "assistant"
+        and any(isinstance(block, ToolUseBlock) for block in msg.content)
+        for msg in second_turn_msgs
+    ), "dangling assistant tool_use leaked into the next turn's transcript"

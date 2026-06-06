@@ -42,7 +42,9 @@ class TransitionBus:
         self._listeners.append(listener)
 
     def fire(self, event: TransitionEvent) -> None:
-        for listener in self._listeners:
+        # Snapshot: a listener that registers/unregisters during dispatch must not
+        # change this fire's invocation set (or cause unbounded re-entry).
+        for listener in tuple(self._listeners):
             try:
                 listener(event)
             except Exception as exc:

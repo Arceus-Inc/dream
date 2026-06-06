@@ -96,6 +96,12 @@ class SessionConfig:
     heartbeat: HeartbeatConfig | None = None
     reviewer: ReviewerConfig | None = None
 
+    def __post_init__(self) -> None:
+        # 0/negative would satisfy ``consecutive_timeouts >= max`` immediately
+        # (it starts at 0), aborting after the first turn even on success.
+        if self.max_consecutive_timeouts < 1:
+            raise ValueError("max_consecutive_timeouts must be >= 1")
+
 
 SessionEvent = StreamEvent | TransitionEvent | TurnRecord | SessionEnd
 
@@ -276,6 +282,7 @@ async def run_session(
         turn_usage = UsageSnapshot()
         timed_out = False
         turn_coma = False
+        turn_error: str | None = None
 
         ctx = QueryContext(
             client=config.client, tools=config.tools, max_turns=config.max_turns
@@ -303,6 +310,18 @@ async def run_session(
         except TimeoutError:
             timed_out = True
             await inner.aclose()
+        except Exception as exc:
+            # Any non-timeout failure still owes the caller a terminal SessionEnd
+            # (emitted via the abort path below) rather than crashing the stream.
+            turn_error = f"error: {exc}"
+            with contextlib.suppress(Exception):
+                await inner.aclose()
+
+        if timed_out or turn_coma or turn_error is not None:
+            # The turn was cancelled/failed mid-flight: run_query may have appended
+            # an assistant tool_use with no matching tool_result. Re-sanitize so the
+            # next turn never re-enters the model with a dangling tool-call atom.
+            transcript = sanitize_conversation_messages(transcript)
 
         yield _fire(
             transitions,
@@ -315,7 +334,7 @@ async def run_session(
 
         turn_ended_at = config.now()
         turn_outcome: TurnOutcome
-        if turn_coma:
+        if turn_coma or turn_error is not None:
             turn_outcome = "aborted"
         elif timed_out:
             turn_outcome = "timeout"
@@ -328,7 +347,7 @@ async def run_session(
             turn_number=turn_number,
             started_at=turn_started_at,
             ended_at=turn_ended_at,
-            tools_called=tools_called,
+            tools_called=tuple(tools_called),
             verification_result="skipped",
             outcome=turn_outcome,
             usage=turn_usage,
@@ -341,6 +360,10 @@ async def run_session(
         if turn_outcome == "complete" and config.checkpoint is not None:
             with contextlib.suppress(Exception):
                 config.checkpoint(record)
+
+        if turn_error is not None:
+            abort_reason = turn_error
+            break
 
         if turn_coma:
             abort_reason = "coma"

@@ -38,7 +38,7 @@ def test_turn_record_carries_all_required_fields() -> None:
         turn_number=1,
         started_at=_t(0),
         ended_at=_t(5),
-        tools_called=["read", "bash"],
+        tools_called=("read", "bash"),
         verification_result="pass",
         outcome="complete",
         usage=UsageSnapshot(input_tokens=10, output_tokens=5),
@@ -47,7 +47,7 @@ def test_turn_record_carries_all_required_fields() -> None:
     assert rec.turn_number == 1
     assert rec.started_at == _t(0)
     assert rec.ended_at == _t(5)
-    assert rec.tools_called == ["read", "bash"]
+    assert rec.tools_called == ("read", "bash")
     assert rec.verification_result == "pass"
     assert rec.outcome == "complete"
     assert rec.usage == UsageSnapshot(input_tokens=10, output_tokens=5)
@@ -59,7 +59,7 @@ def test_turn_record_is_frozen() -> None:
         turn_number=1,
         started_at=_t(0),
         ended_at=_t(5),
-        tools_called=[],
+        tools_called=(),
         verification_result="skipped",
         outcome="complete",
         usage=UsageSnapshot(),
@@ -73,7 +73,7 @@ def test_turn_record_notes_defaults_to_empty_string() -> None:
         turn_number=1,
         started_at=_t(0),
         ended_at=_t(5),
-        tools_called=[],
+        tools_called=(),
         verification_result="skipped",
         outcome="complete",
         usage=UsageSnapshot(),
@@ -87,7 +87,7 @@ def test_turn_record_accepts_all_outcomes(outcome: str) -> None:
         turn_number=1,
         started_at=_t(0),
         ended_at=_t(5),
-        tools_called=[],
+        tools_called=(),
         verification_result="skipped",
         outcome=outcome,  # type: ignore[arg-type]
         usage=UsageSnapshot(),
@@ -101,7 +101,7 @@ def test_turn_record_accepts_all_verification_results(verification_result: str) 
         turn_number=1,
         started_at=_t(0),
         ended_at=_t(5),
-        tools_called=[],
+        tools_called=(),
         verification_result=verification_result,  # type: ignore[arg-type]
         outcome="complete",
         usage=UsageSnapshot(),
@@ -178,7 +178,7 @@ def test_turn_record_jsonl_line_is_single_line_json() -> None:
         turn_number=1,
         started_at=_t(0),
         ended_at=_t(5),
-        tools_called=["read"],
+        tools_called=("read",),
         verification_result="pass",
         outcome="complete",
         usage=UsageSnapshot(input_tokens=10, output_tokens=5),
@@ -212,7 +212,7 @@ def test_turn_record_round_trip_through_jsonl() -> None:
         turn_number=3,
         started_at=_t(10),
         ended_at=_t(15),
-        tools_called=["read", "bash"],
+        tools_called=("read", "bash"),
         verification_result="fail",
         outcome="timeout",
         usage=UsageSnapshot(
@@ -243,7 +243,7 @@ def test_from_jsonl_line_returns_right_type_for_each_kind() -> None:
         turn_number=1,
         started_at=_t(0),
         ended_at=_t(5),
-        tools_called=[],
+        tools_called=(),
         verification_result="skipped",
         outcome="complete",
         usage=UsageSnapshot(),
@@ -270,7 +270,7 @@ def test_to_jsonl_line_preserves_datetime_as_iso_string() -> None:
         turn_number=1,
         started_at=_t(0),
         ended_at=_t(5),
-        tools_called=[],
+        tools_called=(),
         verification_result="skipped",
         outcome="complete",
         usage=UsageSnapshot(),

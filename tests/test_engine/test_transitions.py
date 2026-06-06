@@ -130,3 +130,26 @@ def test_bus_failures_accumulate_across_fires() -> None:
     bus.fire(TransitionEvent(kind="session", from_state="starting", to_state="orienting"))
     bus.fire(TransitionEvent(kind="session", from_state="orienting", to_state="working"))
     assert bus.failures == 2
+
+
+def test_listener_registering_during_fire_does_not_affect_current_dispatch() -> None:
+    """A listener that registers another listener mid-fire must not change this
+    fire's invocation set, and must never cause unbounded re-entry — dispatch
+    iterates a snapshot taken at the start of the fire."""
+    bus = TransitionBus()
+    calls: list[str] = []
+
+    def re_registering(ev: TransitionEvent) -> None:
+        calls.append("a")
+        # If fire iterated the live list, this newcomer would also be invoked
+        # this same fire (and could keep appending → non-terminating).
+        bus.register(lambda _ev: calls.append("newcomer"))
+
+    bus.register(re_registering)
+    bus.fire(TransitionEvent(kind="session", from_state="starting", to_state="orienting"))
+    # Only the originally-registered listener ran this fire.
+    assert calls == ["a"]
+
+    # The newcomer added during the first fire participates in the *next* fire.
+    bus.fire(TransitionEvent(kind="session", from_state="orienting", to_state="working"))
+    assert calls == ["a", "a", "newcomer"]

@@ -25,7 +25,7 @@ class TurnRecord:
     turn_number: int
     started_at: datetime
     ended_at: datetime
-    tools_called: list[str]
+    tools_called: tuple[str, ...]  # immutable: a frozen record's audit list must not mutate
     verification_result: VerificationResult
     outcome: TurnOutcome
     usage: UsageSnapshot
@@ -68,13 +68,19 @@ def _decode_datetime(value: str) -> datetime:
 
 def from_jsonl_line(line: str) -> TurnRecord | SessionEnd:
     data = json.loads(line)
+    if not isinstance(data, dict):
+        raise ValueError(f"jsonl record must be a JSON object, got {type(data).__name__}")
     kind = data.pop("kind", None)
     if kind == "turn":
+        tools = data["tools_called"]
+        if not isinstance(tools, list):
+            # A JSON string would otherwise coerce to a char list ("read" -> [...]).
+            raise ValueError(f"tools_called must be a list, got {type(tools).__name__}")
         return TurnRecord(
             turn_number=data["turn_number"],
             started_at=_decode_datetime(data["started_at"]),
             ended_at=_decode_datetime(data["ended_at"]),
-            tools_called=list(data["tools_called"]),
+            tools_called=tuple(tools),
             verification_result=data["verification_result"],
             outcome=data["outcome"],
             usage=UsageSnapshot(**data["usage"]),
