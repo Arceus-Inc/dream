@@ -16,7 +16,7 @@ import asyncio
 import sys
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import TextIO
+from typing import Any, TextIO
 
 from dream.contracts.provider import ProviderCapabilities
 from dream.engine._adapter_openai import (
@@ -78,6 +78,22 @@ def build_default_harness(
     model = env["DREAM_SMOKE_MODEL"]
     base_url = env.get("DREAM_SMOKE_BASE_URL", "https://api.openai.com/v1")
     registry = default_registry()
+    # Render the registry into OpenAI ``tools`` wire shape once. The engine's
+    # TurnStreamer Protocol has no tools parameter (only messages), so we
+    # smuggle the schema through ``httpx_chat_completion_stream``'s
+    # ``extra_params`` — splatted verbatim into every request body. Without
+    # this the model has no idea any tools exist and will refuse to call them.
+    tools_wire: list[dict[str, Any]] = [
+        {
+            "type": "function",
+            "function": {
+                "name": t.name,
+                "description": t.description,
+                "parameters": t.input_schema(),
+            },
+        }
+        for t in registry.list_tools()
+    ]
     compactor = AutoCompactState()
     # 128K is the default we use throughout Spec 02; the watch panel /
     # /util command surface utilisation against this number.
@@ -88,6 +104,9 @@ def build_default_harness(
             stream_chat_completion=httpx_chat_completion_stream(
                 api_key=api_key,
                 base_url=base_url,
+                extra_params={"tools": tools_wire, "tool_choice": "auto"}
+                if tools_wire
+                else None,
             ),
             model=options.model or model,
             system_prompt=options.system_prompt,
@@ -106,6 +125,44 @@ def build_default_harness(
 
 
 # ---------------------------------------------------------------------------
+# Visual styling (TTY-gated, dependency-free ANSI)
+# ---------------------------------------------------------------------------
+#
+# Colour is opt-out: enabled only when ``output`` is a real terminal. Tests
+# inject ``io.StringIO`` (no ``isatty``), so they continue to see plain text
+# and the strict-equality checks in test_session_repl.py keep passing.
+
+_RESET = "\x1b[0m"
+_DIM = "\x1b[2m"
+_BOLD = "\x1b[1m"
+_RED = "\x1b[31m"
+_GREEN = "\x1b[32m"
+_YELLOW = "\x1b[33m"
+_CYAN = "\x1b[36m"
+_MAGENTA = "\x1b[35m"
+
+_TOOL_RESULT_LIMIT = 160
+_TOOL_INPUT_LIMIT = 200
+
+
+def _use_colour(output: TextIO) -> bool:
+    isatty = getattr(output, "isatty", None)
+    return bool(isatty and isatty())
+
+
+def _c(code: str, text: str, *, use: bool) -> str:
+    """Wrap ``text`` in ``code`` + reset, or return as-is when ``use`` is False."""
+    if not use or not code:
+        return text
+    return f"{code}{text}{_RESET}"
+
+
+def _flatten(s: str) -> str:
+    """Collapse newlines/tabs so a tool blob renders on one tidy line."""
+    return s.replace("\r", "").replace("\n", " \u23ce ").replace("\t", "  ")
+
+
+# ---------------------------------------------------------------------------
 # Per-event rendering
 # ---------------------------------------------------------------------------
 
@@ -117,13 +174,28 @@ def handle_event(ev: Event, *, sink: EventSink, output: TextIO) -> None:
     own events and ``context.compaction.completed`` for ``Compacted`` so
     the REPL #3 watch-panel colour table can route it alongside the
     Spec 04 context-log events.
+
+    ``TextDelta`` is a raw passthrough by contract — never decorated — so
+    streaming model prose stays clean and ``out.getvalue() == ev.text``
+    in tests.
     """
+    use = _use_colour(output)
     if isinstance(ev, TextDelta):
         output.write(ev.text)
         output.flush()
         sink.emit("session.text_delta", text=ev.text)
     elif isinstance(ev, ToolUseStart):
-        output.write(f"\n[tool {ev.name}({ev.tool_use_id})] {ev.input}\n")
+        args_repr = _flatten(repr(ev.input))
+        if len(args_repr) > _TOOL_INPUT_LIMIT:
+            args_repr = args_repr[:_TOOL_INPUT_LIMIT] + "\u2026"
+        output.write(
+            "\n"
+            + _c(_CYAN, "  \u25b8 ", use=use)
+            + _c(_BOLD, ev.name, use=use)
+            + "  "
+            + _c(_DIM, args_repr, use=use)
+            + "\n"
+        )
         sink.emit(
             "session.tool_use_start",
             tool_use_id=ev.tool_use_id,
@@ -131,9 +203,21 @@ def handle_event(ev: Event, *, sink: EventSink, output: TextIO) -> None:
             input=ev.input,
         )
     elif isinstance(ev, ToolUseResult):
-        marker = " (error)" if ev.is_error else ""
-        snippet = ev.content if len(ev.content) <= 200 else ev.content[:200] + "..."
-        output.write(f"[tool {ev.name} result{marker}] {snippet}\n")
+        full_len = len(ev.content)
+        body = ev.content if full_len <= _TOOL_RESULT_LIMIT else ev.content[:_TOOL_RESULT_LIMIT]
+        snippet = _flatten(body)
+        if full_len > _TOOL_RESULT_LIMIT:
+            snippet += "\u2026"
+        suffix = (
+            _c(_DIM, f"  (+{full_len - _TOOL_RESULT_LIMIT} chars)", use=use)
+            if full_len > _TOOL_RESULT_LIMIT
+            else ""
+        )
+        if ev.is_error:
+            head = _c(_RED, "  \u2717 " + ev.name + " failed", use=use)
+        else:
+            head = _c(_GREEN, "  \u2713", use=use) + " " + _c(_DIM, ev.name, use=use)
+        output.write(f"{head}  {_c(_DIM, snippet, use=use)}{suffix}\n")
         sink.emit(
             "session.tool_use_result",
             tool_use_id=ev.tool_use_id,
@@ -142,7 +226,12 @@ def handle_event(ev: Event, *, sink: EventSink, output: TextIO) -> None:
             content_chars=len(ev.content),
         )
     elif isinstance(ev, TurnComplete):
-        output.write(f"\n[turn done stop={ev.stop_reason}]\n")
+        usage_str = " ".join(f"{k}={v}" for k, v in ev.usage.items())
+        line = f"\u2500\u2500 turn \u00b7 {ev.stop_reason}"
+        if usage_str:
+            line += f" \u00b7 {usage_str}"
+        line += " \u2500\u2500"
+        output.write("\n" + _c(_DIM, line, use=use) + "\n")
         sink.emit(
             "session.turn_complete",
             stop_reason=ev.stop_reason,
@@ -150,7 +239,13 @@ def handle_event(ev: Event, *, sink: EventSink, output: TextIO) -> None:
         )
     elif isinstance(ev, Compacted):
         output.write(
-            f"[compacted removed={ev.removed_messages} summary_tokens={ev.summary_tokens}]\n"
+            _c(
+                _CYAN,
+                f"\u25c6 compacted \u00b7 removed {ev.removed_messages} msgs "
+                f"\u00b7 {ev.summary_tokens} tokens",
+                use=use,
+            )
+            + "\n"
         )
         sink.emit(
             "context.compaction.completed",
@@ -158,7 +253,9 @@ def handle_event(ev: Event, *, sink: EventSink, output: TextIO) -> None:
             summary_tokens=ev.summary_tokens,
         )
     elif isinstance(ev, Error):
-        output.write(f"[error {ev.code}] {ev.message}\n")
+        output.write(
+            _c(_RED, f"\u2717 error \u00b7 {ev.code} \u00b7 {ev.message}", use=use) + "\n"
+        )
         sink.emit("session.error", code=ev.code, message=ev.message)
 
 
@@ -169,22 +266,38 @@ def handle_event(ev: Event, *, sink: EventSink, output: TextIO) -> None:
 
 def _handle_slash(line: str, *, session: Session, sink: EventSink, output: TextIO) -> bool:
     """Dispatch one slash command. Returns True to keep looping, False to quit."""
+    use = _use_colour(output)
     parts = line.strip().split(maxsplit=1)
     cmd = parts[0].lower()
     if cmd in ("/quit", "/exit"):
         return False
     if cmd in ("/help", "/?"):
-        output.write(
-            "commands: /help /quit /info /reset /util /compact\n"
-            "anything else is sent to the model.\n"
-        )
+        commands = [
+            ("/help", "this list"),
+            ("/info", "session id, model, running cost"),
+            ("/util", "context utilisation % + cost"),
+            ("/compact", "force a Spec 04 microcompact now"),
+            ("/reset", "clear transcript (keep engine + cost)"),
+            ("/quit", "leave the REPL"),
+        ]
+        output.write(_c(_CYAN, "commands", use=use) + "\n")
+        for name, desc in commands:
+            output.write(
+                "  "
+                + _c(_BOLD, f"{name:<10}", use=use)
+                + _c(_DIM, desc, use=use)
+                + "\n"
+            )
+        output.write(_c(_DIM, "anything else is sent to the model.", use=use) + "\n")
         return True
     if cmd == "/info":
         output.write(
-            f"session id={session.id}\n"
-            f"model={session.options.model or '<default>'}\n"
-            f"cost in={session.cost.input_tokens} "
-            f"out={session.cost.output_tokens}\n"
+            _c(_CYAN, "session", use=use) + "\n"
+            + "  " + _c(_DIM, "id    ", use=use) + session.id + "\n"
+            + "  " + _c(_DIM, "model ", use=use)
+            + (session.options.model or "<default>") + "\n"
+            + "  " + _c(_DIM, "cost  ", use=use)
+            + f"in={session.cost.input_tokens} out={session.cost.output_tokens}\n"
         )
         sink.emit("session.info", session_id=session.id)
         return True
@@ -195,9 +308,25 @@ def _handle_slash(line: str, *, session: Session, sink: EventSink, output: TextI
         capabilities = getattr(engine, "compaction_capabilities", None) if engine else None
         pct = utilisation(session._transcript, capabilities) * 100.0
         cost = session.cost
+        # Pressure-aware colouring: green < 50%, yellow 50-80%, red > 80%.
+        if pct >= 80:
+            tone = _RED
+        elif pct >= 50:
+            tone = _YELLOW
+        else:
+            tone = _GREEN
+        bar_width = 20
+        filled = max(0, min(bar_width, round(pct / 100.0 * bar_width)))
+        bar = "\u2588" * filled + "\u2591" * (bar_width - filled)
         output.write(
-            f"util {pct:.1f}% messages={len(session._transcript)} "
-            f"cost in={cost.input_tokens} out={cost.output_tokens}\n"
+            _c(tone, f"util {pct:5.1f}%", use=use)
+            + "  "
+            + _c(tone, bar, use=use)
+            + "  "
+            + _c(_DIM, f"messages={len(session._transcript)}", use=use)
+            + "  "
+            + _c(_DIM, f"cost in={cost.input_tokens} out={cost.output_tokens}", use=use)
+            + "\n"
         )
         sink.emit(
             "session.util",
@@ -212,7 +341,10 @@ def _handle_slash(line: str, *, session: Session, sink: EventSink, output: TextI
         engine = session._engine
         compactor = getattr(engine, "compactor", None) if engine else None
         if engine is None or compactor is None:
-            output.write("[/compact] no compactor wired on this engine\n")
+            output.write(
+                _c(_YELLOW, "\u25cb compact \u00b7 no compactor wired on this engine", use=use)
+                + "\n"
+            )
             sink.emit("session.compact_skipped", reason="no_compactor")
             return True
         capabilities = engine.compaction_capabilities
@@ -231,13 +363,20 @@ def _handle_slash(line: str, *, session: Session, sink: EventSink, output: TextI
         session._transcript[:] = new_transcript
         removed = max(0, pre_count - len(new_transcript))
         if result is None:
-            output.write("[/compact] nothing to compact\n")
+            output.write(
+                _c(_DIM, "\u25cb compact \u00b7 nothing to compact", use=use) + "\n"
+            )
             sink.emit("session.compact_skipped", reason="noop")
             return True
         post_util = utilisation(new_transcript, capabilities)
         output.write(
-            f"[/compact] tier={result.tier} removed_messages={removed} "
-            f"util_after={post_util * 100.0:.1f}%\n"
+            _c(
+                _CYAN,
+                f"\u25c6 compact \u00b7 tier={result.tier} "
+                f"removed={removed} util_after={post_util * 100.0:.1f}%",
+                use=use,
+            )
+            + "\n"
         )
         sink.emit(
             "context.compaction.completed",
@@ -252,10 +391,14 @@ def _handle_slash(line: str, *, session: Session, sink: EventSink, output: TextI
         # send starts from a clean slate while keeping the engine and
         # cost counters intact.
         session._transcript.clear()
-        output.write("[transcript cleared]\n")
+        output.write(_c(_CYAN, "\u21bb transcript cleared", use=use) + "\n")
         sink.emit("session.reset", session_id=session.id)
         return True
-    output.write(f"unknown command {cmd!r}; /help for list\n")
+    output.write(
+        _c(_YELLOW, f"unknown command {cmd!r}", use=use)
+        + _c(_DIM, " \u00b7 /help for list", use=use)
+        + "\n"
+    )
     return True
 
 
@@ -280,13 +423,24 @@ async def session_loop(
     so a long-running send doesn't block stdin.
     """
     out = output if output is not None else sys.stdout
-    out.write(f"session {session.id[:8]} model={session.options.model or '<default>'}\n")
-    out.write("type /help for commands, /quit to exit\n")
+    use = _use_colour(out)
+    model = session.options.model or "<default>"
+    sid = session.id[:8]
+    # Two-line banner: a soft title rule + a hint line. Plain text in non-TTY.
+    out.write(
+        _c(_MAGENTA, "\u250c\u2500 dream", use=use)
+        + _c(_DIM, f" \u00b7 session {sid} \u00b7 model={model}", use=use)
+        + "\n"
+        + _c(_MAGENTA, "\u2514\u2500 ", use=use)
+        + _c(_DIM, "/help for commands \u00b7 /quit to exit", use=use)
+        + "\n"
+    )
     out.flush()
 
     while True:
         try:
-            line = await asyncio.to_thread(input_func, "> ")
+            prompt = _c(_CYAN, "\u276f ", use=use) if use else "> "
+            line = await asyncio.to_thread(input_func, prompt)
         except (EOFError, KeyboardInterrupt):
             out.write("\n")
             break
@@ -300,7 +454,10 @@ async def session_loop(
             async for ev in session.send(line):
                 handle_event(ev, sink=sink, output=out)
         except Exception as exc:
-            out.write(f"[turn failed] {type(exc).__name__}: {exc}\n")
+            out.write(
+                _c(_RED, f"\u2717 turn failed \u00b7 {type(exc).__name__}: {exc}", use=use)
+                + "\n"
+            )
             sink.emit(
                 "session.turn_failed",
                 exc_type=type(exc).__name__,
