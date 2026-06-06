@@ -168,6 +168,12 @@ def read_context_log(path: Path) -> list[ContextEvent]:
     return events
 
 
+# Spec 04 acceptance #14: the agent itself can read its own context log so it
+# can prefer compactable content; same function, named per the spec for the
+# agent-facing tool surface.
+read_my_context_log = read_context_log
+
+
 __all__ = [
     "CompactTier",
     "CompactTrigger",
@@ -181,5 +187,6 @@ __all__ = [
     "ContextToolOutputOffloaded",
     "from_jsonl_line",
     "read_context_log",
+    "read_my_context_log",
     "to_jsonl_line",
 ]
