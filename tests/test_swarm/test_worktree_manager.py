@@ -172,3 +172,50 @@ def test_two_concurrent_worktrees_isolated(mgr: WorktreeManager) -> None:
     assert a.path.is_dir() and b.path.is_dir()
     (a.path / "scratch.txt").write_text("a-only")
     assert not (b.path / "scratch.txt").exists()  # no shared working tree
+
+
+# --- create_worktree serialises per slug under an exclusive lock -------------
+
+
+def test_create_worktree_holds_slug_lock_during_meta_write(
+    mgr: WorktreeManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Concurrent creates of the same slug must serialise: the whole
+    check-then-add-then-meta sequence runs under a per-slug exclusive lock."""
+    import threading
+
+    from dream.utils.file_lock import exclusive_file_lock
+
+    mgr.base_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = mgr._lock_path("T1")
+    original_write_meta = mgr._write_meta
+
+    contended = threading.Event()
+    rival_blocked = threading.Event()
+    rival_acquired = threading.Event()
+
+    def rival() -> None:
+        contended.wait(timeout=5.0)
+        rival_blocked.set()
+        with exclusive_file_lock(lock_path):
+            rival_acquired.set()
+
+    rival_thread = threading.Thread(target=rival, daemon=True)
+    rival_thread.start()
+
+    def spy_write_meta(flat: str, *, agent_id: str | None, created_at: float) -> None:
+        contended.set()
+        assert rival_blocked.wait(timeout=5.0), "rival never reached the lock barrier"
+        # Bounded wait: GREEN keeps the rival blocked in flock (never sets the
+        # event); without the lock the uncontended rival would acquire here.
+        assert not rival_acquired.wait(timeout=0.5), "slug lock was not held during create"
+        original_write_meta(flat, agent_id=agent_id, created_at=created_at)
+
+    monkeypatch.setattr(mgr, "_write_meta", spy_write_meta)
+
+    mgr.create_worktree("T1")
+
+    assert rival_acquired.wait(timeout=5.0), "slug lock was not released after create"
+    rival_thread.join(timeout=5.0)
+    assert not rival_thread.is_alive()

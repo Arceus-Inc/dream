@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dream.config.paths import DreamPaths
+from dream.utils.file_lock import exclusive_file_lock
 from dream.utils.fs import atomic_write_text
 from dream.utils.git import run_git
 
@@ -177,56 +178,64 @@ class WorktreeManager:
         self.base_dir.mkdir(parents=True, exist_ok=True)
         path = self.base_dir / wt.flat
 
-        # Fast resume: an existing valid worktree is returned as-is.
-        if path.exists() and run_git(["rev-parse", "--git-dir"], cwd=path)[0] == 0:
-            agent, created = self._read_meta(wt.flat)
+        # Serialise the whole check-then-add-then-meta sequence per slug. Without
+        # the lock, two concurrent creators both fail the fast-resume check and
+        # both run ``git worktree add -B``, force-resetting a branch that may be
+        # live in the other's worktree; their ``.meta.json`` writes also race.
+        with exclusive_file_lock(self._lock_path(wt.flat)):
+            # Fast resume: an existing valid worktree is returned as-is.
+            if path.exists() and run_git(["rev-parse", "--git-dir"], cwd=path)[0] == 0:
+                agent, created = self._read_meta(wt.flat)
+                return WorktreeInfo(
+                    slug=wt.value,
+                    path=path,
+                    branch=wt.branch,
+                    original_path=repo,
+                    created_at=created if created is not None else path.stat().st_mtime,
+                    agent_id=agent,
+                )
+
+            # -B resets an orphan branch left by a prior remove rather than colliding.
+            code, _, stderr = run_git(
+                ["worktree", "add", "-B", wt.branch, str(path), start_point], cwd=repo
+            )
+            if code != 0:
+                raise RuntimeError(f"git worktree add failed: {stderr}")
+
+            _symlink_common_dirs(repo, path)
+            created_at = time.time()
+            self._write_meta(wt.flat, agent_id=agent_id, created_at=created_at)
             return WorktreeInfo(
                 slug=wt.value,
                 path=path,
                 branch=wt.branch,
                 original_path=repo,
-                created_at=created if created is not None else path.stat().st_mtime,
-                agent_id=agent,
+                created_at=created_at,
+                agent_id=agent_id,
             )
-
-        # -B resets an orphan branch left by a prior remove rather than colliding.
-        code, _, stderr = run_git(
-            ["worktree", "add", "-B", wt.branch, str(path), start_point], cwd=repo
-        )
-        if code != 0:
-            raise RuntimeError(f"git worktree add failed: {stderr}")
-
-        _symlink_common_dirs(repo, path)
-        created_at = time.time()
-        self._write_meta(wt.flat, agent_id=agent_id, created_at=created_at)
-        return WorktreeInfo(
-            slug=wt.value,
-            path=path,
-            branch=wt.branch,
-            original_path=repo,
-            created_at=created_at,
-            agent_id=agent_id,
-        )
 
     def remove_worktree(self, slug: str | WorktreeSlug) -> bool:
         """Remove a worktree (symlinks first). Returns False if it was absent."""
         wt = slug if isinstance(slug, WorktreeSlug) else WorktreeSlug(slug)
         path = self.base_dir / wt.flat
-        if not path.exists():
-            return False
-        _remove_symlinks(path)
-        code, _, _ = run_git(
-            ["worktree", "remove", "--force", str(path)], cwd=self._paths.repo
-        )
-        if path.exists():
-            shutil.rmtree(path, ignore_errors=True)
-        if code != 0:
-            # ``git worktree remove`` failed (e.g. the dir was already gone, or
-            # locked): its registration under ``.git/worktrees/`` was not cleared.
-            # Prune it so ``git worktree list`` doesn't accumulate phantom entries.
-            run_git(["worktree", "prune"], cwd=self._paths.repo)
-        self._meta_path(wt.flat).unlink(missing_ok=True)
-        return not path.exists()
+        # Same per-slug lock as ``create_worktree`` so a remove can't interleave
+        # with a concurrent create of the same slug (half-created teardown).
+        with exclusive_file_lock(self._lock_path(wt.flat)):
+            if not path.exists():
+                return False
+            _remove_symlinks(path)
+            code, _, _ = run_git(
+                ["worktree", "remove", "--force", str(path)], cwd=self._paths.repo
+            )
+            if path.exists():
+                shutil.rmtree(path, ignore_errors=True)
+            if code != 0:
+                # ``git worktree remove`` failed (e.g. the dir was already gone, or
+                # locked): its registration under ``.git/worktrees/`` was not cleared.
+                # Prune it so ``git worktree list`` doesn't accumulate phantom entries.
+                run_git(["worktree", "prune"], cwd=self._paths.repo)
+            self._meta_path(wt.flat).unlink(missing_ok=True)
+            return not path.exists()
 
     def list_worktrees(self) -> list[WorktreeInfo]:
         """Return info for every valid worktree under ``base_dir``."""
@@ -271,6 +280,11 @@ class WorktreeManager:
         return removed
 
     # --- agent-id / created-at persistence (sibling meta file) ---
+
+    def _lock_path(self, flat: str) -> Path:
+        """Per-slug lock file — a sibling of the worktree dir, so acquiring it
+        never recreates a worktree that ``remove_worktree`` just deleted."""
+        return self.base_dir / f"{flat}.lock"
 
     def _meta_path(self, flat: str) -> Path:
         return self.base_dir / f"{flat}.meta.json"
