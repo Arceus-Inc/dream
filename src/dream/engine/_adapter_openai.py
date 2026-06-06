@@ -273,6 +273,10 @@ def _merge_tool_call(
 
 
 def _usage_from_payload(payload: dict[str, Any]) -> UsageSnapshot:
+    # ``cache_write_tokens`` is intentionally left at 0: OpenAI's wire format has
+    # no cache-*write* counter (prompt caching is automatic and reports only
+    # ``cached_tokens`` = cache *reads*). It's a UsageSnapshot field for parity
+    # with cache-write-aware providers, not an OpenAI undercount.
     return UsageSnapshot(
         input_tokens=int(payload.get("prompt_tokens", 0) or 0),
         output_tokens=int(payload.get("completion_tokens", 0) or 0),
