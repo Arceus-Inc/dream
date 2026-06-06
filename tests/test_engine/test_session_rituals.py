@@ -198,9 +198,9 @@ async def test_blocking_validator_finding_aborts_before_first_turn() -> None:
             repo_summary="r",
             progress_tail="p",
             active_exec_plan="x",
-            validator_findings=[
-                ValidatorFinding("blocking", "V-100", "config invalid")
-            ],
+            validator_findings=(
+                ValidatorFinding("blocking", "V-100", "config invalid"),
+            ),
         )
 
     config = _config(streamer, orientation=OrientationConfig(gather=gather))
@@ -358,7 +358,7 @@ async def test_reviewer_request_changes_injects_items_and_drives_another_turn() 
     reviewer = _ScriptedReviewer(
         [
             ReviewerOutcome(
-                verdict="request_changes", items=["please tighten test names"]
+                verdict="request_changes", items=("please tighten test names",)
             ),
             ReviewerOutcome(verdict="accept"),
         ]
@@ -392,9 +392,9 @@ async def test_reviewer_max_rounds_request_changes_force_closes_with_warnings() 
     )
     reviewer = _ScriptedReviewer(
         [
-            ReviewerOutcome(verdict="request_changes", items=["A"]),
-            ReviewerOutcome(verdict="request_changes", items=["B"]),
-            ReviewerOutcome(verdict="request_changes", items=["C"]),
+            ReviewerOutcome(verdict="request_changes", items=("A",)),
+            ReviewerOutcome(verdict="request_changes", items=("B",)),
+            ReviewerOutcome(verdict="request_changes", items=("C",)),
         ]
     )
     config = _config(
@@ -464,7 +464,7 @@ async def test_orientation_brief_visible_in_reviewer_driven_followup_turn() -> N
 
     reviewer = _ScriptedReviewer(
         [
-            ReviewerOutcome(verdict="request_changes", items=["nit"]),
+            ReviewerOutcome(verdict="request_changes", items=("nit",)),
             ReviewerOutcome(verdict="accept"),
         ]
     )

@@ -38,9 +38,9 @@ def _brief(**overrides: object) -> OrientationBrief:
         repo_summary="dream repo, two crates",
         progress_tail="last entry: spec 03 stage 3a merged",
         active_exec_plan="spec 03 stage 3b",
-        validator_findings=[],
-        core_beliefs_digest=["tool-call atom is sacred"],
-        house_rules=["no logging in src"],
+        validator_findings=(),
+        core_beliefs_digest=("tool-call atom is sacred",),
+        house_rules=("no logging in src",),
     )
     defaults.update(overrides)
     return OrientationBrief(**defaults)  # type: ignore[arg-type]
@@ -83,9 +83,9 @@ def test_brief_defaults_are_empty_and_llm_summary_starts_none() -> None:
     b = OrientationBrief(
         repo_summary="", progress_tail="", active_exec_plan=""
     )
-    assert b.validator_findings == []
-    assert b.core_beliefs_digest == []
-    assert b.house_rules == []
+    assert b.validator_findings == ()
+    assert b.core_beliefs_digest == ()
+    assert b.house_rules == ()
     assert b.llm_summary is None
 
 
@@ -94,15 +94,15 @@ def test_brief_has_blocking_findings_true_only_when_severity_blocking() -> None:
     assert b_clean.has_blocking_findings is False
 
     b_warn = _brief(
-        validator_findings=[ValidatorFinding("warning", "V-1", "msg")]
+        validator_findings=(ValidatorFinding("warning", "V-1", "msg"),)
     )
     assert b_warn.has_blocking_findings is False
 
     b_block = _brief(
-        validator_findings=[
+        validator_findings=(
             ValidatorFinding("warning", "V-1", "msg"),
             ValidatorFinding("blocking", "V-2", "boom"),
-        ]
+        )
     )
     assert b_block.has_blocking_findings is True
 
@@ -124,12 +124,12 @@ def test_to_user_message_text_carries_all_sections_findings_beliefs_rules() -> N
         repo_summary="dream",
         progress_tail="stage 3a merged",
         active_exec_plan="stage 3b",
-        validator_findings=[
+        validator_findings=(
             ValidatorFinding("warning", "V-001", "stale readme", "README.md"),
             ValidatorFinding("info", "V-002", "consider tagging"),
-        ],
-        core_beliefs_digest=["atom is sacred"],
-        house_rules=["no logging in src"],
+        ),
+        core_beliefs_digest=("atom is sacred",),
+        house_rules=("no logging in src",),
     )
     text = b.to_user_message().text
     # All sections present
@@ -229,9 +229,9 @@ async def test_run_orientation_skips_summariser_when_brief_has_blocking_findings
 
     async def gather() -> OrientationBrief:
         return _brief(
-            validator_findings=[
-                ValidatorFinding("blocking", "V-9", "stop")
-            ]
+            validator_findings=(
+                ValidatorFinding("blocking", "V-9", "stop"),
+            )
         )
 
     async def summarise(_: OrientationBrief) -> str:

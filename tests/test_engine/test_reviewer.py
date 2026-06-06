@@ -25,16 +25,16 @@ from dream.engine._reviewer import (
 def test_outcome_accept_carries_no_items_by_default() -> None:
     out = ReviewerOutcome(verdict="accept")
     assert out.verdict == "accept"
-    assert out.items == []
+    assert out.items == ()
 
 
 def test_outcome_request_changes_carries_items() -> None:
     out = ReviewerOutcome(
         verdict="request_changes",
-        items=["fix the typo", "address edge case"],
+        items=("fix the typo", "address edge case"),
     )
     assert out.verdict == "request_changes"
-    assert out.items == ["fix the typo", "address edge case"]
+    assert out.items == ("fix the typo", "address edge case")
 
 
 def test_outcome_is_frozen() -> None:
@@ -46,7 +46,7 @@ def test_outcome_is_frozen() -> None:
 def test_outcome_to_user_message_renders_items_as_user_role_textblock() -> None:
     """The orchestrator will inject this on every request_changes round."""
     out = ReviewerOutcome(
-        verdict="request_changes", items=["fix A", "fix B"]
+        verdict="request_changes", items=("fix A", "fix B")
     )
     msg = out.to_user_message()
     assert isinstance(msg, ConversationMessage)

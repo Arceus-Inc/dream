@@ -14,7 +14,7 @@ orchestrator programs against.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal, Protocol
 
 from dream.engine._messages import ConversationMessage, TextBlock
@@ -25,7 +25,9 @@ ReviewerVerdict = Literal["accept", "request_changes"]
 @dataclass(frozen=True)
 class ReviewerOutcome:
     verdict: ReviewerVerdict
-    items: list[str] = field(default_factory=list)
+    # Tuple, not list: a frozen verdict must not be mutable after the reviewer
+    # returns it (``outcome.items.append(...)`` on a frozen record is a footgun).
+    items: tuple[str, ...] = ()
 
     def to_user_message(self) -> ConversationMessage:
         if self.items:

@@ -16,8 +16,8 @@ to enter ``working`` if any finding has severity ``"blocking"`` (#15).
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field, replace
+from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from dream.engine._messages import ConversationMessage, TextBlock
@@ -38,7 +38,7 @@ def _format_finding(f: ValidatorFinding) -> str:
     return f"- [{f.severity}] {f.code}: {f.message}{suffix}"
 
 
-def _format_bullets(items: list[str]) -> str:
+def _format_bullets(items: Sequence[str]) -> str:
     return "\n".join(f"- {it}" for it in items) if items else "(none)"
 
 
@@ -47,9 +47,11 @@ class OrientationBrief:
     repo_summary: str
     progress_tail: str
     active_exec_plan: str
-    validator_findings: list[ValidatorFinding] = field(default_factory=list)
-    core_beliefs_digest: list[str] = field(default_factory=list)
-    house_rules: list[str] = field(default_factory=list)
+    # Tuples, not lists: a frozen brief must be fully immutable — a list field
+    # could still be mutated in place (``brief.house_rules.append(...)``).
+    validator_findings: tuple[ValidatorFinding, ...] = ()
+    core_beliefs_digest: tuple[str, ...] = ()
+    house_rules: tuple[str, ...] = ()
     llm_summary: str | None = None
 
     @property
