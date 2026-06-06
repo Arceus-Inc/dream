@@ -182,3 +182,36 @@ def test_turn_record_is_terminal_within_a_turn() -> None:
     """A turn ends at ``record``; the *session* decides whether to start a new turn."""
     for dst in TurnState:
         assert is_valid_turn_transition(TurnState.RECORD, dst) is False
+
+
+# --- the orchestrator's transition builders consult the table (wired, not dead) ---
+
+
+def test_session_transition_helper_builds_event_for_legal_edge() -> None:
+    from dream.engine._session import _session_transition
+
+    ev = _session_transition(SessionState.STARTING, SessionState.ORIENTING)
+    assert ev.kind == "session"
+    assert ev.name == "session.starting.to.orienting"
+
+
+def test_session_transition_helper_rejects_illegal_edge() -> None:
+    from dream.engine._session import _session_transition
+
+    with pytest.raises(ValueError, match="illegal session transition"):
+        _session_transition(SessionState.STARTING, SessionState.DONE)
+
+
+def test_turn_transition_helper_builds_event_for_legal_edge() -> None:
+    from dream.engine._session import _turn_transition
+
+    ev = _turn_transition(TurnState.READ, TurnState.PLAN)
+    assert ev.kind == "turn"
+    assert ev.name == "turn.read.to.plan"
+
+
+def test_turn_transition_helper_rejects_illegal_edge() -> None:
+    from dream.engine._session import _turn_transition
+
+    with pytest.raises(ValueError, match="illegal turn transition"):
+        _turn_transition(TurnState.READ, TurnState.RECORD)

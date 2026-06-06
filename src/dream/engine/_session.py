@@ -42,6 +42,12 @@ from dream.engine._events import (
     StreamEvent,
     ToolExecutionStarted,
 )
+from dream.engine._fsm import (
+    SessionState,
+    TurnState,
+    is_valid_session_transition,
+    is_valid_turn_transition,
+)
 from dream.engine._heartbeat import (
     ComaDetected,
     HeartbeatConfig,
@@ -112,6 +118,27 @@ def _fire(
     if bus is not None:
         bus.fire(event)
     return event
+
+
+def _session_transition(src: SessionState, dst: SessionState) -> TransitionEvent:
+    """Build a session ``TransitionEvent``, rejecting any edge not in the FSM table.
+
+    Consulting :func:`is_valid_session_transition` here is what makes an illegal
+    walk impossible *by construction* — a typo or a future code path that tries
+    an unlisted edge raises instead of silently emitting a wrong event. The
+    states are passed as :class:`SessionState` members, not bare strings, so the
+    edge is checked against the enum, never a stringly-typed literal.
+    """
+    if not is_valid_session_transition(src, dst):
+        raise ValueError(f"illegal session transition: {src.value} -> {dst.value}")
+    return TransitionEvent(kind="session", from_state=src, to_state=dst)
+
+
+def _turn_transition(src: TurnState, dst: TurnState) -> TransitionEvent:
+    """Build a turn ``TransitionEvent``, rejecting any edge not in the FSM table."""
+    if not is_valid_turn_transition(src, dst):
+        raise ValueError(f"illegal turn transition: {src.value} -> {dst.value}")
+    return TransitionEvent(kind="turn", from_state=src, to_state=dst)
 
 
 async def _drive_turn_with_heartbeat(
@@ -193,7 +220,7 @@ async def run_session(
     # between this transition and the orienting -> working one below).
     yield _fire(
         transitions,
-        TransitionEvent(kind="session", from_state="starting", to_state="orienting"),
+        _session_transition(SessionState.STARTING, SessionState.ORIENTING),
     )
 
     # Seed the transcript. ``sanitize`` drops any dangling trailing tool_use
@@ -210,9 +237,7 @@ async def run_session(
         if brief.has_blocking_findings:
             yield _fire(
                 transitions,
-                TransitionEvent(
-                    kind="session", from_state="orienting", to_state="aborted"
-                ),
+                _session_transition(SessionState.ORIENTING, SessionState.ABORTED),
             )
             yield SessionEnd(
                 session_id=config.session_id,
@@ -228,7 +253,7 @@ async def run_session(
 
     yield _fire(
         transitions,
-        TransitionEvent(kind="session", from_state="orienting", to_state="working"),
+        _session_transition(SessionState.ORIENTING, SessionState.WORKING),
     )
 
     total_usage = UsageSnapshot()
@@ -268,19 +293,17 @@ async def run_session(
         if turn_number > 1:
             yield _fire(
                 transitions,
-                TransitionEvent(
-                    kind="session", from_state="working", to_state="working"
-                ),
+                _session_transition(SessionState.WORKING, SessionState.WORKING),
             )
 
         # Turn FSM: read -> plan -> act -> verify -> record.
         yield _fire(
             transitions,
-            TransitionEvent(kind="turn", from_state="read", to_state="plan"),
+            _turn_transition(TurnState.READ, TurnState.PLAN),
         )
         yield _fire(
             transitions,
-            TransitionEvent(kind="turn", from_state="plan", to_state="act"),
+            _turn_transition(TurnState.PLAN, TurnState.ACT),
         )
 
         turn_started_at = config.now()
@@ -331,11 +354,11 @@ async def run_session(
 
         yield _fire(
             transitions,
-            TransitionEvent(kind="turn", from_state="act", to_state="verify"),
+            _turn_transition(TurnState.ACT, TurnState.VERIFY),
         )
         yield _fire(
             transitions,
-            TransitionEvent(kind="turn", from_state="verify", to_state="record"),
+            _turn_transition(TurnState.VERIFY, TurnState.RECORD),
         )
 
         turn_ended_at = config.now()
@@ -382,9 +405,7 @@ async def run_session(
     if abort_reason is not None:
         yield _fire(
             transitions,
-            TransitionEvent(
-                kind="session", from_state="working", to_state="aborted"
-            ),
+            _session_transition(SessionState.WORKING, SessionState.ABORTED),
         )
         yield SessionEnd(
             session_id=config.session_id,
@@ -399,11 +420,11 @@ async def run_session(
 
     yield _fire(
         transitions,
-        TransitionEvent(kind="session", from_state="working", to_state="sealing"),
+        _session_transition(SessionState.WORKING, SessionState.SEALING),
     )
     yield _fire(
         transitions,
-        TransitionEvent(kind="session", from_state="sealing", to_state="done"),
+        _session_transition(SessionState.SEALING, SessionState.DONE),
     )
 
     session_outcome: SessionOutcome
