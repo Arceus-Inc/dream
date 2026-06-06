@@ -123,7 +123,24 @@ async def run_query(
             try:
                 content, is_error = await ctx.tools.dispatch(tu.name, copy.deepcopy(tu.input))
             except Exception as exc:  # never crash the loop on a tool failure
-                content, is_error = f"tool error: {exc}", True
+                # A *raised* exception is an infrastructure failure (sandbox,
+                # permissions, MCP transport) — not a tool-logic result a tool
+                # would return via ``is_error=True``. Keep the real detail on the
+                # observability side-channel (the event), but never leak engine
+                # internals into the transcript the model re-reads: send it a
+                # generic, non-revealing failure marker instead.
+                detail = f"{type(exc).__name__}: {exc}"
+                yield ToolExecutionCompleted(
+                    tool=tu.name, id=tu.id, result=detail, is_error=True
+                )
+                results.append(
+                    ToolResultBlock(
+                        tool_use_id=tu.id,
+                        content=f"tool {tu.name!r} failed to execute",
+                        is_error=True,
+                    )
+                )
+                continue
             yield ToolExecutionCompleted(
                 tool=tu.name, id=tu.id, result=content, is_error=is_error
             )

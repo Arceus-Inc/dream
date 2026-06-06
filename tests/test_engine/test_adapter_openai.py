@@ -31,6 +31,7 @@ from dream.engine._cost import UsageSnapshot
 from dream.engine._events import (
     AssistantTextDelta,
     AssistantTurnComplete,
+    ErrorEvent,
     StreamEvent,
 )
 from dream.engine._messages import (
@@ -471,3 +472,31 @@ async def test_noop_dispatcher_raises_when_called() -> None:
 # --- keep linters happy for fixtures referenced only via dynamic dispatch ---
 
 _ = (ContentBlock,)
+
+
+async def test_stream_tool_call_with_unparseable_arguments_is_dropped_with_error_event() -> None:
+    """Malformed streamed JSON args must NOT become an empty-dict dispatch.
+
+    Fabricating ``{}`` would invoke a tool the model never parameterised; the
+    adapter instead surfaces a recoverable ``ErrorEvent`` and omits the call.
+    """
+    adapter = OpenAIChatStreamer(
+        stream_chat_completion=_scripted(
+            [
+                _tool_call_chunk(index=0, id="c1", name="danger", arguments='{"path": "/et'),
+                {"choices": [{"delta": {}, "finish_reason": "tool_calls", "index": 0}]},
+                _usage_chunk(2, 1),
+            ]
+        ),
+        model="gpt-test",
+    )
+    events = await _drain(adapter)
+
+    errors = [e for e in events if isinstance(e, ErrorEvent)]
+    assert len(errors) == 1
+    assert errors[0].recoverable is True
+    assert "danger" in errors[0].message
+
+    comp = next(e for e in events if isinstance(e, AssistantTurnComplete))
+    tool_blocks = [b for b in comp.blocks if isinstance(b, ToolUseBlock)]
+    assert tool_blocks == []  # the unparseable call was dropped, not dispatched

@@ -487,3 +487,13 @@ def test_runner_does_not_branch_on_substrate_name() -> None:
                 ):
                     offenders.append(f"{path}:{node.lineno}")
     assert not offenders, f"runner branches on substrate name: {offenders}"
+
+
+def test_credential_repr_does_not_leak_the_key() -> None:
+    """The key is a secret: it must never appear in ``repr`` (tracebacks, logs)."""
+    from dream.api.credentials import Credential
+
+    cred = Credential(label="primary", key="sk-super-secret-123", substrate="openai")
+    text = repr(cred)
+    assert "sk-super-secret-123" not in text
+    assert "primary" in text  # the operator-facing handle is still shown

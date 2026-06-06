@@ -85,11 +85,19 @@ def _checkpoint_order(item: tuple[str, str]) -> tuple[int, int, str]:
 def list_checkpoints(paths: DreamPaths, task_id: str) -> list[tuple[str, str]]:
     """Return ``(name, sha)`` for a task's checkpoints (name = ref leaf), turn-ordered."""
     prefix = _checkpoint_prefix(paths, task_id)
-    _, out, _ = run_git(
-        ["for-each-ref", "--format=%(refname) %(objectname)", prefix], cwd=paths.repo
+    # Check the return code: a git failure must raise (consistent with the
+    # all-or-nothing checkpoint philosophy) rather than feed an error string
+    # into the line parser below. No matching refs is success with empty output.
+    _, out, _ = _checked(
+        run_git(
+            ["for-each-ref", "--format=%(refname) %(objectname)", prefix], cwd=paths.repo
+        ),
+        "git for-each-ref",
     )
     result: list[tuple[str, str]] = []
     for line in out.splitlines():
+        if " " not in line:
+            continue  # defensive: skip any blank/malformed ref line
         refname, sha = line.split(" ", 1)
         result.append((refname[len(prefix) + 1 :], sha))
     return sorted(result, key=_checkpoint_order)

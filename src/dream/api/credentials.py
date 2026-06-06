@@ -26,7 +26,7 @@ import sys
 import time
 import tomllib
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -87,7 +87,10 @@ class Credential:
     """
 
     label: str
-    key: str
+    # ``repr=False``: the key is a secret. A bare repr (in a traceback, a debug
+    # log, or ``logging.exception``) must never print it. ``label`` is the
+    # operator-facing handle used everywhere a credential is referenced.
+    key: str = field(repr=False)
     substrate: str
     rung: int = 0
     cooldown_until: float | None = None

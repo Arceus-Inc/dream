@@ -33,6 +33,7 @@ from dream.engine._cost import UsageSnapshot
 from dream.engine._events import (
     AssistantTextDelta,
     AssistantTurnComplete,
+    ErrorEvent,
     StreamEvent,
 )
 from dream.engine._messages import (
@@ -209,9 +210,23 @@ class OpenAIChatStreamer:
             blocks.append(TextBlock(text=text))
         for idx in sorted(tool_calls):
             acc = tool_calls[idx]
-            try:
-                args = json.loads(acc.arguments) if acc.arguments else {}
-            except json.JSONDecodeError:
+            if acc.arguments:
+                try:
+                    args = json.loads(acc.arguments)
+                except json.JSONDecodeError as exc:
+                    # Don't fabricate empty args and dispatch a tool the model
+                    # never actually parameterised — that risks invoking a
+                    # privileged tool with unintended defaults. Surface the
+                    # corruption and drop this call instead.
+                    yield ErrorEvent(
+                        message=(
+                            f"tool call {acc.name!r} (id={acc.id!r}) had unparseable "
+                            f"JSON arguments; dropping it: {exc}"
+                        ),
+                        recoverable=True,
+                    )
+                    continue
+            else:
                 args = {}
             blocks.append(ToolUseBlock(id=acc.id, name=acc.name, input=args))
 

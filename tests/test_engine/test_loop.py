@@ -423,3 +423,35 @@ def test_error_event_is_a_valid_stream_event() -> None:
     """Sanity: callers can construct ErrorEvent and pass it through the union."""
     ev: StreamEvent = ErrorEvent(message="x")
     assert isinstance(ev, ErrorEvent)
+
+
+async def test_run_query_tool_exception_keeps_internals_out_of_transcript() -> None:
+    """A raised (infra) dispatch failure must not leak engine internals to the model.
+
+    The ``ToolExecutionCompleted`` event keeps the real detail for observability,
+    but the ``ToolResultBlock`` the model re-reads carries only a generic marker.
+    """
+    tu = ToolUseBlock(id="t1", name="explode", input={})
+    client = FakeStreamer(
+        turns=[FakeTurn(tool_uses=[tu]), FakeTurn(text_chunks=["done"])]
+    )
+    tools = FakeDispatcher(raise_for={"explode": RuntimeError("secret /etc/passwd path")})
+    ctx = QueryContext(client=client, tools=tools, max_turns=8)
+    messages: list[ConversationMessage] = [
+        ConversationMessage(role="user", content=[TextBlock(text="go")])
+    ]
+    await _drain(ctx, messages)
+
+    tool_results = [
+        block
+        for msg in messages
+        if msg.role == "user"
+        for block in msg.content
+        if isinstance(block, ToolResultBlock)
+    ]
+    assert len(tool_results) == 1
+    assert tool_results[0].is_error is True
+    # Model-facing content is generic — no exception type, no internal path.
+    assert "secret" not in tool_results[0].content
+    assert "RuntimeError" not in tool_results[0].content
+    assert "explode" in tool_results[0].content

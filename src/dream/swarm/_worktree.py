@@ -215,9 +215,16 @@ class WorktreeManager:
         if not path.exists():
             return False
         _remove_symlinks(path)
-        run_git(["worktree", "remove", "--force", str(path)], cwd=self._paths.repo)
+        code, _, _ = run_git(
+            ["worktree", "remove", "--force", str(path)], cwd=self._paths.repo
+        )
         if path.exists():
             shutil.rmtree(path, ignore_errors=True)
+        if code != 0:
+            # ``git worktree remove`` failed (e.g. the dir was already gone, or
+            # locked): its registration under ``.git/worktrees/`` was not cleared.
+            # Prune it so ``git worktree list`` doesn't accumulate phantom entries.
+            run_git(["worktree", "prune"], cwd=self._paths.repo)
         self._meta_path(wt.flat).unlink(missing_ok=True)
         return not path.exists()
 

@@ -71,31 +71,42 @@ def from_jsonl_line(line: str) -> TurnRecord | SessionEnd:
     if not isinstance(data, dict):
         raise ValueError(f"jsonl record must be a JSON object, got {type(data).__name__}")
     kind = data.pop("kind", None)
+    # A truncated final line (common after a crash) decodes to a partial object
+    # with fields missing or mistyped. Convert every such shape error into one
+    # ``ValueError`` so a reader can skip the bad record instead of the raw
+    # ``KeyError``/``TypeError`` killing the whole sweep. (``json.loads`` already
+    # raises ``JSONDecodeError`` — itself a ``ValueError`` — on a torn line.)
     if kind == "turn":
-        tools = data["tools_called"]
+        tools = data.get("tools_called")
         if not isinstance(tools, list):
             # A JSON string would otherwise coerce to a char list ("read" -> [...]).
             raise ValueError(f"tools_called must be a list, got {type(tools).__name__}")
-        return TurnRecord(
-            turn_number=data["turn_number"],
-            started_at=_decode_datetime(data["started_at"]),
-            ended_at=_decode_datetime(data["ended_at"]),
-            tools_called=tuple(tools),
-            verification_result=data["verification_result"],
-            outcome=data["outcome"],
-            usage=UsageSnapshot(**data["usage"]),
-            notes=data.get("notes", ""),
-        )
+        try:
+            return TurnRecord(
+                turn_number=data["turn_number"],
+                started_at=_decode_datetime(data["started_at"]),
+                ended_at=_decode_datetime(data["ended_at"]),
+                tools_called=tuple(tools),
+                verification_result=data["verification_result"],
+                outcome=data["outcome"],
+                usage=UsageSnapshot(**data["usage"]),
+                notes=data.get("notes", ""),
+            )
+        except (KeyError, TypeError) as exc:
+            raise ValueError(f"malformed turn record: {exc}") from exc
     if kind == "session_end":
-        return SessionEnd(
-            session_id=data["session_id"],
-            started_at=_decode_datetime(data["started_at"]),
-            ended_at=_decode_datetime(data["ended_at"]),
-            turns=data["turns"],
-            total_usage=UsageSnapshot(**data["total_usage"]),
-            outcome=data["outcome"],
-            reason=data.get("reason"),
-        )
+        try:
+            return SessionEnd(
+                session_id=data["session_id"],
+                started_at=_decode_datetime(data["started_at"]),
+                ended_at=_decode_datetime(data["ended_at"]),
+                turns=data["turns"],
+                total_usage=UsageSnapshot(**data["total_usage"]),
+                outcome=data["outcome"],
+                reason=data.get("reason"),
+            )
+        except (KeyError, TypeError) as exc:
+            raise ValueError(f"malformed session_end record: {exc}") from exc
     raise ValueError(f"unknown jsonl record kind: {kind!r}")
 
 

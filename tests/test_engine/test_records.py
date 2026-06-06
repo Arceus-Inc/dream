@@ -279,3 +279,31 @@ def test_to_jsonl_line_preserves_datetime_as_iso_string() -> None:
     # ISO format so external tooling (jq, log viewers) can parse the timeline.
     assert parsed["started_at"].startswith("2026-06-06T12:00:00")
     assert parsed["ended_at"].startswith("2026-06-06T12:00:05")
+
+
+def test_from_jsonl_line_raises_valueerror_on_truncated_turn_record() -> None:
+    """A truncated/crash-torn line missing required fields raises a controlled
+    ``ValueError`` (a reader can skip it), not a bare ``KeyError``."""
+    # Valid 'turn' discriminator + tools_called list, but every other field gone.
+    partial = json.dumps({"kind": "turn", "tools_called": []})
+    with pytest.raises(ValueError):
+        from_jsonl_line(partial)
+
+
+def test_from_jsonl_line_raises_valueerror_on_bad_usage_shape() -> None:
+    """A wrong-typed nested field surfaces as ValueError, not TypeError."""
+    line = to_jsonl_line(
+        TurnRecord(
+            turn_number=1,
+            started_at=_t(0),
+            ended_at=_t(1),
+            tools_called=(),
+            verification_result="skipped",
+            outcome="complete",
+            usage=UsageSnapshot(),
+        )
+    )
+    corrupted = json.loads(line)
+    corrupted["usage"] = {"not_a_usage_field": 1}
+    with pytest.raises(ValueError):
+        from_jsonl_line(json.dumps(corrupted))
