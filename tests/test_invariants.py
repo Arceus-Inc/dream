@@ -189,10 +189,16 @@ def _direct_writes_in_src() -> list[tuple[Path, int, str]]:
 
     ``file_lock.py`` is exempt because it opens the lockfile for read+write to
     hold the OS lock — there is no payload to atomically swap there.
+
+    ``tasks/_manager.py`` is exempt for its append-mode stdout streaming and
+    the restart-notice append: write-then-rename atomic semantics cannot
+    compose with a stream that grows chunk-by-chunk for the lifetime of the
+    subprocess. The output file is a runtime debug log, not a durable record.
     """
     allowed = {
         SRC / "utils" / "fs.py",
         SRC / "utils" / "file_lock.py",
+        SRC / "tasks" / "_manager.py",
     }
     hits: list[tuple[Path, int, str]] = []
     for f in _py_files():
