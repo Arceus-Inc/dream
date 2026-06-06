@@ -16,6 +16,8 @@ the eventual Stage 03 turn FSM will pass a proper message list.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 import sys
 import time
@@ -35,6 +37,9 @@ from dream.api.openai import OpenAIChatSubstrate
 from dream.api.substrate import Substrate
 from dream.repl._events import EventSink
 from dream.repl._fake import FakeFailingSubstrate
+from dream.tools._context import ToolExecutionContext
+from dream.tools._registry import ToolRegistry
+from dream.tools.builtin import default_registry
 
 # ---------------------------------------------------------------------------
 # Substrate construction from env (no secrets in any file)
@@ -190,9 +195,7 @@ class Dispatcher:
         names = [s.name for s in specs]
         if len(set(names)) != len(names):
             dupes = sorted({n for n in names if names.count(n) > 1})
-            raise ValueError(
-                f"Dispatcher requires unique substrate names; duplicates: {dupes}"
-            )
+            raise ValueError(f"Dispatcher requires unique substrate names; duplicates: {dupes}")
         self._specs: dict[str, SubstrateSpec] = {s.name: s for s in specs}
         self._pools: dict[str, CredentialPool] = {
             s.name: CredentialPool(s.name, s.credentials) for s in specs
@@ -283,9 +286,7 @@ class Dispatcher:
             attempt = self._next_live()
             started = time.monotonic()
             try:
-                result = attempt.substrate.complete(
-                    prompt, params={"max_tokens": self.max_tokens}
-                )
+                result = attempt.substrate.complete(prompt, params={"max_tokens": self.max_tokens})
             except Exception as exc:
                 if self._record_failure(attempt, exc, started) == "hard_refusal":
                     # Malformed input — another credential would fail identically.
@@ -416,6 +417,8 @@ slash commands:
   /fail <label> [auth|transient|hard]   manually bench / mark a credential
   /use <substrate>               operator switch-back (resets policy.active)
   /stream on|off                 toggle streaming output
+  /tools                         list registered tools
+  /tool <name> [json-args]       invoke one tool against the live registry
   /info                          full status dump
 """
 
@@ -435,7 +438,9 @@ def _format_pool(pool: CredentialPool) -> str:
     for cred in live + benched:
         if cred.is_benched():
             remaining = (cred.cooldown_until or now) - now
-            state = f"BENCHED rung={cred.rung} cooldown={remaining:.0f}s last_error={cred.last_error}"
+            state = (
+                f"BENCHED rung={cred.rung} cooldown={remaining:.0f}s last_error={cred.last_error}"
+            )
         else:
             state = f"live rung={cred.rung}"
         lines.append(f"    - {cred.label}: {state}")
@@ -449,6 +454,9 @@ class ReplState:
 
     stream: bool
     events_path: str
+    registry: ToolRegistry | None = None
+    cwd: Path = field(default_factory=Path.cwd)
+    sink: EventSink | None = None
 
 
 @dataclass
@@ -576,6 +584,100 @@ def _cmd_info(ctx: _SlashContext) -> bool:
     return True
 
 
+def _cmd_tools(ctx: _SlashContext) -> bool:
+    registry = ctx.state.registry
+    if registry is None:
+        print("tool registry not configured for this session")
+        return True
+    tools = registry.list_tools()
+    if not tools:
+        print("(no tools registered)")
+        return True
+    for tool in tools:
+        decl = tool.declaration
+        print(
+            f"  {tool.name} [{decl.risk} tier={decl.tier_required} "
+            f"timeout={decl.timeout_seconds:.1f}s]: {tool.description}"
+        )
+    return True
+
+
+def _cmd_tool(ctx: _SlashContext) -> bool:
+    registry = ctx.state.registry
+    if registry is None:
+        print("tool registry not configured for this session")
+        return True
+    if not ctx.arg.strip():
+        print('usage: /tool <name> [json-args]   (e.g. /tool read_file {"path": "x"})')
+        return True
+    name, _, raw_args = ctx.arg.strip().partition(" ")
+    tool = registry.get(name)
+    if tool is None:
+        known = ", ".join(t.name for t in registry.list_tools()) or "<none>"
+        print(f"unknown tool {name!r}; known: {known}")
+        return True
+    raw_args = raw_args.strip() or "{}"
+    try:
+        args = json.loads(raw_args)
+    except json.JSONDecodeError as exc:
+        print(f"[error] could not parse json args: {exc}")
+        return True
+    if not isinstance(args, dict):
+        print(f"[error] json args must be an object, got {type(args).__name__}")
+        return True
+
+    tool_ctx = ToolExecutionContext(
+        working_dir=ctx.state.cwd,
+        session_id="repl",
+    )
+    sink = ctx.state.sink
+    if sink is not None:
+        sink.emit("tool.invoked", name=name, args=args)
+    started = time.monotonic()
+    try:
+        result = asyncio.run(tool.execute(args, tool_ctx))
+    except Exception as exc:
+        elapsed_ms = (time.monotonic() - started) * 1000.0
+        print(f"[error] {type(exc).__name__}: {exc}")
+        if sink is not None:
+            sink.emit(
+                "tool.failed",
+                name=name,
+                error=type(exc).__name__,
+                detail=str(exc)[:200],
+                elapsed_ms=round(elapsed_ms, 1),
+            )
+        return True
+
+    elapsed_ms = (time.monotonic() - started) * 1000.0
+    label = "ERROR" if result.is_error else "ok"
+    print(f"[tool={name} {label}] elapsed={elapsed_ms:.0f}ms")
+    if result.content:
+        print(result.content)
+    md = result.metadata or {}
+    for key in ("root_cause", "safe_retry", "stop_condition"):
+        if key in md:
+            print(f"  {key}: {md[key]}")
+    if sink is not None:
+        if result.is_error:
+            sink.emit(
+                "tool.failed",
+                name=name,
+                is_error=True,
+                elapsed_ms=round(elapsed_ms, 1),
+                metadata=md,
+            )
+        else:
+            sink.emit(
+                "tool.completed",
+                name=name,
+                is_error=False,
+                elapsed_ms=round(elapsed_ms, 1),
+                metadata=md,
+            )
+    return True
+
+
 # Command → handler. ``/quit`` and ``/exit`` are handled inline in ``_slash``
 # because they alone return False (leave the loop); every handler here returns
 # True (keep looping).
@@ -589,13 +691,13 @@ _SLASH_COMMANDS: dict[str, Callable[[_SlashContext], bool]] = {
     "/fail": _cmd_fail,
     "/use": _cmd_use,
     "/stream": _cmd_stream,
+    "/tools": _cmd_tools,
+    "/tool": _cmd_tool,
     "/info": _cmd_info,
 }
 
 
-def _slash(
-    line: str, *, dispatcher: Dispatcher, transcript: Transcript, state: ReplState
-) -> bool:
+def _slash(line: str, *, dispatcher: Dispatcher, transcript: Transcript, state: ReplState) -> bool:
     """Dispatch one slash command. Returns True to keep looping, False to quit."""
     parts = line.strip().split(maxsplit=1)
     cmd = parts[0].lower()
@@ -625,10 +727,18 @@ def run_chat(
     sink.emit("repl.started", substrates=[s.name for s in spec_list])
     dispatcher = Dispatcher(spec_list, sink, max_tokens=max_tokens)
     transcript = Transcript()
-    state = ReplState(stream=initial_stream, events_path=str(events_path))
+    registry = default_registry()
+    state = ReplState(
+        stream=initial_stream,
+        events_path=str(events_path),
+        registry=registry,
+        cwd=Path.cwd(),
+        sink=sink,
+    )
 
     print(f"dream repl — events -> {events_path}")
     print(f"substrates: {dispatcher.policy.order} (active={dispatcher.policy.active()})")
+    print(f"tools: {len(registry)} registered (/tools to list)")
     print("type /help for commands, /quit to exit")
 
     while True:
