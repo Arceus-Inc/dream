@@ -13,11 +13,48 @@ listeners). The durable↔ephemeral seam is
 :func:`make_ledger_completion_listener` — a completion listener that
 updates the tagged ledger entry when its background task terminates.
 
-Slice 3 wires the cron registry + cron-as-session.
+Slice 3 wires the cron registry + cron-as-session: :class:`CronJob` /
+:class:`CronManifest` (`:mod:`dream.tasks._cron`), the run-record
+artefact (:class:`CronRunRecord`), and :func:`spawn_cron_session` —
+the runner entrypoint that translates a manifest into a ``local_agent``
+task wired to a completion listener that writes
+``docs/cron-runs/{kind}/{date}-{run_id}.json``.
 """
 
 from __future__ import annotations
 
+from dream.tasks._cron import (
+    CRON_MANIFEST_DIR,
+    DEFAULT_CRON_KINDS,
+    CronJob,
+    CronJobError,
+    CronManifest,
+    default_cron_manifests,
+    delete_cron_job,
+    get_cron_job,
+    is_governance_path,
+    load_cron_jobs,
+    load_cron_manifest,
+    load_cron_manifests,
+    mark_job_run,
+    next_run_time,
+    save_cron_jobs,
+    set_job_enabled,
+    upsert_cron_job,
+    validate_cron_expression,
+    validate_timezone,
+)
+from dream.tasks._cron_session import (
+    CRON_RUNS_ROOT,
+    MAX_SESSION_MINUTES_METADATA_KEY,
+    CronRunOutcome,
+    CronRunRecord,
+    cron_run_record_path,
+    make_cron_run_listener,
+    read_cron_run_records,
+    spawn_cron_session,
+    write_cron_run_record,
+)
 from dream.tasks._fsm import (
     DEFAULT_RETENTION_DAYS,
     PLAN_STATES,
@@ -64,15 +101,24 @@ from dream.tasks._types import TaskRecord, TaskStatus, TaskType
 
 __all__ = [
     "AGENT_TASK_TYPES",
+    "CRON_MANIFEST_DIR",
+    "CRON_RUNS_ROOT",
+    "DEFAULT_CRON_KINDS",
     "DEFAULT_RETENTION_DAYS",
     "EXEC_PLAN_SECTIONS",
     "LEDGER_SCHEMA_PATH",
     "LEDGER_SCHEMA_URI",
+    "MAX_SESSION_MINUTES_METADATA_KEY",
     "PLAN_STATES",
     "RESTART_NOTICE",
     "TECH_DEBT_FILENAME",
     "BackgroundTaskManager",
     "CompletionListener",
+    "CronJob",
+    "CronJobError",
+    "CronManifest",
+    "CronRunOutcome",
+    "CronRunRecord",
     "ExecPlan",
     "Ledger",
     "LedgerEntry",
@@ -90,12 +136,31 @@ __all__ = [
     "advance_state",
     "append_tech_debt_entry",
     "archive_candidates",
+    "cron_run_record_path",
+    "default_cron_manifests",
+    "delete_cron_job",
+    "get_cron_job",
+    "is_governance_path",
+    "load_cron_jobs",
+    "load_cron_manifest",
+    "load_cron_manifests",
+    "make_cron_run_listener",
     "make_ledger_completion_listener",
+    "mark_job_run",
     "move_plan",
+    "next_run_time",
     "plan_dir",
+    "read_cron_run_records",
     "read_ledger",
     "read_plan",
+    "save_cron_jobs",
+    "set_job_enabled",
+    "spawn_cron_session",
     "tech_debt_path",
+    "upsert_cron_job",
+    "validate_cron_expression",
+    "validate_timezone",
+    "write_cron_run_record",
     "write_ledger",
     "write_plan",
 ]
