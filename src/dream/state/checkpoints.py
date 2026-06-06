@@ -119,7 +119,15 @@ def resume_from(
     if paths.worktree(new_task_id).exists() or paths.sidecar(new_task_id).exists():
         raise ValueError(f"task-id already in use: {new_task_id!r}")
     manager = WorktreeManager(paths)
-    info = manager.create_worktree(new_task_id, start_point=source_ref)
+    try:
+        # exist_ok=False closes the check-then-act race: two concurrent resumes
+        # of the same id both pass the early check above, but only one wins the
+        # atomic create under the per-slug lock; the loser raises here.
+        info = manager.create_worktree(
+            new_task_id, start_point=source_ref, exist_ok=False
+        )
+    except FileExistsError as exc:
+        raise ValueError(f"task-id already in use: {new_task_id!r}") from exc
     try:
         if base_branch is None:
             code, branch, _ = run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=paths.repo)

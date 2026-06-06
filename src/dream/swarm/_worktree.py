@@ -167,11 +167,15 @@ class WorktreeManager:
         *,
         agent_id: str | None = None,
         start_point: str = "HEAD",
+        exist_ok: bool = True,
     ) -> WorktreeInfo:
         """Create (or fast-resume) the worktree for ``slug`` from ``start_point``.
 
         ``start_point`` is the commit/ref to check out (default ``HEAD``); resume
-        passes a checkpoint ref here.
+        passes a checkpoint ref here. With ``exist_ok=False`` an already-present
+        valid worktree raises :class:`FileExistsError` instead of fast-resuming —
+        callers that require a fresh, never-reused id (``resume_from``) use this to
+        make the uniqueness check atomic under the per-slug lock.
         """
         wt = slug if isinstance(slug, WorktreeSlug) else WorktreeSlug(slug)
         repo = self._paths.repo
@@ -183,8 +187,12 @@ class WorktreeManager:
         # both run ``git worktree add -B``, force-resetting a branch that may be
         # live in the other's worktree; their ``.meta.json`` writes also race.
         with exclusive_file_lock(self._lock_path(wt.flat)):
-            # Fast resume: an existing valid worktree is returned as-is.
+            # An existing valid worktree: fast-resume, or refuse if exist_ok=False.
             if path.exists() and run_git(["rev-parse", "--git-dir"], cwd=path)[0] == 0:
+                if not exist_ok:
+                    raise FileExistsError(
+                        f"worktree for slug {wt.value!r} already exists"
+                    )
                 agent, created = self._read_meta(wt.flat)
                 return WorktreeInfo(
                     slug=wt.value,

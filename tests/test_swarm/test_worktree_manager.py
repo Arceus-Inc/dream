@@ -219,3 +219,11 @@ def test_create_worktree_holds_slug_lock_during_meta_write(
     assert rival_acquired.wait(timeout=5.0), "slug lock was not released after create"
     rival_thread.join(timeout=5.0)
     assert not rival_thread.is_alive()
+
+
+def test_create_worktree_exist_ok_false_refuses_existing(mgr: WorktreeManager) -> None:
+    """exist_ok=False makes the uniqueness check atomic: a second create of a
+    live worktree raises instead of fast-resuming."""
+    mgr.create_worktree("T1")
+    with pytest.raises(FileExistsError):
+        mgr.create_worktree("T1", exist_ok=False)
