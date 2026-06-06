@@ -37,6 +37,11 @@ def _checked_task_id(task_id: str) -> str:
 
     A last-line guard: the worktree manager (#02) validates slugs up front, but
     these path builders must never join an unsafe segment regardless of caller.
+
+    Scope: the checks are for an ASCII filesystem where ``/`` is the only path
+    separator (POSIX) plus ``\\`` for Windows. Unicode separator look-alikes are
+    not normalised — they cannot traverse on these filesystems, but a future
+    port to an exotic FS should revisit this guard.
     """
     if (
         not task_id

@@ -6,6 +6,10 @@ The lock auto-releases on context exit and on process exit (the OS drops it when
 the fd closes). An unsupported platform *raises* ``LockUnavailableError`` rather
 than silently degrading. Pair with :func:`dream.utils.fs.atomic_write_text` to be
 both race-free and crash-safe.
+
+**Caveat — networked filesystems.** ``fcntl.flock`` is advisory and may be a
+no-op on NFS / SMB / some bind mounts, where serialisation silently degrades.
+Keep ``.dream`` on a local filesystem for the lock guarantees to hold.
 """
 
 from __future__ import annotations
@@ -94,7 +98,7 @@ def _windows_lock(
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+b") as fh:
         fh.seek(0)
-        if lock_path.stat().st_size == 0:
+        if os.fstat(fh.fileno()).st_size == 0:  # stat the open fd, not the path (TOCTOU)
             fh.write(b"\0")
             fh.flush()
         fh.seek(0)
