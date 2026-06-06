@@ -365,6 +365,7 @@ async def run_session(
         turn_outcome: TurnOutcome
         if turn_coma or turn_error is not None:
             turn_outcome = "aborted"
+            consecutive_timeouts = 0  # any non-timeout outcome breaks the streak
         elif timed_out:
             turn_outcome = "timeout"
             consecutive_timeouts += 1

@@ -103,6 +103,15 @@ def test_event_sink_failover_callback(tmp_path: Path) -> None:
     assert records[0]["to"] == "b"
 
 
+def test_event_sink_callback_does_not_mutate_caller_dict(tmp_path: Path) -> None:
+    """callback must read the event, not pop from it — a second listener still
+    needs the original ``type`` key."""
+    sink = EventSink(tmp_path / "events.jsonl")
+    event = {"type": "substrate.failover", "from": "a", "to": "b"}
+    sink.callback(event)
+    assert event == {"type": "substrate.failover", "from": "a", "to": "b"}
+
+
 # --- Dispatcher with fakes -----------------------------------------------
 
 

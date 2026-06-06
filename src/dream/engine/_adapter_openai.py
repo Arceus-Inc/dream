@@ -27,7 +27,7 @@ from __future__ import annotations
 import contextlib
 import json
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, cast
 
 from dream.engine._cost import UsageSnapshot
@@ -276,8 +276,6 @@ class NoOpDispatcher:
     nonetheless emits a ``ToolUseBlock``, dispatch raises so the failure
     is loud rather than silently returning an "is_error" string.
     """
-
-    _: Any = field(default=None, repr=False)
 
     async def dispatch(
         self, name: str, input: dict[str, Any]

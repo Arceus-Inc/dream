@@ -52,8 +52,11 @@ class EventSink:
 
     def callback(self, event: dict[str, Any]) -> None:
         """Adapter for :class:`FailoverPolicy.on_event` (already a dict)."""
-        event_type = str(event.pop("type", "substrate.unknown"))
-        self.emit(event_type, **event)
+        # ``get`` + a fresh payload dict, never ``pop``: mutating the caller's
+        # dict would strip ``type`` from it and break any second listener.
+        event_type = str(event.get("type", "substrate.unknown"))
+        payload = {k: v for k, v in event.items() if k != "type"}
+        self.emit(event_type, **payload)
 
 
 __all__ = ["EventSink"]

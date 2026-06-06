@@ -172,7 +172,9 @@ class CredentialPool:
             return
 
         if outcome == "transient_exhausted":
-            cred.rung = min(cred.rung + 1, 3) if cred.rung > 0 else 1
+            # Escalate one rung, capped at 3. From rung 0 this yields 1, so the
+            # old ``... if rung > 0 else 1`` ternary was a no-op.
+            cred.rung = min(cred.rung + 1, 3)
             cred.cooldown_until = now + _RUNG_COOLDOWNS_SECONDS[cred.rung]
             cred.last_error = outcome
             return

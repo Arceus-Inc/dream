@@ -137,9 +137,11 @@ def update_state(paths: DreamPaths, task_id: str, **changes: object) -> TaskStat
 def remove_sidecar(paths: DreamPaths, task_id: str) -> None:
     """Delete the sidecar bundle, serialized with ``update_state`` (idempotent)."""
     sidecar = paths.sidecar(task_id)
-    if not sidecar.exists():
-        return
     with exclusive_file_lock(_lock_path(paths, task_id)):
+        # ``exists`` inside the lock: a pre-lock check could race a concurrent
+        # ``create_sidecar``/``update_state`` write that lands before the rmtree.
+        if not sidecar.exists():
+            return
         shutil.rmtree(sidecar, ignore_errors=True)
 
 
