@@ -6,16 +6,29 @@ here reads from module-level state.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self
 
 from dream.contracts.hook import Hook
 from dream.contracts.plugin import Plugin
 from dream.contracts.provider import Provider
 from dream.contracts.tool import Tool
 from dream.session import Session, SessionOptions
+
+if TYPE_CHECKING:
+    from dream.engine._engine import QueryEngine
+
+
+# Slice D: the production wiring (Provider -> TurnStreamer adapter via
+# Spec 02) lands in REPL upgrade #2; until then ``Harness.start_session``
+# accepts an injected factory so tests and the demo can bind a real
+# engine without forcing every caller through the not-yet-built provider
+# pipeline. The hook is underscore-prefixed because it is harness-
+# internal and may change without a public API bump.
+EngineFactory = Callable[[str, SessionOptions], "QueryEngine"]
 
 
 @dataclass
@@ -31,6 +44,7 @@ class HarnessConfig:
     default_provider: str | None = None
     permission_mode: str = "default"
     extra: dict[str, Any] = field(default_factory=dict)
+    _engine_factory: EngineFactory | None = None
 
 
 class Harness:
@@ -72,10 +86,23 @@ class Harness:
     # -- sessions ---------------------------------------------------------
 
     async def start_session(self, options: SessionOptions | None = None) -> Session:
-        """Create a new Session. Engine binding lands later."""
+        """Create a new Session, binding an engine if one is configured.
+
+        When ``HarnessConfig._engine_factory`` is set, the factory is
+        invoked with ``(session_id, options)`` and the resulting
+        ``QueryEngine`` is attached to the ``Session``. Otherwise the
+        Session is returned without an engine binding -- ``send`` will
+        raise ``NotImplementedError`` until the production wiring is in
+        place.
+        """
         import uuid
 
-        return Session(id=uuid.uuid4().hex, options=options)
+        opts = options or SessionOptions()
+        session_id = uuid.uuid4().hex
+        engine = None
+        if self.config._engine_factory is not None:
+            engine = self.config._engine_factory(session_id, opts)
+        return Session(id=session_id, options=opts, _engine=engine)
 
     # -- lifecycle --------------------------------------------------------
 
