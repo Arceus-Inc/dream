@@ -15,22 +15,48 @@ This package is deliberately separate from ``dream.engine._heartbeat``:
   *between* sessions, per wake source, and produces a structured
   ``HeartbeatDecision`` record.
 
-Slice 1 (this slice) ships the virtual ``HeartbeatTool``, the
-``HeartbeatDecision`` record, the bundled default prompt, and a tiny
-single-turn runner. The skip-streak counter, anti-coma forced run, wake
-source registry, and per-agent lock file ship in slice 2.
+Slice 1 shipped the virtual ``HeartbeatTool``, the ``HeartbeatDecision``
+record, the bundled default prompt, and a tiny single-turn runner.
+Slice 2 added: typed ``WakeSource`` discriminator, persistent
+per-agent ``HeartbeatState`` (skip-streak), ``HeartbeatConfig`` +
+anti-coma forced mode, the per-agent ``heartbeat-{agent}.lock`` for
+overlap dedup, and the :func:`run_wake_cycle` orchestrator that ties
+all of the above together.
 """
 
 from __future__ import annotations
 
 from dream.wake._decision import HeartbeatDecision
+from dream.wake._orchestrator import (
+    EventEmitter,
+    HeartbeatConfig,
+    WakeOutcome,
+    run_wake_cycle,
+)
 from dream.wake._prompt import load_heartbeat_prompt
 from dream.wake._runner import run_background_turn
-from dream.wake._tool import HeartbeatTool
+from dream.wake._source import (
+    CronWake,
+    IdleTimerWake,
+    InboundMessageWake,
+    ManualWake,
+    WakeSource,
+)
+from dream.wake._tool import ForcedHeartbeatInput, HeartbeatTool
 
 __all__ = [
+    "CronWake",
+    "EventEmitter",
+    "ForcedHeartbeatInput",
+    "HeartbeatConfig",
     "HeartbeatDecision",
     "HeartbeatTool",
+    "IdleTimerWake",
+    "InboundMessageWake",
+    "ManualWake",
+    "WakeOutcome",
+    "WakeSource",
     "load_heartbeat_prompt",
     "run_background_turn",
+    "run_wake_cycle",
 ]

@@ -20,6 +20,7 @@ from dream.wake._decision import (
     from_jsonl_line,
     to_jsonl_line,
 )
+from dream.wake._source import CronWake, IdleTimerWake
 
 
 def _t() -> datetime:
@@ -57,7 +58,7 @@ def test_decision_jsonl_roundtrip_skip() -> None:
         action="skip",
         tasks=(),
         reason="nothing pending",
-        wake_source="idle_timer",
+        wake_source=IdleTimerWake(idle_minutes=47),
         forced=False,
         outcome="decided",
     )
@@ -77,7 +78,7 @@ def test_decision_jsonl_roundtrip_run_with_tasks() -> None:
         action="run",
         tasks=("a", "b", "c"),
         reason="three things to do",
-        wake_source="cron",
+        wake_source=CronWake(cron_kind="doc-garden"),
         forced=False,
     )
     back = from_jsonl_line(to_jsonl_line(d))
@@ -92,7 +93,7 @@ def test_decision_jsonl_records_missing_outcome() -> None:
         action="skip",
         tasks=(),
         reason="heartbeat_missing_decision",
-        wake_source="cron",
+        wake_source=CronWake(cron_kind="doc-garden"),
         outcome="missing",
     )
     back = from_jsonl_line(to_jsonl_line(d))
@@ -107,7 +108,7 @@ def test_decision_jsonl_records_forced_run() -> None:
         action="run",
         tasks=("forced wake",),
         reason="anti_coma_forced_run",
-        wake_source="idle_timer",
+        wake_source=IdleTimerWake(idle_minutes=300),
         forced=True,
     )
     back = from_jsonl_line(to_jsonl_line(d))
