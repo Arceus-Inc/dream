@@ -120,6 +120,20 @@ class FailoverPolicy:
         )
         return chosen
 
+    def force_active(self, substrate: str) -> None:
+        """Operator-driven switch-back (§16): set the active substrate directly.
+
+        Distinct from :meth:`next_substrate` — that walks the chain on pool
+        exhaustion and emits a failover event; this is the operator saying
+        "go back to the primary, I cleared its issue". Validates membership but
+        emits no event (the switch is deliberate, not a degradation signal).
+        """
+        if substrate not in self.order:
+            raise ValueError(
+                f"unknown substrate {substrate!r}; known: {self.order}"
+            )
+        self._active = substrate
+
     def record_probe(self, substrate: str, *, healthy: bool) -> None:
         """Record a background health probe result (§16).
 

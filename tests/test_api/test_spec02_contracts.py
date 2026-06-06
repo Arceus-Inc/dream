@@ -497,3 +497,15 @@ def test_credential_repr_does_not_leak_the_key() -> None:
     text = repr(cred)
     assert "sk-super-secret-123" not in text
     assert "primary" in text  # the operator-facing handle is still shown
+
+
+def test_failover_force_active_validates_membership() -> None:
+    from dream.api.failover import FailoverPolicy
+
+    policy = FailoverPolicy(order=["a", "b"])
+    policy.next_substrate(after="a")
+    assert policy.active() == "b"
+    policy.force_active("a")
+    assert policy.active() == "a"
+    with pytest.raises(ValueError, match="unknown substrate"):
+        policy.force_active("nope")

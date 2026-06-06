@@ -14,6 +14,7 @@ from dream.api.failover import NoLiveSubstrate
 from dream.api.substrate import CompletionResult, HealthReport
 from dream.repl._chat import (
     Dispatcher,
+    ReplState,
     SubstrateSpec,
     Transcript,
     _classify_exception,
@@ -266,10 +267,10 @@ def test_transcript_reset_drops_messages_keeps_system() -> None:
 # --- _slash dispatch table -----------------------------------------------
 
 
-def _slash_fixtures(tmp_path: Path) -> tuple[Dispatcher, Transcript, dict[str, Any]]:
+def _slash_fixtures(tmp_path: Path) -> tuple[Dispatcher, Transcript, ReplState]:
     sink = EventSink(tmp_path / "events.jsonl")
     disp = Dispatcher([_ok_spec("primary")], sink)
-    state: dict[str, Any] = {"stream": True, "events_path": str(tmp_path / "events.jsonl")}
+    state = ReplState(stream=True, events_path=str(tmp_path / "events.jsonl"))
     return disp, Transcript(), state
 
 
@@ -294,6 +295,17 @@ def test_slash_reset_clears_transcript(tmp_path: Path) -> None:
 def test_slash_stream_toggle_mutates_state(tmp_path: Path) -> None:
     disp, transcript, state = _slash_fixtures(tmp_path)
     _slash("/stream off", dispatcher=disp, transcript=transcript, state=state)
-    assert state["stream"] is False
+    assert state.stream is False
     _slash("/stream on", dispatcher=disp, transcript=transcript, state=state)
-    assert state["stream"] is True
+    assert state.stream is True
+
+
+def test_slash_use_switches_active_via_public_force_active(tmp_path: Path) -> None:
+    sink = EventSink(tmp_path / "events.jsonl")
+    disp = Dispatcher([_ok_spec("a"), _ok_spec("b")], sink)
+    # advance off the primary, then /use it back
+    disp.policy.next_substrate(after="a", reason="test")
+    assert disp.policy.active() == "b"
+    _slash("/use a", dispatcher=disp, transcript=Transcript(),
+           state=ReplState(stream=True, events_path=str(tmp_path / "e.jsonl")))
+    assert disp.policy.active() == "a"

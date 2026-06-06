@@ -72,6 +72,28 @@ def _build_openai_substrate(spec: SubstrateSpec) -> Any:
     return _build
 
 
+def _env_int(name: str, default: int) -> int:
+    """Parse an integer env var, with a clear error instead of a raw ValueError."""
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name}={raw!r} is not a valid integer") from exc
+
+
+def _env_float(name: str, default: float) -> float:
+    """Parse a float env var, with a clear error instead of a raw ValueError."""
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name}={raw!r} is not a valid number") from exc
+
+
 def _spec_from_env() -> SubstrateSpec | None:
     """Build the primary substrate from ``DREAM_SMOKE_*`` env vars."""
     api_key = os.environ.get("DREAM_SMOKE_API_KEY")
@@ -85,8 +107,8 @@ def _spec_from_env() -> SubstrateSpec | None:
         name=name,
         model=model,
         base_url=base_url,
-        max_window=int(os.environ.get("DREAM_SMOKE_MAX_WINDOW", "128000")),
-        timeout_seconds=float(os.environ.get("DREAM_SMOKE_TIMEOUT", "60")),
+        max_window=_env_int("DREAM_SMOKE_MAX_WINDOW", 128_000),
+        timeout_seconds=_env_float("DREAM_SMOKE_TIMEOUT", 60.0),
         credentials=[Credential(label=label, key=api_key, substrate=name)],
         builder=None,
     )
@@ -203,13 +225,11 @@ class Dispatcher:
     def set_active(self, substrate: str) -> None:
         """Operator-driven switch-back (§16) — bypasses chain advance.
 
-        Distinct from :meth:`FailoverPolicy.next_substrate`: that walks the
-        chain on pool exhaustion; this is the operator saying "go back to
-        the primary, I cleared its issue". Emits no event.
+        Delegates to :meth:`FailoverPolicy.force_active` rather than poking the
+        policy's private ``_active`` directly, so the policy keeps ownership of
+        its own invariants.
         """
-        if substrate not in self.policy.order:
-            raise ValueError(f"unknown substrate {substrate!r}")
-        self.policy._active = substrate
+        self.policy.force_active(substrate)
 
     # --- main dispatch -------------------------------------------------------
 
@@ -423,13 +443,22 @@ def _format_pool(pool: CredentialPool) -> str:
 
 
 @dataclass
+class ReplState:
+    """Mutable per-session REPL toggles. A typed struct, not a bare dict, so
+    every access is type-checked and the field set is explicit."""
+
+    stream: bool
+    events_path: str
+
+
+@dataclass
 class _SlashContext:
     """Everything a slash-command handler may need; built once per invocation."""
 
     arg: str
     dispatcher: Dispatcher
     transcript: Transcript
-    state: dict[str, Any]
+    state: ReplState
 
 
 def _cmd_help(ctx: _SlashContext) -> bool:
@@ -522,25 +551,25 @@ def _cmd_use(ctx: _SlashContext) -> bool:
 def _cmd_stream(ctx: _SlashContext) -> bool:
     arg = ctx.arg.lower()
     if arg in ("on", "true", "1"):
-        ctx.state["stream"] = True
+        ctx.state.stream = True
     elif arg in ("off", "false", "0"):
-        ctx.state["stream"] = False
+        ctx.state.stream = False
     else:
-        print(f"stream = {ctx.state['stream']}")
+        print(f"stream = {ctx.state.stream}")
         return True
-    print(f"[stream = {ctx.state['stream']}]")
+    print(f"[stream = {ctx.state.stream}]")
     return True
 
 
 def _cmd_info(ctx: _SlashContext) -> bool:
     print(f"  active substrate: {ctx.dispatcher.policy.active()}")
     print(f"  failover order:   {ctx.dispatcher.policy.order}")
-    print(f"  stream:           {ctx.state['stream']}")
+    print(f"  stream:           {ctx.state.stream}")
     print(
         f"  messages:         {len(ctx.transcript.messages)} "
         f"(system: {bool(ctx.transcript.system)})"
     )
-    print(f"  events file:      {ctx.state['events_path']}")
+    print(f"  events file:      {ctx.state.events_path}")
     print("  pools:")
     for pool in ctx.dispatcher.pools.values():
         print(_format_pool(pool))
@@ -565,7 +594,7 @@ _SLASH_COMMANDS: dict[str, Callable[[_SlashContext], bool]] = {
 
 
 def _slash(
-    line: str, *, dispatcher: Dispatcher, transcript: Transcript, state: dict[str, Any]
+    line: str, *, dispatcher: Dispatcher, transcript: Transcript, state: ReplState
 ) -> bool:
     """Dispatch one slash command. Returns True to keep looping, False to quit."""
     parts = line.strip().split(maxsplit=1)
@@ -596,7 +625,7 @@ def run_chat(
     sink.emit("repl.started", substrates=[s.name for s in spec_list])
     dispatcher = Dispatcher(spec_list, sink, max_tokens=max_tokens)
     transcript = Transcript()
-    state: dict[str, Any] = {"stream": initial_stream, "events_path": str(events_path)}
+    state = ReplState(stream=initial_stream, events_path=str(events_path))
 
     print(f"dream repl — events -> {events_path}")
     print(f"substrates: {dispatcher.policy.order} (active={dispatcher.policy.active()})")
@@ -618,7 +647,7 @@ def run_chat(
         transcript.add_user(line)
         prompt = transcript.render()
         try:
-            if state["stream"]:
+            if state.stream:
                 result = dispatcher.stream(prompt)
             else:
                 result = dispatcher.complete(prompt)
@@ -680,6 +709,7 @@ __all__ = [
     "DispatchResult",
     "Dispatcher",
     "Message",
+    "ReplState",
     "SubstrateSpec",
     "Transcript",
     "build_specs",
