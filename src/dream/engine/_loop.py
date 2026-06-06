@@ -22,10 +22,11 @@ The loop is bounded by ``max_turns`` (acceptance #6).
 
 from __future__ import annotations
 
+import contextlib
 import copy
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from dream.engine._events import (
     AssistantTurnComplete,
@@ -97,10 +98,17 @@ async def run_query(
     """
     for _ in range(ctx.max_turns):
         complete: AssistantTurnComplete | None = None
-        async for ev in ctx.client.stream_turn(messages):
-            yield ev
-            if isinstance(ev, AssistantTurnComplete):
-                complete = ev
+        # ``aclosing`` ensures the per-turn provider stream is closed when this
+        # loop is itself closed mid-flight (timeout/coma/cancel), cascading the
+        # ``aclose()`` down to the underlying transport so it can't leak.
+        turn_stream = ctx.client.stream_turn(messages)
+        async with contextlib.aclosing(
+            cast(AsyncGenerator[StreamEvent, None], turn_stream)
+        ):
+            async for ev in turn_stream:
+                yield ev
+                if isinstance(ev, AssistantTurnComplete):
+                    complete = ev
         if complete is None:
             return
 

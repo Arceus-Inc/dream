@@ -24,10 +24,11 @@ directly so the heartbeat aborts the session per Spec 00 invariants.
 
 from __future__ import annotations
 
+import contextlib
 import json
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from dream.engine._cost import UsageSnapshot
 from dream.engine._events import (
@@ -178,8 +179,14 @@ class OpenAIChatStreamer:
             messages, system_prompt=self._system_prompt
         )
         chunks = await self._stream_chat(wire, self._model)
-        async for ev in self._consume(chunks):
-            yield ev
+        # Own the transport stream's lifecycle: ``aclosing`` releases the httpx
+        # connection (in ``httpx_chat_completion_stream``) whenever this turn is
+        # closed — including an outer cancel/timeout that closes us mid-stream.
+        async with contextlib.aclosing(
+            cast(AsyncGenerator[dict[str, Any], None], chunks)
+        ):
+            async for ev in self._consume(chunks):
+                yield ev
 
     async def _consume(
         self, chunks: AsyncIterator[dict[str, Any]]

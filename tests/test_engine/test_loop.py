@@ -455,3 +455,33 @@ async def test_run_query_tool_exception_keeps_internals_out_of_transcript() -> N
     assert "secret" not in tool_results[0].content
     assert "RuntimeError" not in tool_results[0].content
     assert "explode" in tool_results[0].content
+
+
+async def test_run_query_aclose_cascades_to_inner_turn_stream() -> None:
+    """Closing the act-loop mid-flight must aclose the per-turn provider stream
+    so its transport (HTTP connection, etc.) is released, not leaked."""
+    closed = False
+
+    class _CloseableStreamer:
+        async def stream_turn(
+            self, messages: Sequence[ConversationMessage]
+        ) -> AsyncIterator[StreamEvent]:
+            nonlocal closed
+            try:
+                yield AssistantTextDelta(text="partial")
+                yield AssistantTurnComplete(
+                    blocks=[TextBlock(text="partial")], usage=UsageSnapshot()
+                )
+            finally:
+                closed = True
+
+    ctx = QueryContext(client=_CloseableStreamer(), tools=FakeDispatcher(), max_turns=8)
+    messages: list[ConversationMessage] = [
+        ConversationMessage(role="user", content=[TextBlock(text="hi")])
+    ]
+    agen = run_query(ctx, messages)
+    first = await agen.__anext__()  # consume one event; inner stream suspended
+    assert isinstance(first, AssistantTextDelta)
+
+    await agen.aclose()  # tear the loop down before the turn finished
+    assert closed is True, "inner turn stream was not closed — resource leak"

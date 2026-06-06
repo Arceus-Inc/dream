@@ -125,46 +125,52 @@ async def _drive_turn_with_heartbeat(
     short-circuit the turn. With ``heartbeat=None`` this degenerates to
     a plain ``async for`` over ``inner``.
     """
-    if heartbeat is None:
-        async for ev in inner:
-            yield ev
-        return
+    # ``aclosing`` guarantees ``inner.aclose()`` runs on *every* exit — normal
+    # completion, an exception, an external cancellation propagating through the
+    # ``yield`` below, or our consumer calling ``aclose()`` on us. Without it, an
+    # outer cancel would abandon ``inner`` (the act-loop) with its provider
+    # stream — and the httpx connection underneath it — never released.
+    async with contextlib.aclosing(inner):
+        if heartbeat is None:
+            async for ev in inner:
+                yield ev
+            return
 
-    monitor = HeartbeatMonitor(
-        health=heartbeat.health,
-        interval=heartbeat.interval_seconds,
-        threshold=heartbeat.failure_threshold,
-    )
-    monitor_task = asyncio.create_task(monitor.run())
-    aiter_ = inner.__aiter__()
+        monitor = HeartbeatMonitor(
+            health=heartbeat.health,
+            interval=heartbeat.interval_seconds,
+            threshold=heartbeat.failure_threshold,
+        )
+        monitor_task = asyncio.create_task(monitor.run())
+        aiter_ = inner.__aiter__()
 
-    async def _next() -> StreamEvent:
-        return await aiter_.__anext__()
+        async def _next() -> StreamEvent:
+            return await aiter_.__anext__()
 
-    try:
-        while True:
-            next_task: asyncio.Task[StreamEvent] = asyncio.create_task(_next())
-            done, _pending = await asyncio.wait(
-                {next_task, monitor_task},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            if monitor_task in done:
-                next_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await next_task
-                # Re-raise ComaDetected from the monitor task.
-                monitor_task.result()
-                return  # unreachable; appeases the type checker
-            try:
-                ev = next_task.result()
-            except StopAsyncIteration:
-                return
-            yield ev
-    finally:
-        if not monitor_task.done():
-            monitor_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError, Exception):
-            await monitor_task
+        try:
+            while True:
+                next_task: asyncio.Task[StreamEvent] = asyncio.create_task(_next())
+                done, _pending = await asyncio.wait(
+                    {next_task, monitor_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if monitor_task in done:
+                    next_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await next_task
+                    # Re-raise ComaDetected from the monitor task.
+                    monitor_task.result()
+                    return  # unreachable; appeases the type checker
+                try:
+                    ev = next_task.result()
+                except StopAsyncIteration:
+                    return
+                yield ev
+        finally:
+            if not monitor_task.done():
+                monitor_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await monitor_task
 
 
 async def run_session(
