@@ -1,16 +1,59 @@
 """Session: one conversation on a Harness.
 
-This module exposes the public types. The substantive turn-loop
-implementation lives in `dream.engine` and is wired up later.
+The public ``Session`` type. The concrete engine binding lives in
+``dream.engine._engine`` (``QueryEngine``); ``Session`` drives the Spec 03
+``run_session`` orchestrator against the engine and translates internal
+``StreamEvent``s into public ``events.Event``s.
+
+Transcript persistence is mirrored from ``run_session``'s event stream so
+a subsequent ``send`` resumes the conversation rather than restarting it:
+
+- a user message holding the new prompt is recorded at the start of each
+  ``send`` and passed via ``run_session(..., user_messages=[...])``;
+- every ``AssistantTurnComplete`` becomes one assistant message;
+- ``ToolExecutionCompleted`` events between consecutive
+  ``AssistantTurnComplete`` events are batched into a single user
+  message of ``ToolResultBlock``s -- the tool-call atom (Spec 00 #1).
+
+The transcript carries across ``send`` calls; orientation is intentionally
+left for a later slice (slice E rituals).
 """
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import asyncio
+import contextlib
+from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from dream.events import Event
+from dream.engine._events import (
+    AssistantTextDelta,
+    AssistantTurnComplete,
+    CompactProgressEvent,
+    ErrorEvent,
+    StatusEvent,
+    ToolExecutionCompleted,
+    ToolExecutionStarted,
+)
+from dream.engine._messages import (
+    ConversationMessage,
+    TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+)
+from dream.engine._session import run_session
+from dream.events import (
+    Error,
+    Event,
+    TextDelta,
+    ToolUseResult,
+    ToolUseStart,
+    TurnComplete,
+)
+
+if TYPE_CHECKING:
+    from dream.engine._engine import QueryEngine
 
 
 @dataclass(frozen=True)
@@ -37,30 +80,214 @@ class SessionCost:
 class Session:
     """One conversation against a Harness.
 
-    This is the public type. The concrete engine binding is wired in
-    `dream.engine._engine`; placeholder methods raise NotImplementedError
-    until that lands.
+    The engine binding is the ``_engine`` keyword-only argument (the
+    leading underscore signals "harness-internal"; external callers
+    construct a ``Session`` via ``Harness.start_session``).
+
+    Without an engine, ``send`` raises ``NotImplementedError`` while
+    ``cancel`` / ``close`` are no-ops so background apps can call them
+    defensively in cleanup blocks before any ``send`` has been issued.
     """
 
     id: str
     options: SessionOptions
+    cost: SessionCost
 
-    def __init__(self, *, id: str, options: SessionOptions | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        id: str,
+        options: SessionOptions | None = None,
+        _engine: QueryEngine | None = None,
+    ) -> None:
         self.id = id
         self.options = options or SessionOptions()
         self.cost = SessionCost()
+        self._engine = _engine
+        self._transcript: list[ConversationMessage] = []
+        self._inner: AsyncGenerator[Any, None] | None = None
+        self._cancel_event: asyncio.Event | None = None
+        self._closed = False
 
-    def send(self, prompt: str) -> AsyncIterator[Event]:
-        """Submit a user prompt and stream typed events back."""
-        raise NotImplementedError("engine binding not yet implemented")
+    async def send(self, prompt: str) -> AsyncIterator[Event]:
+        """Submit a user prompt and stream typed events back.
+
+        Yields one of the public ``events.Event`` types per significant
+        event from the underlying ``run_session`` stream; orchestration
+        events (``TransitionEvent``, ``TurnRecord``, ``SessionEnd``) are
+        filtered.
+        """
+        if self._closed:
+            raise RuntimeError("session is closed")
+        if self._engine is None:
+            raise NotImplementedError("engine binding not yet implemented")
+
+        # ``resume`` is the transcript as we knew it before this call;
+        # ``run_session`` sanitizes it on entry. We then append the new
+        # user message to our local copy so a follow-up ``send`` started
+        # before this one finishes still sees a consistent view.
+        resume = list(self._transcript) if self._transcript else None
+        user_msg = ConversationMessage(role="user", content=[TextBlock(text=prompt)])
+        self._transcript.append(user_msg)
+
+        config = self._engine.make_session_config()
+        inner: AsyncGenerator[Any, None] = run_session(  # type: ignore[assignment]
+            config, [user_msg], resume_messages=resume
+        )
+        cancel_event = asyncio.Event()
+        self._inner = inner
+        self._cancel_event = cancel_event
+
+        pending_tool_results: list[ToolResultBlock] = []
+        cancelled = False
+
+        try:
+            # Race ``inner.__anext__`` against the cancel event so a
+            # ``Session.cancel`` call from another task interrupts the
+            # stream promptly even if the underlying turn is awaiting a
+            # long provider response.
+            aiter_ = inner.__aiter__()
+            while True:
+                next_coro: Any = aiter_.__anext__()
+                next_task: asyncio.Task[Any] = asyncio.ensure_future(next_coro)
+                cancel_task: asyncio.Task[Any] = asyncio.create_task(cancel_event.wait())
+                try:
+                    _done, _pending = await asyncio.wait(
+                        {next_task, cancel_task},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                except BaseException:
+                    next_task.cancel()
+                    cancel_task.cancel()
+                    raise
+                cancel_task.cancel()
+                with contextlib.suppress(BaseException):
+                    await cancel_task
+
+                if cancel_event.is_set():
+                    cancelled = True
+                    next_task.cancel()
+                    with contextlib.suppress(BaseException):
+                        await next_task
+                    break
+
+                try:
+                    ev = next_task.result()
+                except StopAsyncIteration:
+                    break
+
+                public = self._translate(ev, pending_tool_results)
+                if public is None:
+                    continue
+                yield public
+        finally:
+            self._inner = None
+            self._cancel_event = None
+            # ``aclose`` is the canonical way to cascade cleanup down
+            # through ``run_session`` / ``run_query`` / the provider
+            # stream. Safe here because no other task is iterating
+            # ``inner`` -- this generator was its sole driver.
+            with contextlib.suppress(BaseException):
+                await inner.aclose()
+            # Defensive: if the stream terminated mid-tool (rare; e.g.
+            # cancel between ToolExecutionCompleted and the next
+            # AssistantTurnComplete), flush remaining results so the
+            # transcript reflects what the model would see on resume.
+            if not cancelled and pending_tool_results:
+                self._transcript.append(
+                    ConversationMessage(role="user", content=list(pending_tool_results))
+                )
+                pending_tool_results.clear()
+
+    def _translate(
+        self,
+        ev: Any,
+        pending_tool_results: list[ToolResultBlock],
+    ) -> Event | None:
+        """Translate one internal event; update transcript + cost state.
+
+        Returns the public event to yield, or ``None`` to filter the event.
+        """
+        if isinstance(ev, AssistantTextDelta):
+            return TextDelta(text=ev.text)
+
+        if isinstance(ev, ToolExecutionStarted):
+            return ToolUseStart(tool_use_id=ev.id, name=ev.tool, input=dict(ev.input))
+
+        if isinstance(ev, ToolExecutionCompleted):
+            pending_tool_results.append(
+                ToolResultBlock(
+                    tool_use_id=ev.id,
+                    content=ev.result,
+                    is_error=ev.is_error,
+                )
+            )
+            return ToolUseResult(
+                tool_use_id=ev.id,
+                name=ev.tool,
+                content=ev.result,
+                is_error=ev.is_error,
+            )
+
+        if isinstance(ev, AssistantTurnComplete):
+            # Flush prior turn's tool results as one user message
+            # *before* recording the new assistant message; this matches
+            # ``run_query``'s own append order.
+            if pending_tool_results:
+                self._transcript.append(
+                    ConversationMessage(role="user", content=list(pending_tool_results))
+                )
+                pending_tool_results.clear()
+            self._transcript.append(ConversationMessage(role="assistant", content=list(ev.blocks)))
+            self.cost.input_tokens += ev.usage.input_tokens
+            self.cost.output_tokens += ev.usage.output_tokens
+            self.cost.cache_read_tokens += ev.usage.cache_read_tokens
+            self.cost.cache_write_tokens += ev.usage.cache_write_tokens
+            has_tool_use = any(isinstance(b, ToolUseBlock) for b in ev.blocks)
+            return TurnComplete(
+                stop_reason="tool_use" if has_tool_use else "end_turn",
+                usage={
+                    "input_tokens": ev.usage.input_tokens,
+                    "output_tokens": ev.usage.output_tokens,
+                    "cache_read_tokens": ev.usage.cache_read_tokens,
+                    "cache_write_tokens": ev.usage.cache_write_tokens,
+                },
+            )
+
+        if isinstance(ev, ErrorEvent):
+            return Error(code="engine", message=ev.message)
+
+        if isinstance(ev, CompactProgressEvent | StatusEvent):
+            # Informational; not surfaced publicly. Slice E will route
+            # the real ``ContextCompactionCompleted`` to ``Compacted``.
+            return None
+
+        # Orchestration events (TransitionEvent / TurnRecord / SessionEnd)
+        # plus any unknown internal type: drop silently.
+        return None
 
     async def cancel(self) -> None:
-        """Cancel the in-flight turn, if any."""
-        raise NotImplementedError("engine binding not yet implemented")
+        """Cancel the in-flight ``send``, if any.
+
+        Sets a cancel signal the ``send`` loop watches between event
+        awaits; the in-flight ``__anext__`` is cancelled and the inner
+        ``run_session`` stream is closed in ``send``'s finally block.
+        A no-op when no ``send`` is in flight.
+        """
+        cancel_event = self._cancel_event
+        if cancel_event is None:
+            return
+        cancel_event.set()
 
     async def close(self) -> None:
-        """Release resources held by this session."""
-        raise NotImplementedError("engine binding not yet implemented")
+        """Release resources held by this session. Idempotent.
+
+        After ``close`` any subsequent ``send`` raises ``RuntimeError``.
+        """
+        if self._closed:
+            return
+        await self.cancel()
+        self._closed = True
 
 
 __all__ = ["Session", "SessionCost", "SessionOptions"]
