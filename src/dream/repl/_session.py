@@ -5,9 +5,9 @@ single REPL talks to a real provider through ``Session.send``, streaming
 typed ``events.Event`` values to stdout while mirroring them as JSONL to
 the same sink the ``watch`` subcommand tails.
 
-Slash commands here are intentionally minimal: ``/help``, ``/quit`` /
-``/exit``, ``/info``, ``/reset``. The ``/util`` and ``/compact`` commands
-land in REPL upgrade #3 once the context-log surface is wired in.
+Slash commands: ``/help``, ``/quit`` / ``/exit``, ``/info``, ``/reset``,
+``/util`` (current context utilisation% + cost), and ``/compact`` (force
+a manual Spec 04 compaction on the bound engine's transcript).
 """
 
 from __future__ import annotations
@@ -35,7 +35,11 @@ from dream.events import (
 )
 from dream.harness import Harness, HarnessConfig
 from dream.repl._events import EventSink
-from dream.services.compact._orchestrator import AutoCompactState
+from dream.services.compact._orchestrator import (
+    AutoCompactState,
+    auto_compact_if_needed,
+)
+from dream.services.token_estimation import utilisation
 from dream.session import Session, SessionOptions
 from dream.tools.builtin import default_registry
 
@@ -170,7 +174,10 @@ def _handle_slash(line: str, *, session: Session, sink: EventSink, output: TextI
     if cmd in ("/quit", "/exit"):
         return False
     if cmd in ("/help", "/?"):
-        output.write("commands: /help /quit /info /reset\nanything else is sent to the model.\n")
+        output.write(
+            "commands: /help /quit /info /reset /util /compact\n"
+            "anything else is sent to the model.\n"
+        )
         return True
     if cmd == "/info":
         output.write(
@@ -180,6 +187,64 @@ def _handle_slash(line: str, *, session: Session, sink: EventSink, output: TextI
             f"out={session.cost.output_tokens}\n"
         )
         sink.emit("session.info", session_id=session.id)
+        return True
+    if cmd == "/util":
+        # Read capabilities off the bound engine; if absent we still
+        # render a usable line (utilisation falls back to 0.0).
+        engine = session._engine
+        capabilities = getattr(engine, "compaction_capabilities", None) if engine else None
+        pct = utilisation(session._transcript, capabilities) * 100.0
+        cost = session.cost
+        output.write(
+            f"util {pct:.1f}% messages={len(session._transcript)} "
+            f"cost in={cost.input_tokens} out={cost.output_tokens}\n"
+        )
+        sink.emit(
+            "session.util",
+            session_id=session.id,
+            utilisation=pct / 100.0,
+            messages=len(session._transcript),
+            input_tokens=cost.input_tokens,
+            output_tokens=cost.output_tokens,
+        )
+        return True
+    if cmd == "/compact":
+        engine = session._engine
+        compactor = getattr(engine, "compactor", None) if engine else None
+        if engine is None or compactor is None:
+            output.write("[/compact] no compactor wired on this engine\n")
+            sink.emit("session.compact_skipped", reason="no_compactor")
+            return True
+        capabilities = engine.compaction_capabilities
+        threshold = engine.compaction_threshold
+        preserve_recent = engine.compaction_preserve_recent
+        pre_count = len(session._transcript)
+        new_transcript, result = auto_compact_if_needed(
+            session._transcript,
+            capabilities=capabilities,
+            state=compactor,
+            trigger="manual",
+            threshold=threshold,
+            preserve_recent=preserve_recent,
+            force=True,
+        )
+        session._transcript[:] = new_transcript
+        removed = max(0, pre_count - len(new_transcript))
+        if result is None:
+            output.write("[/compact] nothing to compact\n")
+            sink.emit("session.compact_skipped", reason="noop")
+            return True
+        post_util = utilisation(new_transcript, capabilities)
+        output.write(
+            f"[/compact] tier={result.tier} removed_messages={removed} "
+            f"util_after={post_util * 100.0:.1f}%\n"
+        )
+        sink.emit(
+            "context.compaction.completed",
+            tier=result.tier,
+            removed_messages=removed,
+            resulting_utilisation=post_util,
+        )
         return True
     if cmd == "/reset":
         # Spec 05 Session has no public reset hook yet, so we just drop

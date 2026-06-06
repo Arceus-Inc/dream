@@ -32,6 +32,18 @@ def _colour_for(event_type: str) -> str:
         return _GREEN
     if event_type == "turn.attempt_failed":
         return _RED
+    if event_type == "context.compaction.completed":
+        return _CYAN
+    if event_type == "context.compaction.triggered":
+        return _YELLOW
+    if event_type == "session.error" or event_type == "session.turn_failed":
+        return _RED
+    if event_type == "session.turn_complete":
+        return _GREEN
+    if event_type.startswith("session.repl."):
+        return _CYAN
+    if event_type.startswith("session."):
+        return _DIM
     if event_type.startswith("repl."):
         return _CYAN
     return ""

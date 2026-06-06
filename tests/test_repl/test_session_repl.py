@@ -24,8 +24,15 @@ from typing import Any
 
 import pytest
 
+from dream.contracts.provider import ProviderCapabilities
 from dream.engine._cost import UsageSnapshot
 from dream.engine._engine import QueryEngine
+from dream.engine._messages import (
+    ConversationMessage,
+    TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+)
 from dream.events import (
     Compacted,
     Error,
@@ -38,11 +45,14 @@ from dream.harness import Harness, HarnessConfig
 from dream.repl.__main__ import _build_parser
 from dream.repl._events import EventSink
 from dream.repl._session import (
+    _handle_slash,
     build_default_harness,
     handle_event,
     run_session_repl,
     session_loop,
 )
+from dream.repl._watch import _colour_for
+from dream.services.compact._orchestrator import AutoCompactState
 from dream.session import SessionOptions
 from tests.test_engine._fakes import FakeDispatcher, FakeStreamer, FakeTurn
 
@@ -344,3 +354,190 @@ def test_run_session_repl_without_env_or_harness_returns_nonzero(
         output=out,
     )
     assert rc != 0
+
+
+# ---------------------------------------------------------------------------
+# REPL upgrade #3 -- /util and /compact slash commands
+# ---------------------------------------------------------------------------
+
+
+def _engine_factory_with_compactor(
+    streamer: FakeStreamer,
+    *,
+    compactor: AutoCompactState,
+    capabilities: ProviderCapabilities,
+):
+    """Like ``_engine_factory`` but wires the Spec 04 compaction inputs.
+
+    The two extra fields are what ``/util`` and ``/compact`` read off the
+    Session's bound engine. ``compactor`` must be non-``None`` for
+    ``/compact`` to do anything; the capabilities supply the denominator
+    for ``utilisation``.
+    """
+
+    def _factory(session_id: str, options: SessionOptions) -> QueryEngine:
+        return QueryEngine(
+            streamer=streamer,
+            dispatcher=FakeDispatcher(),
+            session_id=session_id,
+            working_dir=Path("/tmp"),
+            max_turns=options.max_turns or 4,
+            compactor=compactor,
+            compaction_capabilities=capabilities,
+        )
+
+    return _factory
+
+
+async def _session_with_compactor() -> tuple[Any, AutoCompactState, ProviderCapabilities]:
+    compactor = AutoCompactState()
+    capabilities = ProviderCapabilities(max_context_tokens=128_000)
+    streamer = FakeStreamer(turns=[])
+    harness = Harness(
+        HarnessConfig(  # type: ignore[call-arg]
+            _engine_factory=_engine_factory_with_compactor(
+                streamer, compactor=compactor, capabilities=capabilities
+            )
+        )
+    )
+    session = await harness.start_session()
+    return session, compactor, capabilities
+
+
+async def test_handle_slash_util_prints_utilisation_and_cost(tmp_path: Path) -> None:
+    """``/util`` reports utilisation% against the engine's capabilities and
+    the Session's running cost. Emits a ``session.util`` mirror event so
+    the watch panel can record it.
+    """
+    session, _compactor, _caps = await _session_with_compactor()
+    session._transcript.append(ConversationMessage(role="user", content=[TextBlock(text="hi")]))
+    sink = EventSink(tmp_path / "e.jsonl")
+    out = io.StringIO()
+    keep = _handle_slash("/util", session=session, sink=sink, output=out)
+    assert keep is True
+    text = out.getvalue().lower()
+    assert "util" in text
+    assert "%" in text
+    assert "cost" in text or "in=" in text
+    lines = (tmp_path / "e.jsonl").read_text(encoding="utf-8").splitlines()
+    payload = json.loads(lines[-1])
+    assert payload["type"] == "session.util"
+
+
+async def test_handle_slash_compact_runs_microcompact_and_emits_event(
+    tmp_path: Path,
+) -> None:
+    """``/compact`` forces a manual compaction via ``auto_compact_if_needed``
+    (``trigger="manual"``, ``force=True``) so older compactable tool
+    results are replaced with the cleared-content sentinel. The mirror
+    event lands as ``context.compaction.completed`` so REPL watch
+    colours it consistently with Spec 04 events.
+    """
+    session, _compactor, _caps = await _session_with_compactor()
+    # Seed the transcript with >5 compactable tool_use/result pairs so
+    # microcompact has something to clear (DEFAULT_KEEP_RECENT == 5).
+    big_blob = "X" * 4096
+    for i in range(8):
+        tu_id = f"tu_{i}"
+        session._transcript.append(
+            ConversationMessage(
+                role="assistant",
+                content=[ToolUseBlock(id=tu_id, name="bash", input={"cmd": "ls"})],
+            )
+        )
+        session._transcript.append(
+            ConversationMessage(
+                role="user",
+                content=[ToolResultBlock(tool_use_id=tu_id, content=big_blob, is_error=False)],
+            )
+        )
+    sink = EventSink(tmp_path / "e.jsonl")
+    out = io.StringIO()
+
+    pre_blob_count = sum(
+        1
+        for msg in session._transcript
+        for block in msg.content
+        if isinstance(block, ToolResultBlock) and block.content == big_blob
+    )
+    assert pre_blob_count == 8
+
+    keep = _handle_slash("/compact", session=session, sink=sink, output=out)
+    assert keep is True
+
+    post_blob_count = sum(
+        1
+        for msg in session._transcript
+        for block in msg.content
+        if isinstance(block, ToolResultBlock) and block.content == big_blob
+    )
+    # At least some older tool results should now carry the cleared marker.
+    assert post_blob_count < pre_blob_count
+
+    lines = (tmp_path / "e.jsonl").read_text(encoding="utf-8").splitlines()
+    payloads = [json.loads(line) for line in lines]
+    types = [p["type"] for p in payloads]
+    assert "context.compaction.completed" in types
+    assert any("compact" in line.lower() for line in out.getvalue().splitlines())
+
+
+async def test_handle_slash_compact_no_compactor_warns(tmp_path: Path) -> None:
+    """If the engine has no compactor wired, ``/compact`` is a no-op that
+    prints a helpful message instead of crashing.
+    """
+    streamer = FakeStreamer(turns=[])
+
+    def _factory(session_id: str, options: SessionOptions) -> QueryEngine:
+        return QueryEngine(
+            streamer=streamer,
+            dispatcher=FakeDispatcher(),
+            session_id=session_id,
+            working_dir=Path("/tmp"),
+            max_turns=options.max_turns or 4,
+        )
+
+    harness = Harness(HarnessConfig(_engine_factory=_factory))  # type: ignore[call-arg]
+    session = await harness.start_session()
+    sink = EventSink(tmp_path / "e.jsonl")
+    out = io.StringIO()
+    keep = _handle_slash("/compact", session=session, sink=sink, output=out)
+    assert keep is True
+    text = out.getvalue().lower()
+    assert "compact" in text
+    assert "not" in text or "disabled" in text or "no compactor" in text
+
+
+# ---------------------------------------------------------------------------
+# REPL upgrade #3 -- watch colour table
+# ---------------------------------------------------------------------------
+
+
+def test_watch_colour_for_context_compaction_completed_is_cyan() -> None:
+    """``context.compaction.completed`` is the public-facing 'compaction
+    succeeded' event the REPL watch should highlight in cyan.
+    """
+    code = _colour_for("context.compaction.completed")
+    assert code != ""
+    assert "36" in code  # ANSI cyan
+
+
+def test_watch_colour_for_context_compaction_triggered_is_yellow() -> None:
+    """``context.compaction.triggered`` signals pressure; render in yellow."""
+    code = _colour_for("context.compaction.triggered")
+    assert code != ""
+    assert "33" in code  # ANSI yellow
+
+
+def test_watch_colour_for_session_turn_complete_is_green() -> None:
+    code = _colour_for("session.turn_complete")
+    assert "32" in code  # ANSI green
+
+
+def test_watch_colour_for_session_error_is_red() -> None:
+    code = _colour_for("session.error")
+    assert "31" in code  # ANSI red
+
+
+def test_watch_colour_for_session_repl_started_is_cyan() -> None:
+    code = _colour_for("session.repl.started")
+    assert "36" in code  # ANSI cyan
