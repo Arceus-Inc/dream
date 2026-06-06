@@ -500,3 +500,58 @@ async def test_stream_tool_call_with_unparseable_arguments_is_dropped_with_error
     comp = next(e for e in events if isinstance(e, AssistantTurnComplete))
     tool_blocks = [b for b in comp.blocks if isinstance(b, ToolUseBlock)]
     assert tool_blocks == []  # the unparseable call was dropped, not dispatched
+
+
+async def test_stream_incomplete_tool_call_dropped_with_error_event() -> None:
+    """A truncated stream leaving an id-less/name-less tool call is dropped
+    (with an ErrorEvent), never emitted as ToolUseBlock(id='', name='')."""
+    adapter = OpenAIChatStreamer(
+        stream_chat_completion=_scripted(
+            [
+                # function fragment with arguments but the id/name chunk never arrives
+                {
+                    "choices": [
+                        {
+                            "delta": {"tool_calls": [{"index": 0, "function": {"arguments": "{}"}}]},
+                            "finish_reason": None,
+                            "index": 0,
+                        }
+                    ]
+                },
+                {"choices": [{"delta": {}, "finish_reason": "tool_calls", "index": 0}]},
+                _usage_chunk(1, 1),
+            ]
+        ),
+        model="gpt-test",
+    )
+    events = await _drain(adapter)
+    assert any(isinstance(e, ErrorEvent) for e in events)
+    comp = next(e for e in events if isinstance(e, AssistantTurnComplete))
+    assert [b for b in comp.blocks if isinstance(b, ToolUseBlock)] == []
+
+
+async def test_stream_non_numeric_tool_call_index_does_not_abort_turn() -> None:
+    """A malformed (non-int) tool_call index skips that fragment rather than
+    raising out of the turn."""
+    adapter = OpenAIChatStreamer(
+        stream_chat_completion=_scripted(
+            [
+                _text_chunk("hello"),
+                {
+                    "choices": [
+                        {
+                            "delta": {"tool_calls": [{"index": "bogus", "id": "c1"}]},
+                            "finish_reason": None,
+                            "index": 0,
+                        }
+                    ]
+                },
+                {"choices": [{"delta": {}, "finish_reason": "stop", "index": 0}]},
+                _usage_chunk(1, 1),
+            ]
+        ),
+        model="gpt-test",
+    )
+    events = await _drain(adapter)  # must not raise
+    comp = next(e for e in events if isinstance(e, AssistantTurnComplete))
+    assert any(isinstance(b, TextBlock) for b in comp.blocks)

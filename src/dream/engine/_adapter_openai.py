@@ -217,6 +217,18 @@ class OpenAIChatStreamer:
             blocks.append(TextBlock(text=text))
         for idx in sorted(tool_calls):
             acc = tool_calls[idx]
+            if not acc.id or not acc.name:
+                # A truncated stream can leave an accumulator with no id/name.
+                # Emitting ToolUseBlock(id="", name="") would collide under
+                # id-keyed result matching — surface and drop it instead.
+                yield ErrorEvent(
+                    message=(
+                        f"dropping incomplete tool call (id={acc.id!r}, "
+                        f"name={acc.name!r}): the stream ended mid-call"
+                    ),
+                    recoverable=True,
+                )
+                continue
             if acc.arguments:
                 try:
                     args = json.loads(acc.arguments)
@@ -243,7 +255,12 @@ class OpenAIChatStreamer:
 def _merge_tool_call(
     acc: dict[int, _ToolCallAccumulator], partial: dict[str, Any]
 ) -> None:
-    idx = int(partial.get("index", 0))
+    try:
+        idx = int(partial.get("index", 0))
+    except (TypeError, ValueError):
+        # A non-numeric index is a protocol violation from the wire; skip this
+        # fragment rather than letting int() abort the whole turn.
+        return
     entry = acc.setdefault(idx, _ToolCallAccumulator())
     if partial.get("id"):
         entry.id = partial["id"]
