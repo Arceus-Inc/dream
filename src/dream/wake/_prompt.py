@@ -47,4 +47,22 @@ def load_heartbeat_prompt(path: Path | None) -> str:
         return BUNDLED_HEARTBEAT_PROMPT
 
 
-__all__ = ["BUNDLED_HEARTBEAT_PROMPT", "load_heartbeat_prompt"]
+def forced_addendum(skip_streak: int) -> str:
+    """Return the anti-coma addendum spliced into the wake stimulus when
+    the agent's ``skip_streak`` has reached the configured maximum.
+
+    The wording is deliberately concrete (mentions the streak count, that
+    prior skips were *declined*, and that the model is now *forced* to
+    pick at least one task) so the model has unambiguous in-context
+    signal that this is not a normal wake turn.
+    """
+    return (
+        f"\n\nANTI-COMA: your last {skip_streak} consecutive skip decisions "
+        "have been declined. You are now in FORCED mode: 'skip' is not "
+        "available this turn — you must choose at least one task or call "
+        "the heartbeat tool with action='run' and tasks=[] to acknowledge "
+        "the forced wake."
+    )
+
+
+__all__ = ["BUNDLED_HEARTBEAT_PROMPT", "forced_addendum", "load_heartbeat_prompt"]

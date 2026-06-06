@@ -21,7 +21,12 @@ from contextlib import contextmanager
 from enum import Enum, auto
 from pathlib import Path
 
-__all__ = ["LockError", "LockUnavailableError", "exclusive_file_lock"]
+__all__ = [
+    "LockError",
+    "LockUnavailableError",
+    "exclusive_file_lock",
+    "try_exclusive_file_lock",
+]
 
 
 class LockError(RuntimeError):
@@ -112,6 +117,85 @@ def _windows_lock(
                 time.sleep(0.1)
         try:
             yield
+        finally:
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)  # type: ignore[attr-defined]
+
+
+@contextmanager
+def try_exclusive_file_lock(
+    lock_path: str | Path,
+    *,
+    os_name: str | None = None,
+) -> Iterator[bool]:
+    """Non-blocking variant of :func:`exclusive_file_lock`.
+
+    Yields ``True`` if the lock was acquired (auto-released on exit),
+    ``False`` if it is currently held elsewhere. Callers branch on the
+    yielded value::
+
+        with try_exclusive_file_lock(p) as acquired:
+            if not acquired:
+                return WakeOutcome(dropped_reason="heartbeat_in_flight")
+            ...
+
+    Used by the spec 06.5 slice 2 wake-cycle orchestrator to dedup
+    overlapping wakes for the same agent.
+    """
+    backend = _LockBackend.for_os(os.name if os_name is None else os_name)
+    path = Path(lock_path)
+    if backend is _LockBackend.WINDOWS:  # pragma: no cover - not exercised on posix CI
+        with _windows_try_lock(path) as acquired:
+            yield acquired
+    else:
+        with _posix_try_lock(path) as acquired:
+            yield acquired
+
+
+@contextmanager
+def _posix_try_lock(lock_path: Path) -> Iterator[bool]:
+    try:
+        import fcntl
+    except ImportError as exc:  # pragma: no cover - posix always has fcntl
+        raise LockUnavailableError(f"fcntl not available: {exc}") from exc
+
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.touch(exist_ok=True)
+    with lock_path.open("a+b") as fh:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
+def _windows_try_lock(
+    lock_path: Path,
+) -> Iterator[bool]:  # pragma: no cover - not exercised on posix CI
+    try:
+        import msvcrt
+    except ImportError as exc:
+        raise LockUnavailableError(f"msvcrt not available: {exc}") from exc
+
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as fh:
+        fh.seek(0)
+        if os.fstat(fh.fileno()).st_size == 0:
+            fh.write(b"\0")
+            fh.flush()
+        fh.seek(0)
+        try:
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)  # type: ignore[attr-defined]
+        except OSError:
+            yield False
+            return
+        try:
+            yield True
         finally:
             fh.seek(0)
             msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)  # type: ignore[attr-defined]

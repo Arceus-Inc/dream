@@ -36,6 +36,17 @@ def _colour_for(event_type: str) -> str:
         return _CYAN
     if event_type == "context.compaction.triggered":
         return _YELLOW
+    # Spec 06.5 slice 2 — wake-cycle events.
+    if event_type == "heartbeat.decision.run":
+        return _GREEN
+    if event_type == "heartbeat.decision.forced":
+        return _YELLOW
+    if event_type == "heartbeat.decision.skip":
+        return _DIM
+    if event_type == "heartbeat.missing":
+        return _RED
+    if event_type == "wake.dropped":
+        return _DIM
     if event_type == "session.error" or event_type == "session.turn_failed":
         return _RED
     if event_type == "session.turn_complete":

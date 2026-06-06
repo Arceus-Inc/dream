@@ -541,3 +541,43 @@ def test_watch_colour_for_session_error_is_red() -> None:
 def test_watch_colour_for_session_repl_started_is_cyan() -> None:
     code = _colour_for("session.repl.started")
     assert "36" in code  # ANSI cyan
+
+
+# ---------------------------------------------------------------------------
+# Spec 06.5 slice 2 -- wake-cycle event colours
+# ---------------------------------------------------------------------------
+
+
+def test_watch_colour_for_heartbeat_decision_run_is_green() -> None:
+    code = _colour_for("heartbeat.decision.run")
+    assert "32" in code  # ANSI green — agent chose to do work
+
+
+def test_watch_colour_for_heartbeat_decision_skip_is_dim() -> None:
+    """A skip is normal background noise: dim it so a watching human's
+    eye skips it too."""
+    code = _colour_for("heartbeat.decision.skip")
+    assert code != ""
+    # Either ANSI dim (2) or grey 90; both are acceptable signals of
+    # de-emphasised output.
+    assert "2" in code or "90" in code
+
+
+def test_watch_colour_for_heartbeat_decision_forced_is_yellow() -> None:
+    """Forced wake = anti-coma guard tripped. This is noteworthy."""
+    code = _colour_for("heartbeat.decision.forced")
+    assert "33" in code  # ANSI yellow
+
+
+def test_watch_colour_for_heartbeat_missing_is_red() -> None:
+    """``heartbeat_missing_decision`` means the model failed to produce a
+    valid heartbeat — surface it loudly."""
+    code = _colour_for("heartbeat.missing")
+    assert "31" in code  # ANSI red
+
+
+def test_watch_colour_for_wake_dropped_is_dim() -> None:
+    """Dropped wake = overlap dedup. Not an error, just informational."""
+    code = _colour_for("wake.dropped")
+    assert code != ""
+    assert "2" in code or "90" in code

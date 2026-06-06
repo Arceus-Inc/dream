@@ -28,6 +28,7 @@ from dream.engine._messages import (
     ToolUseBlock,
 )
 from dream.wake import HeartbeatDecision, run_background_turn
+from dream.wake._source import CronWake, IdleTimerWake
 
 # --- minimal fake streamer (local; not shared with engine fakes) ------------
 
@@ -88,14 +89,14 @@ async def test_run_returns_decision_from_tool_call() -> None:
         )
     )
     decision = await run_background_turn(
-        streamer, wake_source="idle_timer", now=_now
+        streamer, wake_source=IdleTimerWake(idle_minutes=10), now=_now
     )
     assert decision == HeartbeatDecision(
         decided_at=_now(),
         action="run",
         tasks=("finish slice 1", "open PR"),
         reason="exec plan ready",
-        wake_source="idle_timer",
+        wake_source=IdleTimerWake(idle_minutes=10),
         forced=False,
         outcome="decided",
     )
@@ -118,7 +119,7 @@ async def test_run_skip_zeroes_tasks() -> None:
         )
     )
     decision = await run_background_turn(
-        streamer, wake_source="cron", now=_now
+        streamer, wake_source=CronWake(cron_kind="doc-garden"), now=_now
     )
     assert decision.action == "skip"
     assert decision.tasks == ()
@@ -140,7 +141,7 @@ async def test_no_tool_call_yields_missing_outcome() -> None:
         _ScriptedTurn(text_chunks=["I think I'll wait a bit."])
     )
     decision = await run_background_turn(
-        streamer, wake_source="idle_timer", now=_now
+        streamer, wake_source=IdleTimerWake(idle_minutes=5), now=_now
     )
     assert decision.action == "skip"
     assert decision.outcome == "missing"
@@ -161,7 +162,7 @@ async def test_wrong_tool_name_yields_missing_outcome() -> None:
         )
     )
     decision = await run_background_turn(
-        streamer, wake_source="idle_timer", now=_now
+        streamer, wake_source=IdleTimerWake(idle_minutes=5), now=_now
     )
     assert decision.action == "skip"
     assert decision.outcome == "missing"
@@ -180,7 +181,7 @@ async def test_schema_invalid_args_yields_missing_outcome() -> None:
         )
     )
     decision = await run_background_turn(
-        streamer, wake_source="idle_timer", now=_now
+        streamer, wake_source=IdleTimerWake(idle_minutes=5), now=_now
     )
     assert decision.action == "skip"
     assert decision.outcome == "missing"
@@ -205,7 +206,7 @@ async def test_only_first_heartbeat_call_is_used() -> None:
         )
     )
     decision = await run_background_turn(
-        streamer, wake_source="cron", now=_now
+        streamer, wake_source=CronWake(cron_kind="doc-garden"), now=_now
     )
     assert decision.action == "run"
     assert decision.reason == "first"
@@ -228,7 +229,7 @@ async def test_runner_threads_system_prompt_into_stimulus() -> None:
     )
     await run_background_turn(
         streamer,
-        wake_source="idle_timer",
+        wake_source=IdleTimerWake(idle_minutes=5),
         system_prompt="MY CUSTOM HEARTBEAT PROMPT",
         now=_now,
     )
@@ -253,7 +254,7 @@ async def test_runner_falls_back_to_bundled_prompt_when_none(tmp_path: Any) -> N
             ]
         )
     )
-    await run_background_turn(streamer, wake_source="cron", now=_now)
+    await run_background_turn(streamer, wake_source=CronWake(cron_kind="x"), now=_now)
     sent_text = streamer.calls[0][0].text
     assert BUNDLED_HEARTBEAT_PROMPT.strip().splitlines()[0] in sent_text
 
@@ -274,7 +275,7 @@ async def test_runner_drives_exactly_one_turn() -> None:
             ]
         )
     )
-    await run_background_turn(streamer, wake_source="idle_timer", now=_now)
+    await run_background_turn(streamer, wake_source=IdleTimerWake(idle_minutes=5), now=_now)
     assert len(streamer.calls) == 1
 
 
@@ -292,7 +293,7 @@ async def test_runner_default_now_uses_utc() -> None:
         )
     )
     before = datetime.now(UTC)
-    decision = await run_background_turn(streamer, wake_source="cron")
+    decision = await run_background_turn(streamer, wake_source=CronWake(cron_kind="x"))
     after = datetime.now(UTC)
     assert decision.decided_at.tzinfo is not None
     assert before <= decision.decided_at <= after

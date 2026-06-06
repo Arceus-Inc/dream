@@ -57,6 +57,42 @@ class HeartbeatInput(BaseModel):
                 )
 
 
+class ForcedHeartbeatInput(BaseModel):
+    """Slice 2 anti-coma variant: ``action`` enum narrowed to ``run``.
+
+    When the orchestrator is in forced mode (``skip_streak >=
+    max_consecutive_skips``) the REPL / dispatcher advertises *this*
+    schema to the model instead of :class:`HeartbeatInput`. The model
+    literally cannot emit ``"skip"`` through this wire schema — and even
+    if it bypasses the schema, the wake runner enforces the same
+    invariant by synthesising a ``run`` decision (see
+    ``dream.wake._runner``).
+    """
+
+    action: Literal["run"] = Field(
+        description=(
+            "Forced mode: only 'run' is permitted. The agent has skipped "
+            "too many consecutive wake cycles and must do something this turn."
+        ),
+    )
+    tasks: list[str] = Field(
+        default_factory=list,
+        max_length=_MAX_TASKS,
+        description="Tasks to queue. Empty list is allowed (synthesised wake).",
+    )
+    reason: str = Field(
+        max_length=_MAX_REASON_LEN,
+        description="One-line justification, <=200 chars.",
+    )
+
+    def model_post_init(self, __context: Any) -> None:
+        for t in self.tasks:
+            if len(t) > _MAX_TASK_LEN:
+                raise ValueError(
+                    f"each task must be <= {_MAX_TASK_LEN} chars (got {len(t)})"
+                )
+
+
 class HeartbeatTool(BaseTool):
     """Decide whether to wake the agent for work and what to queue."""
 
@@ -93,4 +129,4 @@ class HeartbeatTool(BaseTool):
         )
 
 
-__all__ = ["HeartbeatInput", "HeartbeatTool"]
+__all__ = ["ForcedHeartbeatInput", "HeartbeatInput", "HeartbeatTool"]
