@@ -30,6 +30,7 @@ from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, 
 from dataclasses import dataclass
 from typing import Any, cast
 
+from dream.api._wire import apply_token_limit
 from dream.engine._cost import UsageSnapshot
 from dream.engine._events import (
     AssistantTextDelta,
@@ -335,6 +336,10 @@ def httpx_chat_completion_stream(
             "stream_options": {"include_usage": True},
             **extras,
         }
+        # Reasoning models (gpt-5/o1/o3/o4) reject ``max_tokens`` — translate it
+        # to ``max_completion_tokens`` via the shared wire helper, so this engine
+        # path doesn't 400 where the api/openai substrate already handles it.
+        body = apply_token_limit(body, model)
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",

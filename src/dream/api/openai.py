@@ -13,8 +13,9 @@ hatch and lets the same code path serve every OpenAI-compatible substrate.
 
 **Reasoning-model quirk.** GPT-5 and the o1/o3/o4 reasoning families reject
 ``max_tokens`` and require ``max_completion_tokens`` instead. The translation
-table is local to this adapter — the runner does not branch on substrate
-name (Spec 02 decision 6).
+lives in :mod:`dream.api._wire` so this substrate and the Spec-03 engine
+adapter share one table; the runner still does not branch on substrate name
+(Spec 02 decision 6).
 """
 
 from __future__ import annotations
@@ -24,23 +25,11 @@ from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
 from dream.api._timeout import DEFAULT_TIMEOUT_SECONDS, Deadline, SubstrateTimeout
+from dream.api._wire import token_limit_param
 from dream.api.substrate import CompletionResult, HealthReport, HealthState
 
 if TYPE_CHECKING:
     from openai import OpenAI
-
-
-_REASONING_MODEL_PREFIXES: tuple[str, ...] = ("gpt-5", "o1", "o3", "o4")
-
-
-def _token_limit_param(model: str, max_tokens: int) -> dict[str, int]:
-    """Reasoning models reject ``max_tokens``; translate to ``max_completion_tokens``."""
-    normalized = model.strip().lower()
-    if "/" in normalized:
-        normalized = normalized.rsplit("/", 1)[-1]
-    if normalized.startswith(_REASONING_MODEL_PREFIXES):
-        return {"max_completion_tokens": max_tokens}
-    return {"max_tokens": max_tokens}
 
 
 def _approx_token_count(text: str) -> int:
@@ -112,7 +101,7 @@ class OpenAIChatSubstrate:
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
             "timeout": self._deadline.seconds,
-            **_token_limit_param(model, max_tokens),
+            **token_limit_param(model, max_tokens),
             **merged,
         }
         try:
@@ -146,7 +135,7 @@ class OpenAIChatSubstrate:
             "messages": [{"role": "user", "content": prompt}],
             "timeout": self._deadline.seconds,
             "stream": True,
-            **_token_limit_param(model, max_tokens),
+            **token_limit_param(model, max_tokens),
             **merged,
         }
         try:
