@@ -25,6 +25,7 @@ from dream.engine._cost import UsageSnapshot
 from dream.engine._events import (
     AssistantTextDelta,
     AssistantTurnComplete,
+    CompactionDoneEvent,
     CompactProgressEvent,
     ErrorEvent,
     StatusEvent,
@@ -104,6 +105,12 @@ def test_error_event_can_be_recoverable() -> None:
         ToolExecutionCompleted(tool="t", id="1", result="r"),
         StatusEvent(message="m"),
         CompactProgressEvent(pct=0.0),
+        CompactionDoneEvent(
+            tier="microcompact",
+            removed_messages=0,
+            freed_tokens=0,
+            resulting_utilisation=0.0,
+        ),
         ErrorEvent(message="m"),
     ],
 )
@@ -121,11 +128,19 @@ def test_stream_event_union_members_are_assignable() -> None:
     """
     variants: list[StreamEvent] = [
         AssistantTextDelta(text="x"),
-        AssistantTurnComplete(blocks=[ToolUseBlock(id="i", name="n", input={})], usage=UsageSnapshot()),
+        AssistantTurnComplete(
+            blocks=[ToolUseBlock(id="i", name="n", input={})], usage=UsageSnapshot()
+        ),
         ToolExecutionStarted(tool="t", id="1", input={}),
         ToolExecutionCompleted(tool="t", id="1", result="r"),
         StatusEvent(message="m"),
         CompactProgressEvent(pct=0.5),
+        CompactionDoneEvent(
+            tier="microcompact",
+            removed_messages=2,
+            freed_tokens=100,
+            resulting_utilisation=0.42,
+        ),
         ErrorEvent(message="m"),
     ]
     members = get_args(StreamEvent)
@@ -146,6 +161,14 @@ def test_event_types_are_distinct() -> None:
         type(ToolExecutionCompleted(tool="t", id="1", result="r")),
         type(StatusEvent(message="m")),
         type(CompactProgressEvent(pct=0.0)),
+        type(
+            CompactionDoneEvent(
+                tier="microcompact",
+                removed_messages=0,
+                freed_tokens=0,
+                resulting_utilisation=0.0,
+            )
+        ),
         type(ErrorEvent(message="m")),
     }
-    assert len(types) == 7
+    assert len(types) == 8

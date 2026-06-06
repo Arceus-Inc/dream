@@ -24,10 +24,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from dream.contracts.provider import ProviderCapabilities
 from dream.engine._loop import ToolDispatcher, TurnStreamer
 from dream.engine._records import TurnRecord
 from dream.engine._session import SessionConfig
 from dream.engine._tool_dispatch import DispatchRecord, EngineToolDispatcher
+from dream.services.compact import DEFAULT_KEEP_RECENT
+from dream.services.compact._orchestrator import AutoCompactState
 from dream.tools._registry import ToolRegistry
 
 
@@ -39,6 +42,11 @@ class QueryEngine:
     via the internal ``_engine`` kwarg. ``Session.send`` calls
     :meth:`make_session_config` to build a ``SessionConfig`` for the
     current call, then drives ``run_session`` with it.
+
+    Compaction is opt-in via ``compactor``. When set, every turn runs the
+    Spec 04 orchestrator before re-entering the model; the per-engine
+    ``AutoCompactState`` survives across ``send`` calls so the same-turn
+    cooldown and consecutive-failure counter behave correctly.
     """
 
     streamer: TurnStreamer
@@ -46,6 +54,10 @@ class QueryEngine:
     session_id: str
     working_dir: Path
     max_turns: int = 8
+    compactor: AutoCompactState | None = None
+    compaction_threshold: float = 0.7
+    compaction_preserve_recent: int = DEFAULT_KEEP_RECENT
+    compaction_capabilities: ProviderCapabilities | None = None
 
     def make_session_config(
         self,
@@ -55,7 +67,9 @@ class QueryEngine:
         """Build a ``SessionConfig`` wired to this engine's collaborators.
 
         Orientation / heartbeat / reviewer are left ``None`` for slice D;
-        they get plumbed in later slices via the same factory.
+        they get plumbed in later slices via the same factory. Compaction
+        fields are forwarded so the orchestrator sees the same state on
+        every ``send`` call.
         """
         return SessionConfig(
             client=self.streamer,
@@ -63,6 +77,10 @@ class QueryEngine:
             max_turns=self.max_turns,
             session_id=self.session_id,
             checkpoint=checkpoint,
+            compactor=self.compactor,
+            compaction_threshold=self.compaction_threshold,
+            compaction_preserve_recent=self.compaction_preserve_recent,
+            compaction_capabilities=self.compaction_capabilities,
         )
 
 
@@ -75,6 +93,10 @@ def build_query_engine(
     scratch_dir: Path | None = None,
     max_turns: int = 8,
     on_dispatch: Callable[[DispatchRecord], None] | None = None,
+    compactor: AutoCompactState | None = None,
+    compaction_threshold: float = 0.7,
+    compaction_preserve_recent: int = DEFAULT_KEEP_RECENT,
+    compaction_capabilities: ProviderCapabilities | None = None,
 ) -> QueryEngine:
     """Wrap a ``ToolRegistry`` in the canonical dispatcher and bind a streamer.
 
@@ -95,6 +117,10 @@ def build_query_engine(
         session_id=session_id,
         working_dir=working_dir,
         max_turns=max_turns,
+        compactor=compactor,
+        compaction_threshold=compaction_threshold,
+        compaction_preserve_recent=compaction_preserve_recent,
+        compaction_capabilities=compaction_capabilities,
     )
 
 

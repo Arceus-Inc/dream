@@ -73,6 +73,23 @@ class CompactProgressEvent:
 
 
 @dataclass(frozen=True)
+class CompactionDoneEvent:
+    """A compaction tier ran successfully between turns.
+
+    Surfaces the Spec 04 orchestrator outcome on the engine's event
+    stream so the public ``Session`` can translate it to ``events.Compacted``
+    and the REPL can render a banner. ``removed_messages`` is the
+    pre/post message-count delta (zero for microcompact, which preserves
+    structure); ``freed_tokens`` is the pre/post token-estimate delta.
+    """
+
+    tier: str
+    removed_messages: int
+    freed_tokens: int
+    resulting_utilisation: float
+
+
+@dataclass(frozen=True)
 class ErrorEvent:
     """An error the engine wants visible. ``recoverable`` flags whether the loop continues."""
 
@@ -87,6 +104,7 @@ StreamEvent = (
     | ToolExecutionCompleted
     | StatusEvent
     | CompactProgressEvent
+    | CompactionDoneEvent
     | ErrorEvent
 )
 
@@ -95,6 +113,7 @@ __all__ = [
     "AssistantTextDelta",
     "AssistantTurnComplete",
     "CompactProgressEvent",
+    "CompactionDoneEvent",
     "ErrorEvent",
     "StatusEvent",
     "StreamEvent",
