@@ -23,8 +23,9 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from dream.config.from_env import (
     PROFILE_ENV,
@@ -63,6 +64,21 @@ class ResolvedAuth:
 # ---------------------------------------------------------------------------
 
 
+def _require_http_url(value: str | None) -> str | None:
+    """Reject a non-http(s) ``base_url`` loaded from untrusted settings.
+
+    The settings file is operator-controlled but could be edited by a script;
+    ``file://``/``ftp://`` are valid strings httpx would happily dereference, so
+    the scheme is constrained at the config boundary.
+    """
+    if value is None:
+        return value
+    scheme = urlsplit(value).scheme.lower()
+    if scheme not in ("http", "https"):
+        raise ValueError(f"base_url must use http or https, got {value!r}")
+    return value
+
+
 class ProviderProfile(BaseModel):
     """One named provider workflow.
 
@@ -72,7 +88,9 @@ class ProviderProfile(BaseModel):
     the budgeter has no input and falls back to a conservative built-in.
     """
 
-    model_config = ConfigDict(frozen=False, extra="ignore")
+    # ``extra="forbid"``: a typo'd key (e.g. ``defaul_model``) must fail loudly
+    # at load instead of being silently dropped and leaving a built-in default.
+    model_config = ConfigDict(frozen=False, extra="forbid")
 
     label: str
     provider: str
@@ -85,6 +103,11 @@ class ProviderProfile(BaseModel):
     allowed_models: list[str] = Field(default_factory=list)
     context_window_tokens: int | None = None
     auto_compact_threshold_tokens: int | None = None
+
+    @field_validator("base_url")
+    @classmethod
+    def _validate_base_url(cls, v: str | None) -> str | None:
+        return _require_http_url(v)
 
     @property
     def resolved_model(self) -> str:
@@ -146,7 +169,8 @@ class Settings(BaseModel):
     model just stores values immutably enough for the lifetime of a process.
     """
 
-    model_config = ConfigDict(frozen=False, extra="ignore")
+    # ``extra="forbid"``: surface a typo'd top-level key instead of dropping it.
+    model_config = ConfigDict(frozen=False, extra="forbid")
 
     active_profile: str = "claude-api"
     profiles: dict[str, ProviderProfile] = Field(default_factory=default_provider_profiles)
@@ -156,6 +180,11 @@ class Settings(BaseModel):
     api_key: str | None = None
     base_url: str | None = None
     model: str | None = None
+
+    @field_validator("base_url")
+    @classmethod
+    def _validate_base_url(cls, v: str | None) -> str | None:
+        return _require_http_url(v)
 
     def merged_profiles(self) -> dict[str, ProviderProfile]:
         """Return user profiles overlaid on the built-in catalogue.

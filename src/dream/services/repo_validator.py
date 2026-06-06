@@ -85,7 +85,8 @@ def _check_agents_md(paths: DreamPaths) -> list[Finding]:
         return [Finding("blocking", "agents_md_missing", "AGENTS.md is missing", "AGENTS.md")]
 
     findings: list[Finding] = []
-    lines = agents.read_text(encoding="utf-8").splitlines()
+    text = agents.read_text(encoding="utf-8")  # read once; reused for link checks
+    lines = text.splitlines()
     if len(lines) > _AGENTS_HARD_CAP:
         findings.append(
             Finding(
@@ -104,13 +105,13 @@ def _check_agents_md(paths: DreamPaths) -> list[Finding]:
                 "AGENTS.md",
             )
         )
-    findings += _check_links(paths, agents)
+    findings += _check_links(paths, text)
     return findings
 
 
-def _check_links(paths: DreamPaths, agents: Path) -> list[Finding]:
+def _check_links(paths: DreamPaths, content: str) -> list[Finding]:
     findings: list[Finding] = []
-    for target in _MARKDOWN_LINK.findall(agents.read_text(encoding="utf-8")):
+    for target in _MARKDOWN_LINK.findall(content):
         if "://" in target or target.startswith(("#", "mailto:")):
             continue
         rel = target.split("#", 1)[0]  # drop anchors
