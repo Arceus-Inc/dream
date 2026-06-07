@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from collections.abc import Callable, Mapping
+from dataclasses import fields
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -39,12 +40,25 @@ from dream.services.compact._orchestrator import (
     AutoCompactState,
     auto_compact_if_needed,
 )
+from dream.services.context_log import ContextEvent
+from dream.services.repo_validator import has_blocking
 from dream.services.token_estimation import (
     estimate_conversation_tokens,
     utilisation,
 )
 from dream.session import Session, SessionOptions
+from dream.skills import (
+    SKILL_CONTEXT_KEY,
+    SkillContext,
+    SkillRegistry,
+    build_session_skill_registry,
+    render_skill_catalogue,
+    validate_skills,
+)
 from dream.tools.builtin import default_registry
+
+# A context-event sink the skill registry calls when a body loads.
+SkillEventSink = Callable[[ContextEvent], None]
 
 # ---------------------------------------------------------------------------
 # Default harness construction from env
@@ -63,6 +77,8 @@ def build_default_harness(
     env: Mapping[str, str],
     working_dir: Path,
     max_turns: int = 8,
+    skill_registry: SkillRegistry | None = None,
+    skill_event_sink: SkillEventSink | None = None,
 ) -> Harness:
     """Build a Harness whose ``_engine_factory`` produces a real engine.
 
@@ -102,7 +118,28 @@ def build_default_harness(
     # /util command surface utilisation against this number.
     capabilities = ProviderCapabilities(max_context_tokens=128_000)
 
+    # Skills (Spec 06 slice 2): the frontmatter catalogue goes into the system
+    # prompt so the model can discover skills; the SkillContext rides the
+    # dispatcher's context_metadata so the `skill` tool can load bodies.
+    catalogue = (
+        render_skill_catalogue(skill_registry.list_meta()) if skill_registry else ""
+    )
+    skill_context = (
+        SkillContext(
+            registry=skill_registry,
+            available_tools=frozenset(t.name for t in registry.list_tools()),
+            event_sink=skill_event_sink,
+        )
+        if skill_registry is not None
+        else None
+    )
+
     def _factory(session_id: str, options: SessionOptions) -> QueryEngine:
+        system_prompt = options.system_prompt
+        if catalogue:
+            system_prompt = (
+                catalogue if not system_prompt else f"{catalogue}\n\n{system_prompt}"
+            )
         streamer = OpenAIChatStreamer(
             stream_chat_completion=httpx_chat_completion_stream(
                 api_key=api_key,
@@ -112,7 +149,7 @@ def build_default_harness(
                 else None,
             ),
             model=options.model or model,
-            system_prompt=options.system_prompt,
+            system_prompt=system_prompt,
         )
         return build_query_engine(
             streamer=streamer,
@@ -120,6 +157,9 @@ def build_default_harness(
             session_id=session_id,
             working_dir=working_dir,
             max_turns=options.max_turns or max_turns,
+            context_metadata=(
+                {SKILL_CONTEXT_KEY: skill_context} if skill_context is not None else None
+            ),
             compactor=compactor,
             compaction_capabilities=capabilities,
         )
@@ -267,19 +307,84 @@ def handle_event(ev: Event, *, sink: EventSink, output: TextIO) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _handle_slash(line: str, *, session: Session, sink: EventSink, output: TextIO) -> bool:
+def _emit_context_event(sink: EventSink, event: ContextEvent) -> None:
+    """Adapt a context-log event onto the JSONL ``EventSink`` (returns None)."""
+    sink.emit(event.name, **{f.name: getattr(event, f.name) for f in fields(event)})
+
+
+def _cmd_skills(
+    registry: SkillRegistry | None, *, output: TextIO, use: bool
+) -> None:
+    """Print the skill catalogue (frontmatter only), or a hint if none."""
+    metas = registry.list_meta() if registry is not None else []
+    if not metas:
+        output.write(_c(_DIM, "no skills registered", use=use) + "\n")
+        return
+    output.write(_c(_CYAN, "skills", use=use) + "\n")
+    for meta in metas:
+        flags = " (user-only)" if meta.disable_model_invocation else ""
+        output.write(
+            "  "
+            + _c(_BOLD, f"{meta.name}", use=use)
+            + _c(_DIM, f" [{meta.source}]{flags} · {meta.description}", use=use)
+            + "\n"
+        )
+
+
+def _cmd_skill(
+    name: str,
+    registry: SkillRegistry | None,
+    *,
+    sink: EventSink,
+    output: TextIO,
+    use: bool,
+) -> None:
+    """Operator-load a skill body (operators may load user-only skills)."""
+    if not name:
+        output.write(_c(_YELLOW, "usage: /skill <name>", use=use) + "\n")
+        return
+    if registry is None or registry.resolve(name) is None:
+        output.write(_c(_YELLOW, f"unknown skill {name!r}", use=use) + "\n")
+        return
+    # Operator invocation: ``disable_model_invocation`` gates the *model*, not
+    # the operator, so we load the body here regardless of that flag.
+    defn = registry.use_skill(
+        name, event_sink=lambda ev: _emit_context_event(sink, ev)
+    )
+    output.write(_c(_CYAN, f"skill: {defn.meta.name}", use=use) + "\n")
+    output.write(defn.content.rstrip() + "\n")
+
+
+def _handle_slash(
+    line: str,
+    *,
+    session: Session,
+    sink: EventSink,
+    skill_registry: SkillRegistry | None = None,
+    output: TextIO,
+) -> bool:
     """Dispatch one slash command. Returns True to keep looping, False to quit."""
     use = _use_colour(output)
     parts = line.strip().split(maxsplit=1)
     cmd = parts[0].lower()
+    arg = parts[1].strip() if len(parts) > 1 else ""
     if cmd in ("/quit", "/exit"):
         return False
+    if cmd == "/skills":
+        _cmd_skills(skill_registry, output=output, use=use)
+        sink.emit("session.skills_listed")
+        return True
+    if cmd == "/skill":
+        _cmd_skill(arg, skill_registry, sink=sink, output=output, use=use)
+        return True
     if cmd in ("/help", "/?"):
         commands = [
             ("/help", "this list"),
             ("/info", "session id, model, running cost"),
             ("/util", "context utilisation % + cost"),
             ("/compact", "force a Spec 04 microcompact now"),
+            ("/skills", "list available skills (frontmatter)"),
+            ("/skill <name>", "load a skill body (operator)"),
             ("/reset", "clear transcript (keep engine + cost)"),
             ("/quit", "leave the REPL"),
         ]
@@ -420,6 +525,7 @@ async def session_loop(
     *,
     session: Session,
     sink: EventSink,
+    skill_registry: SkillRegistry | None = None,
     input_func: Callable[[str], str] = input,
     output: TextIO | None = None,
 ) -> None:
@@ -456,7 +562,13 @@ async def session_loop(
         if not line.strip():
             continue
         if line.startswith("/"):
-            if not _handle_slash(line, session=session, sink=sink, output=out):
+            if not _handle_slash(
+                line,
+                session=session,
+                sink=sink,
+                skill_registry=skill_registry,
+                output=out,
+            ):
                 break
             continue
         try:
@@ -496,11 +608,33 @@ def run_session_repl(
     """Build (or accept) a Harness and run ``session_loop`` to completion.
 
     Returns 0 on clean exit, 2 when required env vars are missing and no
-    ``harness`` was injected (keeps tests deterministic without env).
+    ``harness`` was injected, 3 when a malformed skill blocks the session.
     """
     import os as _os
 
     out = output if output is not None else sys.stdout
+    work_dir = working_dir or Path.cwd()
+
+    # Session-start skill gate (Spec 06 MUST #3): a malformed SKILL.md blocks
+    # the session before anything else. Runs even with an injected harness.
+    skill_findings = validate_skills(work_dir)
+    if has_blocking(skill_findings):
+        for finding in skill_findings:
+            out.write(f"blocked: {finding.message} ({finding.path})\n")
+        return 3
+
+    skill_registry, shadows = build_session_skill_registry(work_dir)
+    for shadow in shadows:
+        out.write(
+            f"note: skill {shadow.name!r} from {shadow.winner_source} "
+            f"shadows {shadow.shadowed_source}\n"
+        )
+
+    sink = EventSink(events_path)
+
+    def _skill_event_sink(event: ContextEvent) -> None:
+        _emit_context_event(sink, event)
+
     if harness is None:
         env_map = env if env is not None else _os.environ
         if _missing(env_map):
@@ -508,11 +642,12 @@ def run_session_repl(
             return 2
         harness = build_default_harness(
             env=env_map,
-            working_dir=working_dir or Path.cwd(),
+            working_dir=work_dir,
             max_turns=max_turns,
+            skill_registry=skill_registry,
+            skill_event_sink=_skill_event_sink,
         )
 
-    sink = EventSink(events_path)
     sink.emit(
         "session.repl.started",
         events_path=str(events_path),
@@ -526,6 +661,7 @@ def run_session_repl(
             await session_loop(
                 session=session,
                 sink=sink,
+                skill_registry=skill_registry,
                 input_func=input_func,
                 output=out,
             )

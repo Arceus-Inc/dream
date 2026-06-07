@@ -39,7 +39,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -84,6 +84,10 @@ class EngineToolDispatcher:
     session_id: str
     scratch_dir: Path | None = None
     on_dispatch: _DispatchObserver | None = None
+    # Opaque per-session metadata merged into every ToolExecutionContext. Keeps
+    # the engine skill-agnostic: the skills layer stuffs its SkillContext here
+    # under its own key and the skill tool reads it back (Spec 06 slice 2).
+    context_metadata: dict[str, Any] = field(default_factory=dict)
 
     async def dispatch(self, name: str, input: dict[str, Any]) -> tuple[str, bool]:
         tool = self.registry.get(name)
@@ -100,6 +104,7 @@ class EngineToolDispatcher:
             working_dir=self.working_dir,
             session_id=self.session_id,
             scratch_dir=self.scratch_dir,
+            metadata=dict(self.context_metadata),  # copy: a tool can't leak into the next call
         )
         timeout = tool.declaration.timeout_seconds
         t0 = time.monotonic()
