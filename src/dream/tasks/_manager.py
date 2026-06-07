@@ -44,11 +44,16 @@ __all__ = [
     "RESTART_NOTICE",
     "BackgroundTaskManager",
     "CompletionListener",
+    "StartListener",
 ]
 
 CompletionListener = Callable[[TaskRecord], Awaitable[None] | None]
 """Called with the terminal :class:`TaskRecord` after natural exit or
 ``stop_task``. Sync or async are both fine."""
+
+StartListener = Callable[[TaskRecord], Awaitable[None] | None]
+"""Called with the freshly-spawned :class:`TaskRecord` after its subprocess
+starts. Sync or async; exceptions are swallowed by the manager."""
 
 AGENT_TASK_TYPES: frozenset[TaskType] = frozenset(
     {"local_agent", "remote_agent", "in_process_teammate"}
@@ -76,6 +81,7 @@ class BackgroundTaskManager:
         self._output_locks: dict[str, asyncio.Lock] = {}
         self._generations: dict[str, int] = {}
         self._listeners: dict[str, CompletionListener] = {}
+        self._start_listeners: dict[str, StartListener] = {}
         # Tasks the manager itself is tearing down (stop or restart). The
         # watcher checks this and skips its own listener notification so we
         # don't fire twice for the same terminal transition.
@@ -141,6 +147,7 @@ class BackgroundTaskManager:
             self._processes.pop(task_id, None)
             self._waiters.pop(task_id, None)
             raise
+        await self._notify_start_listeners(record)
         return record
 
     # --- lookup -----------------------------------------------------------
@@ -270,6 +277,23 @@ class BackgroundTaskManager:
 
         return _unregister
 
+    def register_start_listener(
+        self, listener: StartListener
+    ) -> Callable[[], None]:
+        """Register a callback fired after every successful task spawn.
+
+        Symmetric to :meth:`register_completion_listener`. Used by the REPL
+        to surface cron-driven (and any other background) task starts
+        alongside ordinary tool calls.
+        """
+        listener_id = uuid4().hex
+        self._start_listeners[listener_id] = listener
+
+        def _unregister() -> None:
+            self._start_listeners.pop(listener_id, None)
+
+        return _unregister
+
     # --- internals --------------------------------------------------------
 
     def _require_task(self, task_id: str) -> TaskRecord:
@@ -374,6 +398,15 @@ class BackgroundTaskManager:
                 # ``inspect.isawaitable`` covers coroutines AND other
                 # awaitables (Futures, objects with ``__await__``) — not just
                 # native coroutines like ``asyncio.iscoroutine`` does.
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:
+                pass
+
+    async def _notify_start_listeners(self, task: TaskRecord) -> None:
+        for listener in list(self._start_listeners.values()):
+            try:
+                result = listener(task)
                 if inspect.isawaitable(result):
                     await result
             except Exception:

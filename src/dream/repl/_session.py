@@ -40,6 +40,7 @@ from dream.mcp import McpClientManager
 from dream.observability import JsonlTracer, TraceWriter
 from dream.repl._events import EventSink
 from dream.repl._mcp import mcp_paths, setup_mcp_session
+from dream.repl._runtime_info import render_runtime_info
 from dream.services.compact._orchestrator import (
     AutoCompactState,
     auto_compact_if_needed,
@@ -62,6 +63,7 @@ from dream.skills import (
 from dream.tasks import (
     TASK_CONTEXT_KEY,
     BackgroundTaskManager,
+    TaskRecord,
     TaskSessionContext,
 )
 from dream.tools._registry import ToolRegistry
@@ -137,6 +139,10 @@ def build_default_harness(
     catalogue = (
         render_skill_catalogue(skill_registry.list_meta()) if skill_registry else ""
     )
+    # Runtime environment (shell + OS + python) injected so the model picks the
+    # right command syntax when it calls ``task_create command=...`` — without
+    # this it guesses bash on Windows and cmd.exe rejects the command.
+    runtime_info = render_runtime_info(env=env, working_dir=working_dir)
 
     def _factory(session_id: str, options: SessionOptions) -> QueryEngine:
         # Render the registry into OpenAI ``tools`` wire shape per session (cheap;
@@ -168,11 +174,16 @@ def build_default_harness(
             if skill_registry is not None
             else None
         )
-        system_prompt = options.system_prompt
+        # System prompt assembly order: runtime info first (host facts the
+        # model must trust), then the skill catalogue (capabilities), then the
+        # caller-supplied prompt (task framing). Each block survives if the
+        # next is empty.
+        parts = [runtime_info]
         if catalogue:
-            system_prompt = (
-                catalogue if not system_prompt else f"{catalogue}\n\n{system_prompt}"
-            )
+            parts.append(catalogue)
+        if options.system_prompt:
+            parts.append(options.system_prompt)
+        system_prompt = "\n\n".join(parts)
         streamer = OpenAIChatStreamer(
             stream_chat_completion=httpx_chat_completion_stream(
                 api_key=api_key,
@@ -206,7 +217,13 @@ def build_default_harness(
             model=options.model or model,
         )
 
-    return Harness(HarnessConfig(working_dir=working_dir, _engine_factory=_factory))
+    # Stash the task manager on the harness config so the REPL can register
+    # lifecycle listeners and surface cron-spawned task starts/completions
+    # alongside ordinary tool calls. ``extra`` is the documented escape hatch
+    # for harness-bound subsystems the SDK Harness API doesn't model yet.
+    config = HarnessConfig(working_dir=working_dir, _engine_factory=_factory)
+    config.extra["task_manager"] = task_manager
+    return Harness(config)
 
 
 def _build_context_metadata(
@@ -255,6 +272,81 @@ def _c(code: str, text: str, *, use: bool) -> str:
 def _flatten(s: str) -> str:
     """Collapse newlines/tabs so a tool blob renders on one tidy line."""
     return s.replace("\r", "").replace("\n", " \u23ce ").replace("\t", "  ")
+
+
+# ---------------------------------------------------------------------------
+# Background-task lifecycle rendering (cron + ad-hoc task_create)
+# ---------------------------------------------------------------------------
+
+
+def _task_label(task: TaskRecord) -> str:
+    """A compact ``cron:<kind> <task_id>`` / ``task <task_id>`` label.
+
+    Cron-spawned tasks carry ``cron.kind`` / ``cron.run_id`` in metadata
+    (see :func:`dream.tasks._cron_session.spawn_cron_session`); ad-hoc
+    ``task_create`` calls don't. Splitting the label this way lets the
+    user spot cron firings at a glance.
+    """
+    kind = task.metadata.get("cron.kind") if task.metadata else None
+    if kind:
+        run_id = task.metadata.get("cron.run_id") or task.id
+        return f"cron:{kind} {run_id}"
+    return f"task {task.id}"
+
+
+def render_task_started(
+    task: TaskRecord, *, sink: EventSink, output: TextIO
+) -> None:
+    """Render a background task's spawn to ``output`` + JSONL sink.
+
+    Mirrors the ``ToolUseStart`` shape (``▸ name args``) so cron and
+    background task lifecycle reads the same as ordinary tool calls.
+    """
+    use = _use_colour(output)
+    output.write(
+        "\n"
+        + _c(_MAGENTA, "  \u25b8 ", use=use)
+        + _c(_BOLD, _task_label(task), use=use)
+        + "  "
+        + _c(_DIM, _flatten(task.description), use=use)
+        + "\n"
+    )
+    output.flush()
+    sink.emit(
+        "session.task_started",
+        task_id=task.id,
+        task_type=task.type,
+        description=task.description,
+        metadata=dict(task.metadata) if task.metadata else {},
+    )
+
+
+def render_task_finished(
+    task: TaskRecord, *, sink: EventSink, output: TextIO
+) -> None:
+    """Render a background task's terminal transition (completed/failed/killed)."""
+    use = _use_colour(output)
+    status = task.status
+    colour = _GREEN if status == "completed" else _RED
+    rc = task.return_code if task.return_code is not None else "?"
+    duration = ""
+    if task.started_at and task.ended_at:
+        duration = f"  {task.ended_at - task.started_at:.1f}s"
+    output.write(
+        _c(colour, "  \u21b3 ", use=use)
+        + _c(_BOLD, _task_label(task), use=use)
+        + "  "
+        + _c(colour, f"{status} (rc={rc}){duration}", use=use)
+        + "\n"
+    )
+    output.flush()
+    sink.emit(
+        "session.task_finished",
+        task_id=task.id,
+        task_type=task.type,
+        status=status,
+        return_code=task.return_code,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -752,6 +844,23 @@ def run_session_repl(
 
     async def _run(harness: Harness) -> int:
         mcp_manager: McpClientManager | None = None
+        # Surface background task lifecycle (cron firings + ad-hoc task_create
+        # spawns) inline in the REPL, the same way tool calls are rendered.
+        # The harness stashes its task_manager on ``config.extra`` so the REPL
+        # can subscribe without the SDK Harness API exposing every subsystem.
+        unsubs: list[Callable[[], None]] = []
+        task_manager = harness.config.extra.get("task_manager")
+        if isinstance(task_manager, BackgroundTaskManager):
+            unsubs.append(
+                task_manager.register_start_listener(
+                    lambda t: render_task_started(t, sink=sink, output=out)
+                )
+            )
+            unsubs.append(
+                task_manager.register_completion_listener(
+                    lambda t: render_task_finished(t, sink=sink, output=out)
+                )
+            )
         async with harness:
             if tool_registry is not None:
                 setup = await setup_mcp_session(
@@ -778,6 +887,8 @@ def run_session_repl(
             finally:
                 if mcp_manager is not None:
                     await mcp_manager.close()
+                for un in unsubs:
+                    un()
         return 0
 
     # ``finally`` so the stop lifecycle event is written even when the loop

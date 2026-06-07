@@ -56,7 +56,13 @@ class TaskCreateTool(BaseTool):
     """Create a background shell task supervised by the harness."""
 
     name = "task_create"
-    description = "Spawn a background local_bash task and return its id and type."
+    description = (
+        "Spawn a background local_bash task and return its id and type. "
+        "``command`` is evaluated by the host shell (see Runtime environment "
+        "in the system prompt for which one); use ``argv=[...]`` to bypass "
+        "the shell entirely when the command has metacharacters or you need "
+        "cross-platform execution."
+    )
     declaration = ToolDeclaration(risk="mutating", tier_required=1, timeout_seconds=15.0)
     input_model = TaskCreateInput
 

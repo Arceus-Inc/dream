@@ -185,6 +185,81 @@ async def test_completion_listener_unregister(tmp_path: Path) -> None:
     assert seen == []
 
 
+# --- start listeners -------------------------------------------------------
+
+
+async def test_start_listener_fires_once_per_create(tmp_path: Path) -> None:
+    """The REPL renders ``▸ task <id>`` from this signal — if it fires
+    twice we'd render the start twice; if it doesn't fire at all, cron
+    firings stay invisible until they finish.
+    """
+    mgr = BackgroundTaskManager(tasks_dir=tmp_path)
+    seen: list[TaskRecord] = []
+
+    async def listener(task: TaskRecord) -> None:
+        seen.append(task)
+
+    mgr.register_start_listener(listener)
+    record = await mgr.create_shell_task(
+        description="hello",
+        cwd=tmp_path,
+        argv=_py_argv("pass"),
+    )
+    await _wait_until_done(mgr, record.id)
+    # listener is awaited inside create_shell_task; one extra tick is enough.
+    await asyncio.sleep(0.05)
+    assert len(seen) == 1
+    assert seen[0].id == record.id
+
+
+async def test_start_listener_supports_sync_callables(tmp_path: Path) -> None:
+    mgr = BackgroundTaskManager(tasks_dir=tmp_path)
+    seen: list[TaskRecord] = []
+    mgr.register_start_listener(lambda t: seen.append(t))
+    record = await mgr.create_shell_task(
+        description="x",
+        cwd=tmp_path,
+        argv=_py_argv("pass"),
+    )
+    await _wait_until_done(mgr, record.id)
+    await asyncio.sleep(0.05)
+    assert len(seen) == 1
+    assert seen[0].id == record.id
+
+
+async def test_start_listener_unregister(tmp_path: Path) -> None:
+    mgr = BackgroundTaskManager(tasks_dir=tmp_path)
+    seen: list[TaskRecord] = []
+    unregister = mgr.register_start_listener(lambda t: seen.append(t))
+    unregister()
+    record = await mgr.create_shell_task(
+        description="x",
+        cwd=tmp_path,
+        argv=_py_argv("pass"),
+    )
+    await _wait_until_done(mgr, record.id)
+    await asyncio.sleep(0.05)
+    assert seen == []
+
+
+async def test_start_listener_exception_does_not_break_spawn(tmp_path: Path) -> None:
+    """A buggy renderer must not poison ``create_shell_task`` — the
+    completion listener and the returned record must still work."""
+    mgr = BackgroundTaskManager(tasks_dir=tmp_path)
+    completion_seen: list[TaskRecord] = []
+    mgr.register_start_listener(lambda t: (_ for _ in ()).throw(RuntimeError("boom")))
+    mgr.register_completion_listener(lambda t: completion_seen.append(t))
+    record = await mgr.create_shell_task(
+        description="x",
+        cwd=tmp_path,
+        argv=_py_argv("pass"),
+    )
+    await _wait_until_done(mgr, record.id)
+    await asyncio.sleep(0.05)
+    assert record.id != ""
+    assert len(completion_seen) == 1
+
+
 # --- output streaming ------------------------------------------------------
 
 
