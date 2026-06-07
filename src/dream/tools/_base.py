@@ -19,6 +19,7 @@ Spec invariants honoured here:
 
 from __future__ import annotations
 
+import inspect
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args
@@ -183,12 +184,14 @@ class BaseTool(ABC):
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
-        # Only validate concrete tool classes that ship their own ``execute``
-        # (or have had it patched in). Abstract intermediate layers — those
-        # that leave ``execute`` as the inherited ``@abstractmethod`` — are
-        # skipped so test fixtures and abstract base layers can declare
-        # partial state without tripping the gate.
-        if "execute" not in cls.__dict__:
+        # Only validate concrete tool classes. Abstract intermediate layers —
+        # those that still carry unimplemented ``@abstractmethod`` members —
+        # are skipped so abstract base layers and test fixtures can declare
+        # partial state without tripping the gate. We check abstractness
+        # rather than ``"execute" in cls.__dict__`` so a concrete subclass
+        # that *inherits* a fully-defined ``execute`` is still validated
+        # (#14: inheriting ``execute`` must not bypass the gate).
+        if inspect.isabstract(cls):
             return
         missing: list[str] = []
         for attr in ("name", "description", "declaration", "input_model"):
@@ -202,6 +205,14 @@ class BaseTool(ABC):
             raise ToolDeclarationError(
                 f"{cls.__name__}: declaration must be a ToolDeclaration "
                 f"instance, got {type(cls.declaration).__name__}"
+            )
+        # #12: ``input_model`` MUST be a ``pydantic.BaseModel`` subclass.
+        # Without this, a non-model passes class creation and only blows up
+        # later inside ``input_schema()`` / ``model_json_schema()``.
+        if not (isinstance(cls.input_model, type) and issubclass(cls.input_model, BaseModel)):
+            raise ToolDeclarationError(
+                f"{cls.__name__}: input_model must be a pydantic.BaseModel "
+                f"subclass, got {cls.input_model!r}"
             )
 
     @abstractmethod

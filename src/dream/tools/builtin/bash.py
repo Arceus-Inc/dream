@@ -32,6 +32,11 @@ _READ_REMAINING_TIMEOUT = 2.0
 # Heuristic -- commands that start with one of these tokens are treated as
 # read-only for per-call tier gating. Matches the head whitespace-separated
 # token only; we deliberately do NOT try to parse the full command line.
+#
+# NOTE: ``git`` is intentionally NOT in this set. ``git`` has both read-only
+# and heavily mutating subcommands (commit, reset, clean, push), so a blanket
+# head match would downclassify ``git reset --hard`` as "safe". git is gated
+# separately via ``_GIT_READ_ONLY_SUBCOMMANDS`` below.
 _READ_ONLY_HEADS: frozenset[str] = frozenset(
     {
         "ls",
@@ -57,12 +62,6 @@ _READ_ONLY_HEADS: frozenset[str] = frozenset(
         "ripgrep",
         "egrep",
         "fgrep",
-        "git",
-        "python",
-        "python3",
-        "node",
-        "ruby",
-        "perl",
         "uname",
         "hostname",
         "whoami",
@@ -70,6 +69,24 @@ _READ_ONLY_HEADS: frozenset[str] = frozenset(
         "env",
         "printenv",
         "date",
+    }
+)
+
+# Vetted read-only git subcommands. Mirrors the always-read-only set of the
+# dedicated GitTool. ``git <one of these>`` is read-only; everything else
+# (commit, reset, clean, checkout, merge, rebase, push, branch <name>, ...)
+# is NOT downclassified.
+_GIT_READ_ONLY_SUBCOMMANDS: frozenset[str] = frozenset(
+    {
+        "status",
+        "diff",
+        "log",
+        "show",
+        "rev-parse",
+        "ls-files",
+        "ls-tree",
+        "describe",
+        "blame",
     }
 )
 
@@ -95,10 +112,17 @@ class BashTool(BaseTool):
         if not command:
             return False
         try:
-            head = shlex.split(command)[0]
+            tokens = shlex.split(command)
         except ValueError:
             return False
-        return Path(head).name.lower() in _READ_ONLY_HEADS
+        if not tokens:
+            return False
+        head = Path(tokens[0]).name.lower()
+        if head == "git":
+            # git is read-only only for a vetted subcommand allowlist; a bare
+            # ``git`` or a mutating subcommand is NOT downclassified.
+            return len(tokens) >= 2 and tokens[1] in _GIT_READ_ONLY_SUBCOMMANDS
+        return head in _READ_ONLY_HEADS
 
     async def execute(self, input: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
         args = BashInput.model_validate(input)
@@ -124,20 +148,39 @@ class BashTool(BaseTool):
             )
 
         argv = _shell_argv(args.command)
-        process = await asyncio.create_subprocess_exec(
-            *argv,
-            cwd=str(cwd),
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-
         try:
-            await asyncio.wait_for(process.wait(), timeout=args.timeout_seconds)
+            process = await asyncio.create_subprocess_exec(
+                *argv,
+                cwd=str(cwd),
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+        except OSError as exc:
+            return ToolResult(
+                content=f"failed to spawn shell: {exc}",
+                is_error=True,
+                metadata={
+                    "command": args.command,
+                    "returncode": None,
+                    "timed_out": False,
+                    "root_cause": f"shell spawn failed: {exc}",
+                    "safe_retry": "verify the working directory exists",
+                    "stop_condition": "do not retry until the cwd is corrected",
+                },
+            )
+
+        # #25: consume stdout *concurrently* with execution via communicate().
+        # Awaiting process.wait() before reading deadlocks any command that
+        # writes more than the pipe buffer: the child blocks on write while we
+        # block on exit. communicate() drains the pipe as the child runs.
+        try:
+            stdout_b, _ = await asyncio.wait_for(
+                process.communicate(), timeout=args.timeout_seconds
+            )
         except TimeoutError:
-            partial = await _drain(process.stdout)
             await _kill(process)
-            partial.extend(await _read_remaining(process))
+            partial = await _read_remaining(process)
             return ToolResult(
                 content=_format_timeout(partial, args.command, args.timeout_seconds),
                 is_error=True,
@@ -151,7 +194,7 @@ class BashTool(BaseTool):
                 },
             )
 
-        buffer = await _read_remaining(process)
+        buffer = bytearray(stdout_b)
         text = _format(buffer)
         is_error = process.returncode != 0
         metadata: dict[str, Any] = {
@@ -179,23 +222,12 @@ def _shell_argv(command: str) -> list[str]:
 async def _kill(process: asyncio.subprocess.Process) -> None:
     if process.returncode is not None:
         return
-    process.kill()
+    # The child may exit on its own between the timeout firing and kill(),
+    # which raises ProcessLookupError; suppress that already-exited race.
+    with contextlib.suppress(ProcessLookupError):
+        process.kill()
     with contextlib.suppress(TimeoutError):
         await asyncio.wait_for(process.wait(), timeout=2.0)
-
-
-async def _drain(stream: asyncio.StreamReader | None, *, read_timeout: float = 0.05) -> bytearray:
-    out = bytearray()
-    if stream is None:
-        return out
-    while True:
-        try:
-            chunk = await asyncio.wait_for(stream.read(65536), timeout=read_timeout)
-        except TimeoutError:
-            return out
-        if not chunk:
-            return out
-        out.extend(chunk)
 
 
 async def _read_remaining(process: asyncio.subprocess.Process) -> bytearray:
