@@ -98,7 +98,16 @@ class JsonlTracer:
         try:
             yield handle
         finally:
-            _CURRENT_SPAN.reset(token)
+            # ``reset(token)`` requires the same Context the ``set`` ran in.
+            # Async generators driven across ``asyncio.ensure_future`` /
+            # ``create_task`` boundaries (e.g. ``Session.send``'s per-anext
+            # task) resume in a *different* Context, so ``reset`` would raise
+            # ``ValueError`` and crash the act-loop. Fall back to ``set(parent)``
+            # so nesting is still restored without coupling to token identity.
+            try:
+                _CURRENT_SPAN.reset(token)
+            except ValueError:
+                _CURRENT_SPAN.set(parent)
             attrs: dict[str, object] = {
                 **(attributes or {}),
                 **handle.end_attributes(),
