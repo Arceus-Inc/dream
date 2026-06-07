@@ -99,7 +99,7 @@ in-memory message bus between subagents. A handoff is a *committed file* plus a 
 from-role, to-role, and an artefact pointer. This is what makes a multi-agent run inspectable and
 reproducible — the repo *is* the message log; you can `git log` the conversation between agents. It
 also means a crashed subagent loses nothing the next runner can't reconstruct from committed state
-(`#08` recovery), because the contract and ledger are already on disk.
+(`#10p5` recovery), because the contract and ledger are already on disk.
 
 OpenHarness shipped the *substrate* this pattern needs and never abstracted — a `TeamRegistry`,
 `TeammateSpawnConfig`, a leader that receives worker results as `<task-notification>` XML, a
@@ -611,7 +611,7 @@ Scenario: Remote agent refused without the bridge enabled
 - **Evaluator becomes flaky** (frequent `fail` on actually-correct sprints). Detected by the eval
   tuning loop (`#12`), which patches the evaluator's prompt — not handled here.
 - **A subagent crashes mid-sprint.** The contract + ledger are already committed; the next runner
-  invocation resumes from the last checkpoint (`#02`/`#08`) with the contract intact — nothing in RAM
+  invocation resumes from the last checkpoint (`#02`/`#10p5`) with the contract intact — nothing in RAM
   was load-bearing.
 - **Leader inbox grows unbounded** (many completed workers, leader idle). Read notifications are
   marked `read` and may be compacted; the *handoff jsonl* remains the durable record. Inbox is a
