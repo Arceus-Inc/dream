@@ -144,6 +144,10 @@ class DreamPaths:
         """The OTel-shaped trace JSONL for a task (Spec 12a)."""
         return self.sidecar(task_id) / "logs" / "trace.jsonl"
 
+    def verification_report(self, task_id: str) -> Path:
+        """The verification report JSON for a task (Spec 12c)."""
+        return self.sidecar(task_id) / "metrics" / "verification-report.json"
+
     def checkpoint_ref(self, task_id: str, n: int | str) -> str:
         return f"{CHECKPOINT_REF_PREFIX}/{_checked_task_id(task_id)}/{n}"
 
