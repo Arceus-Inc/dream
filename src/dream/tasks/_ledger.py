@@ -77,6 +77,16 @@ class LedgerEntry(BaseModel):
 
 
 def _check_invariants(ledger: Ledger) -> None:
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for e in ledger.entries:
+        if e.id in seen and e.id not in duplicates:
+            duplicates.append(e.id)
+        seen.add(e.id)
+    if duplicates:
+        raise LedgerStateError(
+            f"duplicate entry id(s) are not allowed: {duplicates}"
+        )
     in_progress = [e for e in ledger.entries if e.status == "in_progress"]
     if len(in_progress) > 1:
         raise LedgerStateError(
@@ -139,13 +149,18 @@ class Ledger(BaseModel):
 
     # --- mutation (returns new instance) ---------------------------------
 
-    def append_note(self, *, entry_id: str, note: str) -> Ledger:
-        """Append a note to an entry; never modifies an existing note."""
+    def append_note(self, *, entry_id: str, note: str, now: datetime) -> Ledger:
+        """Append a note to an entry; never modifies an existing note.
+
+        Bumps ``updated_at`` to ``now`` like the status-transition helpers:
+        appending a note is a content mutation and must move the ledger's
+        last-modified marker so downstream watchers see the change.
+        """
         idx = self._entry_index(entry_id)
         target = self.entries[idx]
         new_entry = target.model_copy(update={"notes": (*target.notes, note)})
         new_entries = (*self.entries[:idx], new_entry, *self.entries[idx + 1 :])
-        return self.model_copy(update={"entries": new_entries})
+        return self.model_copy(update={"entries": new_entries, "updated_at": now})
 
     def mark_in_progress(self, *, entry_id: str, now: datetime) -> Ledger:
         if self.in_progress_entry() is not None:

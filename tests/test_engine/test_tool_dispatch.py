@@ -9,8 +9,9 @@ Pipeline pinned by these tests:
 3. Per-call ``is_read_only`` is computed before execute and surfaced to the
    injected observer.
 4. ``tool.execute`` runs under ``declaration.timeout_seconds`` via
-   ``asyncio.wait_for``; timeout becomes a typed ``is_error`` result with
-   the 3-part-contract hint.
+   ``asyncio.timeout`` over an explicit task; a deadline expiry becomes a
+   typed ``is_error`` result with the 3-part-contract hint, while a
+   ``TimeoutError`` raised by the tool itself propagates as an exception.
 5. Oversized ``ToolResult.content`` is routed through
    ``services.tool_outputs.offload_tool_output`` so the returned content is
    an inline preview + ref token, with the artifact spilled to scratch.
@@ -100,6 +101,27 @@ class _BoomTool(BaseTool):
 
     async def execute(self, input: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
         raise RuntimeError("kaboom -- engine internals, do not leak to model")
+
+
+class _ToolRaisesTimeoutInput(BaseModel):
+    pass
+
+
+class _ToolRaisesTimeoutTool(BaseTool):
+    """Raises ``TimeoutError`` from its own logic, well within the deadline.
+
+    The dispatcher must not confuse this with the *outer* deadline expiry: a
+    tool that raises ``TimeoutError`` is a genuine tool exception and must
+    propagate unchanged (CodeAnt #30).
+    """
+
+    name = "inner_timeout"
+    description = "Raise TimeoutError immediately."
+    declaration = ToolDeclaration(risk="safe", tier_required=0, timeout_seconds=5.0)
+    input_model = _ToolRaisesTimeoutInput
+
+    async def execute(self, input: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
+        raise TimeoutError("tool-internal timeout -- not the dispatcher deadline")
 
 
 class _CtxInspectInput(BaseModel):
@@ -290,6 +312,33 @@ async def test_dispatch_timeout_returns_typed_error_with_three_part_contract(
     assert "stop_condition" in content
     # Observer sees the failed dispatch and the read-only flag of the tool.
     assert sink[0].is_error is True
+
+
+async def test_dispatch_tool_raised_timeout_propagates_not_synthetic_timeout(
+    tmp_path: Path,
+) -> None:
+    """A ``TimeoutError`` raised by the *tool* must propagate as an exception,
+    not be turned into a synthetic timeout result (CodeAnt #30).
+
+    Previously the bare ``except TimeoutError`` around ``wait_for`` swallowed
+    the tool's own ``TimeoutError`` and reported it as a deadline expiry,
+    hiding a real tool failure from the engine's exception path.
+    """
+    reg = _registry(_ToolRaisesTimeoutTool())
+    sink, recorder = _records()
+    disp = EngineToolDispatcher(
+        registry=reg,
+        working_dir=tmp_path,
+        session_id="s",
+        on_dispatch=recorder,
+    )
+
+    with pytest.raises(TimeoutError, match="tool-internal"):
+        await disp.dispatch("inner_timeout", {})
+
+    # The synthetic-timeout result path was NOT taken, so no record was
+    # written -- the engine loop owns the failure record for raised excs.
+    assert sink == []
 
 
 async def test_dispatch_within_timeout_returns_success(tmp_path: Path) -> None:

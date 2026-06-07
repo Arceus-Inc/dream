@@ -26,6 +26,7 @@ from pathlib import Path
 from dream.tasks._ledger import Ledger, LedgerEntry, write_ledger
 from dream.tasks._manager import BackgroundTaskManager
 from dream.tasks._seam import make_ledger_completion_listener
+from dream.tasks._types import TaskRecord
 
 
 def _seed_ledger(path: Path, *, entry_id: str = "e1") -> Ledger:
@@ -135,6 +136,70 @@ async def test_seam_ignores_untagged_tasks(tmp_path: Path) -> None:
     await asyncio.sleep(0.1)
 
     assert ledger_path.read_text(encoding="utf-8") == snapshot_before
+
+
+def test_seam_concurrent_completions_do_not_lose_updates(tmp_path: Path) -> None:
+    """Two completions on the *same* ledger file must serialise via the
+    per-ledger lock — without it the unlocked read-modify-write loses one
+    entry's transition (#58)."""
+    import threading
+
+    ledger_path = tmp_path / "T1.json"
+    now = datetime.now(UTC)
+    ledger = Ledger(
+        task_id="T1",
+        state="active",
+        created_at=now,
+        updated_at=now,
+        entries=(
+            LedgerEntry(id="e1", description="first", status="in_progress"),
+            LedgerEntry(id="e2", description="second", status="pending"),
+        ),
+    )
+    write_ledger(ledger_path, ledger)
+
+    listener = make_ledger_completion_listener()
+
+    def _terminal_record(entry_id: str) -> TaskRecord:
+        return TaskRecord(
+            id=f"task-{entry_id}",
+            type="local_bash",
+            status="completed",
+            description="done",
+            cwd=str(tmp_path),
+            output_file=tmp_path / f"{entry_id}.log",
+            return_code=0,
+            metadata={
+                "task_id": "T1",
+                "entry_id": entry_id,
+                "ledger_path": str(ledger_path),
+            },
+        )
+
+    barrier = threading.Barrier(2)
+
+    def fire(entry_id: str) -> None:
+        barrier.wait()  # maximise overlap of the read-modify-write windows
+        listener(_terminal_record(entry_id))
+
+    threads = [
+        threading.Thread(target=fire, args=("e1",)),
+        threading.Thread(target=fire, args=("e2",)),
+    ]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+
+    from dream.tasks._ledger import read_ledger
+
+    after = read_ledger(ledger_path)
+    by_id = {e.id: e for e in after.entries}
+    # Both completions must be reflected; neither overwrites the other.
+    assert by_id["e1"].status == "done"
+    assert by_id["e2"].status == "done"
+    assert by_id["e1"].notes  # the completion note landed
+    assert by_id["e2"].notes
 
 
 async def test_seam_killed_task_marks_blocked(tmp_path: Path) -> None:

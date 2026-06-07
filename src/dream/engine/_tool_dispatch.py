@@ -18,9 +18,13 @@ Pipeline per ``dispatch`` call:
    profile of *this specific invocation* rather than the tool's class-
    level worst case.
 4. ``tool.execute`` runs under ``declaration.timeout_seconds`` via
-   ``asyncio.wait_for``. Timeout becomes a typed-error result with the
-   3-part contract; the tool's own ``ctx.run_subprocess`` already handles
-   inner-subprocess timeouts, this guard is the outer safety net.
+   ``asyncio.timeout`` over an explicit task. A deadline expiry (the task
+   is cancelled) becomes a typed-error result with the 3-part contract; a
+   ``TimeoutError`` *raised by the tool itself* (the task completes with
+   that exception) is a genuine tool exception and propagates unchanged --
+   it is not turned into a synthetic timeout result. The tool's own
+   ``ctx.run_subprocess`` already handles inner-subprocess timeouts; this
+   guard is the outer safety net.
 5. ``ToolResult.content`` exceeding the spec 04 inline budget is routed
    through ``services.tool_outputs.offload_tool_output``; the caller sees
    an inline preview + ref token and the full payload lands in scratch.
@@ -99,13 +103,27 @@ class EngineToolDispatcher:
         )
         timeout = tool.declaration.timeout_seconds
         t0 = time.monotonic()
+        # Wrap execution in an explicit task so we can tell *which* call
+        # raised ``TimeoutError``: the outer deadline (the task gets
+        # cancelled by ``asyncio.timeout``) vs. the tool itself raising
+        # ``TimeoutError`` (the task completes with that exception). Only
+        # the former maps to a synthetic timeout result; a tool-raised
+        # exception propagates unchanged per the dispatch contract (#27).
+        exec_task: asyncio.Task[Any] = asyncio.ensure_future(tool.execute(input, ctx))
         try:
-            result = await asyncio.wait_for(tool.execute(input, ctx), timeout=timeout)
+            async with asyncio.timeout(timeout):
+                result = await exec_task
         except TimeoutError:
-            elapsed = time.monotonic() - t0
-            return self._timeout(
-                tool_name=name, timeout=timeout, is_read_only=is_read_only, elapsed=elapsed
-            )
+            # ``asyncio.timeout`` cancels the inner task on deadline; a
+            # completed-but-failed task means the tool raised its own
+            # ``TimeoutError``, which is a real tool exception, not a
+            # deadline expiry -- re-raise it for the engine loop to handle.
+            if exec_task.cancelled():
+                elapsed = time.monotonic() - t0
+                return self._timeout(
+                    tool_name=name, timeout=timeout, is_read_only=is_read_only, elapsed=elapsed
+                )
+            raise
         elapsed = time.monotonic() - t0
 
         scratch = self.scratch_dir or (self.working_dir / ".dream" / "scratch")

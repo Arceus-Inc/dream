@@ -148,6 +148,54 @@ def _fake_spec(name: str) -> SubstrateSpec:
 # ---------------------------------------------------------------------------
 
 
+# Argument keys whose *values* are high-risk to emit verbatim into the JSONL
+# event log: file bodies, shell commands, raw payloads, and anything that
+# commonly carries secrets. Their values are redacted before ``tool.invoked``
+# is written so credentials in a write_file body or a bash command never land
+# in a plaintext audit file.
+_SENSITIVE_ARG_KEYS = frozenset(
+    {
+        "content",
+        "command",
+        "cmd",
+        "code",
+        "script",
+        "body",
+        "data",
+        "text",
+        "payload",
+        "password",
+        "secret",
+        "token",
+        "api_key",
+        "apikey",
+        "key",
+        "authorization",
+    }
+)
+_ARG_PREVIEW_CHARS = 40
+
+
+def _redact_args(args: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of ``args`` safe to emit into the JSONL event log.
+
+    Sensitive keys (file bodies, shell commands, secrets) are replaced with a
+    length-only placeholder; other string values are length-capped so a large
+    blob neither bloats nor leaks through the event file. Non-sensitive scalars
+    pass through unchanged so the audit trail stays useful.
+    """
+    redacted: dict[str, Any] = {}
+    for key, value in args.items():
+        if key.lower() in _SENSITIVE_ARG_KEYS:
+            length = len(value) if isinstance(value, (str, bytes, list, dict)) else None
+            redacted[key] = f"<redacted:{length} chars>" if length is not None else "<redacted>"
+        elif isinstance(value, str) and len(value) > _ARG_PREVIEW_CHARS:
+            redacted[key] = value[:_ARG_PREVIEW_CHARS] + f"…(+{len(value) - _ARG_PREVIEW_CHARS})"
+        else:
+            redacted[key] = value
+    return redacted
+
+
 def _classify_exception(exc: BaseException) -> Outcome:
     """Map an SDK exception class name to a Spec §11 outcome.
 
@@ -652,10 +700,25 @@ def _cmd_tool(ctx: _SlashContext) -> bool:
     )
     sink = ctx.state.sink
     if sink is not None:
-        sink.emit("tool.invoked", name=name, args=args)
+        # Redact high-risk argument values (file bodies, shell commands,
+        # secrets) before they hit the plaintext JSONL audit file.
+        sink.emit("tool.invoked", name=name, args=_redact_args(args))
+    timeout = tool.declaration.timeout_seconds
     started = time.monotonic()
     try:
-        result = asyncio.run(tool.execute(args, tool_ctx))
+        result = asyncio.run(asyncio.wait_for(tool.execute(args, tool_ctx), timeout=timeout))
+    except TimeoutError:
+        elapsed_ms = (time.monotonic() - started) * 1000.0
+        print(f"[error] tool {name!r} timed out after {timeout:.1f}s")
+        if sink is not None:
+            sink.emit(
+                "tool.failed",
+                name=name,
+                error="TimeoutError",
+                detail=f"exceeded declared timeout of {timeout:.1f}s",
+                elapsed_ms=round(elapsed_ms, 1),
+            )
+        return True
     except Exception as exc:
         elapsed_ms = (time.monotonic() - started) * 1000.0
         print(f"[error] {type(exc).__name__}: {exc}")

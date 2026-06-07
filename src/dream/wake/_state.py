@@ -49,10 +49,19 @@ def state_path_for(coordination_dir: Path, *, agent_id: str) -> Path:
 
 
 def read_state(path: Path) -> HeartbeatState:
-    """Read state from ``path``. Returns default on any read/parse failure."""
+    """Read state from ``path``. Returns default on any read/parse failure.
+
+    The contract is forgiving: a missing file, a permission error, a
+    transient I/O error, or a torn/undecodable file all yield the default
+    state rather than crashing the wake cycle. ``OSError`` covers the I/O
+    family (``FileNotFoundError``, ``PermissionError``, ``IsADirectoryError``,
+    transient reads); ``ValueError`` covers ``UnicodeDecodeError`` from a
+    non-UTF-8 file (raised by ``read_text``) and ``json.JSONDecodeError`` from
+    malformed JSON. Programming errors (e.g. ``TypeError``) are not caught.
+    """
     try:
         raw = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
+    except (OSError, ValueError):
         return HeartbeatState()
     try:
         data = json.loads(raw)

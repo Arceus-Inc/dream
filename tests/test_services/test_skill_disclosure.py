@@ -21,6 +21,7 @@ from dream.services.skill_disclosure import (
     SkillRegistry,
     discover_skill_frontmatter,
     parse_skill_frontmatter,
+    read_skill_frontmatter,
 )
 
 # --- parse_skill_frontmatter ------------------------------------------------
@@ -98,6 +99,60 @@ def test_discover_skill_frontmatter_ignores_non_skill_files(tmp_path: Path) -> N
 
 def test_discover_skill_frontmatter_missing_dir_returns_empty(tmp_path: Path) -> None:
     assert discover_skill_frontmatter([tmp_path / "no_such_dir"]) == []
+
+
+# --- progressive disclosure: startup parses frontmatter only ----------------
+
+
+def test_read_skill_frontmatter_stops_at_closing_fence(tmp_path: Path) -> None:
+    """Frontmatter parse must NOT slurp the body — startup cost can't scale
+    with body size (Spec 04 progressive disclosure).
+    """
+    skill = tmp_path / "SKILL.md"
+    big_body = "BODY-LINE\n" * 100_000
+    skill.write_text(
+        "---\nname: huge\ndescription: d\nwhen_to_use: w\n---\n" + big_body,
+        encoding="utf-8",
+    )
+    fm = read_skill_frontmatter(skill)
+    assert fm.name == "huge"
+    assert fm.description == "d"
+    assert fm.when_to_use == "w"
+
+
+def test_startup_does_not_read_full_body(monkeypatch, tmp_path: Path) -> None:
+    """Discovery/registry bootstrap must not call ``Path.read_text`` (the
+    whole-file slurp). The fix reads line-by-line and stops at the fence;
+    this fails on any implementation that reads the full body at startup.
+    """
+    skills_dir = tmp_path / "skills"
+    (skills_dir / "alpha").mkdir(parents=True)
+    (skills_dir / "alpha" / "SKILL.md").write_text(
+        "---\nname: alpha\ndescription: d\nwhen_to_use: w\n---\nBODY " * 5,
+        encoding="utf-8",
+    )
+
+    original_read_text = Path.read_text
+
+    def _no_slurp(self: Path, *args: object, **kwargs: object) -> str:
+        if self.name == _SKILL_FILENAME_FOR_TEST:
+            raise AssertionError("startup must not slurp the full SKILL.md body")
+        return original_read_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "read_text", _no_slurp)
+
+    # Both entry points must avoid the full-body slurp at startup.
+    fronts = discover_skill_frontmatter([skills_dir])
+    assert {fm.name for fm in fronts} == {"alpha"}
+    registry = SkillRegistry.from_dirs([skills_dir])
+    assert registry.loaded_skills() == set()
+
+    # But use_skill (deferred body load) is allowed to read the body.
+    monkeypatch.undo()
+    assert "BODY" in registry.use_skill("alpha")
+
+
+_SKILL_FILENAME_FOR_TEST = "SKILL.md"
 
 
 # --- SkillRegistry: progressive disclosure + event emission -----------------

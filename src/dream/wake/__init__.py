@@ -33,7 +33,7 @@ from dream.wake._orchestrator import (
     WakeOutcome,
     run_wake_cycle,
 )
-from dream.wake._prompt import load_heartbeat_prompt
+from dream.wake._prompt import BUNDLED_HEARTBEAT_PROMPT, load_heartbeat_prompt
 from dream.wake._runner import run_background_turn
 from dream.wake._source import (
     CronWake,
@@ -45,6 +45,7 @@ from dream.wake._source import (
 from dream.wake._tool import ForcedHeartbeatInput, HeartbeatTool
 
 __all__ = [
+    "BUNDLED_HEARTBEAT_PROMPT",
     "CronWake",
     "EventEmitter",
     "ForcedHeartbeatInput",

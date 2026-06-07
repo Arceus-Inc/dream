@@ -39,7 +39,10 @@ from dream.services.compact._orchestrator import (
     AutoCompactState,
     auto_compact_if_needed,
 )
-from dream.services.token_estimation import utilisation
+from dream.services.token_estimation import (
+    estimate_conversation_tokens,
+    utilisation,
+)
 from dream.session import Session, SessionOptions
 from dream.tools.builtin import default_registry
 
@@ -351,6 +354,7 @@ def _handle_slash(line: str, *, session: Session, sink: EventSink, output: TextI
         threshold = engine.compaction_threshold
         preserve_recent = engine.compaction_preserve_recent
         pre_count = len(session._transcript)
+        pre_tokens = estimate_conversation_tokens(session._transcript)
         new_transcript, result = auto_compact_if_needed(
             session._transcript,
             capabilities=capabilities,
@@ -362,7 +366,12 @@ def _handle_slash(line: str, *, session: Session, sink: EventSink, output: TextI
         )
         session._transcript[:] = new_transcript
         removed = max(0, pre_count - len(new_transcript))
-        if result is None:
+        post_tokens = estimate_conversation_tokens(new_transcript)
+        # ``force=True`` means ``result`` is effectively never ``None``, so we
+        # cannot use it to detect a no-op. Instead compare the real pre/post
+        # deltas: a compaction that reclaimed neither messages nor tokens did
+        # nothing (e.g. transcript already minimal / nothing compactable).
+        if result is None or (removed == 0 and post_tokens >= pre_tokens):
             output.write(
                 _c(_DIM, "\u25cb compact \u00b7 nothing to compact", use=use) + "\n"
             )
@@ -521,8 +530,13 @@ def run_session_repl(
                 output=out,
             )
 
-    asyncio.run(_run(harness))
-    sink.emit("session.repl.stopped")
+    # ``finally`` so the stop lifecycle event is written even when the loop
+    # raises (otherwise an exception would skip ``session.repl.stopped`` and
+    # leave the JSONL watch panel without a terminal event) (#38).
+    try:
+        asyncio.run(_run(harness))
+    finally:
+        sink.emit("session.repl.stopped")
     return 0
 
 

@@ -177,20 +177,42 @@ def offload_tool_output(
     return inline, pointer
 
 
+def _confine(root: Path, path: Path) -> Path:
+    # Resolve both sides so the containment check is symlink-stable: an
+    # in-scratch symlink that points outside resolves to its real target and
+    # then fails ``is_relative_to``. ``services`` cannot import the
+    # ``tools._paths`` helper without a cycle (``tools`` already imports this
+    # module), so the same logic is inlined here.
+    resolved_root = root.expanduser().resolve()
+    candidate = path.expanduser()
+    if not candidate.is_absolute():
+        candidate = resolved_root / candidate
+    resolved = candidate.resolve()
+    if not resolved.is_relative_to(resolved_root):
+        raise ValueError(f"path escapes the allowed root: {path} resolves outside {resolved_root}")
+    return resolved
+
+
 def read_offloaded(
     path: Path,
     *,
     start: int = 0,
     end: int | None = None,
+    root: Path | None = None,
 ) -> str:
     """Read a char slice from an offloaded artifact.
 
     Rejects path-traversal attempts: any ``..`` segment in the input path
-    raises ``ValueError`` before we touch the filesystem. ``end=None`` reads
-    to end-of-file.
+    raises ``ValueError`` before we touch the filesystem. When ``root`` is
+    given the path is fully resolved (following symlinks, collapsing ``..``)
+    and must stay under ``root`` — an absolute path or an in-scratch symlink
+    pointing outside therefore raises ``ValueError`` rather than leaking a
+    file the caller never spilled. ``end=None`` reads to end-of-file.
     """
     if ".." in path.parts:
         raise ValueError(f"path traversal not allowed: {path}")
+    if root is not None:
+        path = _confine(root, path)
     text = path.read_text(encoding="utf-8", errors="replace")
     if end is None:
         return text[start:]

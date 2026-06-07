@@ -153,3 +153,47 @@ def test_read_plan_missing_ledger_raises(tmp_path: Path) -> None:
     (tmp_path / "T1.json").unlink()
     with pytest.raises(FileNotFoundError, match=r"T1\.json"):
         read_plan(tmp_path, task_id="T1")
+
+
+# --- path-traversal hardening (#51) ----------------------------------------
+
+
+@pytest.mark.parametrize(
+    "evil_id",
+    ["../escape", "..", ".", "sub/dir", "a/../../etc", "abs\\win"],
+)
+def test_read_plan_rejects_traversal_task_id(tmp_path: Path, evil_id: str) -> None:
+    """A task_id that could escape the plan dir is rejected before any join."""
+    with pytest.raises(ValueError, match="unsafe task_id"):
+        read_plan(tmp_path, task_id=evil_id)
+
+
+def test_read_plan_rejects_absolute_task_id(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="unsafe task_id"):
+        read_plan(tmp_path, task_id="/etc/passwd")
+
+
+def test_read_plan_does_not_escape_directory(tmp_path: Path) -> None:
+    """Even if a sibling pair exists outside the dir, traversal can't reach it."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    write_plan(outside, _plan())  # outside/T1.{md,json}
+    inside = tmp_path / "plans"
+    inside.mkdir()
+    with pytest.raises(ValueError, match="unsafe task_id"):
+        read_plan(inside, task_id="../outside/T1")
+
+
+# --- ledger/task-id consistency (#57) --------------------------------------
+
+
+def test_read_plan_rejects_ledger_task_id_mismatch(tmp_path: Path) -> None:
+    """A ledger whose task_id differs from the requested id is rejected."""
+    plan = _plan()  # task_id "T1"
+    write_plan(tmp_path, plan)
+    # Re-file the same pair under a different id on disk: the ledger inside
+    # still says "T1", so a request for "T2" must not silently load it.
+    (tmp_path / "T1.md").rename(tmp_path / "T2.md")
+    (tmp_path / "T1.json").rename(tmp_path / "T2.json")
+    with pytest.raises(ValueError, match="does not match requested task_id"):
+        read_plan(tmp_path, task_id="T2")

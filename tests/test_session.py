@@ -22,6 +22,7 @@ any provider adapter. The Spec 02 adapter wiring lands in REPL upgrade #2.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from pathlib import Path
 from typing import Any
 
@@ -146,10 +147,16 @@ async def test_session_send_with_tool_yields_tool_events_and_two_turncompletes()
     # Order: text deltas, tool start, tool result, more deltas, both completes.
     types_in_order = [type(e).__name__ for e in events]
     assert types_in_order.index("ToolUseStart") < types_in_order.index("ToolUseResult")
-    # First turn complete must precede the second's text chunk.
+    # The first turn's TurnComplete must precede the *second* turn's text
+    # output ("done"). Comparing the two TurnComplete indices is tautological
+    # (the second is found *after* the first by construction); pinning the
+    # first completion before the next turn's text proves real interleaving
+    # of turn boundaries with streamed output (#31).
     first_complete_idx = types_in_order.index("TurnComplete")
-    second_complete_idx = types_in_order.index("TurnComplete", first_complete_idx + 1)
-    assert first_complete_idx < second_complete_idx
+    second_turn_text_idx = next(
+        i for i, e in enumerate(events) if isinstance(e, TextDelta) and e.text == "done"
+    )
+    assert first_complete_idx < second_turn_text_idx
 
 
 async def test_session_send_propagates_tool_error_flag() -> None:
@@ -226,6 +233,14 @@ async def test_session_transcript_persists_through_tool_use_across_sends() -> No
     assert tool_result_msg.role == "user"
     assert len(tool_result_msg.tool_results) == 1
     assert tool_result_msg.tool_results[0].tool_use_id == "tu_1"
+    # The matching assistant tool_use message must also survive into the
+    # resumed history -- a tool_result with no preceding tool_use is a
+    # dangling atom the model rejects. Checking only the result (#32) misses
+    # the case where the assistant tool_use block was dropped on flush.
+    tool_use_msg = third_call[-4]
+    assert tool_use_msg.role == "assistant"
+    assert len(tool_use_msg.tool_uses) == 1
+    assert tool_use_msg.tool_uses[0].id == "tu_1"
 
 
 # --- cost accumulation -------------------------------------------------------
@@ -458,3 +473,193 @@ def test_translate_compaction_done_event_yields_public_compacted() -> None:
     assert isinstance(out, Compacted)
     assert out.removed_messages == 3
     assert out.summary_tokens == 480
+
+
+# --- CodeAnt #35: error tool results get a generic transcript marker --------
+
+
+async def test_session_tool_error_result_uses_generic_transcript_marker() -> None:
+    """The public ``ToolUseResult`` event keeps the detailed error content
+    (observability), but the transcript the model re-reads on resume must
+    only carry the engine's generic, non-revealing marker (#35).
+    """
+    from dream.engine._messages import ToolResultBlock as _TRB
+
+    tool_use = ToolUseBlock(id="tu_e", name="bad", input={})
+    streamer = FakeStreamer(
+        turns=[
+            FakeTurn(text_chunks=[""], tool_uses=[tool_use]),
+            FakeTurn(text_chunks=["ack"]),
+        ]
+    )
+    # The dispatcher returns a detailed, internal-looking error payload.
+    leaky = "RuntimeError: secret /etc/shadow not readable at line 42"
+    dispatcher = FakeDispatcher(results={"bad": (leaky, True)})
+    session = Session(id="s1", _engine=_engine(streamer, dispatcher))
+
+    events = await _collect(session, "go")
+
+    # Public event keeps the detail.
+    [result_ev] = [e for e in events if isinstance(e, ToolUseResult)]
+    assert result_ev.is_error is True
+    assert result_ev.content == leaky
+
+    # Transcript ToolResultBlock must NOT carry the detail -- it carries the
+    # generic marker matching ``run_query``'s contract.
+    blocks = [
+        block
+        for msg in session._transcript
+        for block in msg.content
+        if isinstance(block, _TRB)
+    ]
+    assert len(blocks) == 1
+    assert blocks[0].content == "tool 'bad' failed to execute"
+    assert leaky not in blocks[0].content
+
+
+# --- CodeAnt #33: single-flight guard on concurrent send --------------------
+
+
+async def test_session_rejects_concurrent_send() -> None:
+    """A second ``send`` while one is in flight must be rejected so the two
+    calls don't clobber each other's cancel state (#33).
+    """
+    streamer = FakeStreamer(turns=[FakeTurn(text_chunks=["slow"], delay=0.5)])
+    session = Session(id="s1", _engine=_engine(streamer, FakeDispatcher()))
+
+    first = session.send("first")
+    # Start the first stream so ``_active`` is set.
+    started = asyncio.create_task(first.__anext__())
+    await asyncio.sleep(0.05)
+
+    with pytest.raises(RuntimeError, match="already in flight"):
+        async for _ in session.send("second"):
+            break
+
+    await session.cancel()
+    with contextlib.suppress(BaseException):
+        await started
+
+
+# --- CodeAnt #34: pending tool results flushed even on the cancel path -------
+
+
+async def test_session_flushes_pending_tool_results_on_cancel() -> None:
+    """If a send is cancelled after a tool completed but before the next
+    assistant turn, the buffered tool result must still be committed to the
+    transcript -- otherwise the prior assistant tool_use dangles (#34).
+    """
+    from dream.engine._messages import ToolResultBlock as _TRB
+
+    tool_use = ToolUseBlock(id="tu_1", name="echo", input={})
+    streamer = FakeStreamer(
+        turns=[
+            FakeTurn(text_chunks=["calling"], tool_uses=[tool_use]),
+            # Second turn is slow so we can cancel after the tool result
+            # event but before this turn completes.
+            FakeTurn(text_chunks=["never"], delay=1.0),
+        ]
+    )
+    dispatcher = FakeDispatcher(results={"echo": ("done", False)})
+    session = Session(id="s1", _engine=_engine(streamer, dispatcher))
+
+    seen: list[Event] = []
+
+    async def _drive() -> None:
+        async for ev in session.send("go"):
+            seen.append(ev)
+            if isinstance(ev, ToolUseResult):
+                await session.cancel()
+
+    await asyncio.wait_for(_drive(), timeout=3.0)
+
+    # The tool result was buffered (we saw the public event) and must now be
+    # in the transcript despite the cancel.
+    assert any(isinstance(e, ToolUseResult) for e in seen)
+    result_blocks = [
+        block
+        for msg in session._transcript
+        for block in msg.content
+        if isinstance(block, _TRB)
+    ]
+    assert len(result_blocks) == 1
+    assert result_blocks[0].tool_use_id == "tu_1"
+
+
+# --- CodeAnt #41: CompactionDoneEvent applies the compacted shape -----------
+
+
+def test_translate_compaction_applies_compacted_shape_to_transcript() -> None:
+    """Handling ``CompactionDoneEvent`` must bring ``_transcript`` to the
+    compacted shape so the next ``send`` resumes from compacted, not stale,
+    history (#41).
+    """
+    from dream.contracts.provider import ProviderCapabilities
+    from dream.engine._events import CompactionDoneEvent
+    from dream.engine._messages import (
+        ConversationMessage,
+        ToolResultBlock,
+    )
+    from dream.services.compact import TIME_BASED_MC_CLEARED_MESSAGE
+    from dream.services.compact._orchestrator import AutoCompactState
+
+    compactor = AutoCompactState()
+    engine = QueryEngine(
+        streamer=FakeStreamer(turns=[]),
+        dispatcher=FakeDispatcher(),
+        session_id="s",
+        working_dir=Path("/tmp"),
+        compactor=compactor,
+        compaction_capabilities=ProviderCapabilities(max_context_tokens=128_000),
+    )
+    session = Session(id="s1", _engine=engine)
+
+    big_blob = "X" * 4096
+    for i in range(8):
+        tu_id = f"tu_{i}"
+        session._transcript.append(
+            ConversationMessage(
+                role="assistant",
+                content=[ToolUseBlock(id=tu_id, name="bash", input={"cmd": "ls"})],
+            )
+        )
+        session._transcript.append(
+            ConversationMessage(
+                role="user",
+                content=[ToolResultBlock(tool_use_id=tu_id, content=big_blob, is_error=False)],
+            )
+        )
+
+    pre_blobs = sum(
+        1
+        for msg in session._transcript
+        for block in msg.content
+        if isinstance(block, ToolResultBlock) and block.content == big_blob
+    )
+    assert pre_blobs == 8
+
+    ev = CompactionDoneEvent(
+        tier="microcompact",
+        removed_messages=0,
+        freed_tokens=1000,
+        resulting_utilisation=0.1,
+    )
+    session._translate(ev, [])
+
+    post_blobs = sum(
+        1
+        for msg in session._transcript
+        for block in msg.content
+        if isinstance(block, ToolResultBlock) and block.content == big_blob
+    )
+    cleared = sum(
+        1
+        for msg in session._transcript
+        for block in msg.content
+        if isinstance(block, ToolResultBlock)
+        and block.content == TIME_BASED_MC_CLEARED_MESSAGE
+    )
+    # Older blobs got replaced with the cleared sentinel; the transcript is
+    # now the compacted shape, not the stale full history.
+    assert post_blobs < pre_blobs
+    assert cleared > 0

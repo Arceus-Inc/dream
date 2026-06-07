@@ -47,7 +47,11 @@ def test_collect_returns_empty_for_no_messages() -> None:
 
 
 def test_collect_includes_known_compactable_local_tools() -> None:
-    messages = _tool_round("t1", "read_file", "some content")
+    # Content must exceed the replacement sentinel; otherwise clearing it would
+    # grow the transcript (negative compaction) — see the minimum-size gate.
+    content = "some content " * 10
+    assert len(content) > len(TIME_BASED_MC_CLEARED_MESSAGE)
+    messages = _tool_round("t1", "read_file", content)
     assert collect_compactable_tool_ids(messages) == ["t1"]
 
 
@@ -64,8 +68,10 @@ def test_collect_excludes_small_unknown_local_tool() -> None:
 
 def test_collect_preserves_chronological_order() -> None:
     messages: list[ConversationMessage] = []
+    # Each payload must exceed the sentinel so the minimum-size gate keeps them.
+    big = "x" * (len(TIME_BASED_MC_CLEARED_MESSAGE) + 20)
     for i, name in enumerate(["read_file", "bash", "grep"]):
-        messages.extend(_tool_round(f"t{i}", name, "x"))
+        messages.extend(_tool_round(f"t{i}", name, big))
     assert collect_compactable_tool_ids(messages) == ["t0", "t1", "t2"]
 
 
@@ -196,3 +202,48 @@ def test_microcompact_handles_each_canonical_tool(name: str) -> None:
         messages.extend(_tool_round(f"t{i}", name, "x" * 200))
     _, saved = microcompact_messages(messages, keep_recent=2)
     assert saved > 0
+
+
+# --- minimum-size gate (negative-compaction guard) ---------------------------
+
+
+def test_tiny_canonical_payload_is_not_marked_compactable() -> None:
+    """A canonical-tool result smaller than the replacement sentinel is NOT
+    compactable — clearing it would *grow* the transcript (negative compaction).
+    """
+    tiny = "ok"  # far shorter than TIME_BASED_MC_CLEARED_MESSAGE
+    assert len(tiny) < len(TIME_BASED_MC_CLEARED_MESSAGE)
+    messages: list[ConversationMessage] = []
+    for i in range(6):
+        messages.extend(_tool_round(f"t{i}", "read_file", tiny))
+    assert collect_compactable_tool_ids(messages) == []
+
+
+def test_tiny_canonical_payload_microcompact_reports_no_savings() -> None:
+    """Microcompacting tiny canonical payloads must not claim phantom savings
+    nor replace short content with the longer sentinel.
+    """
+    tiny = "ok"
+    messages: list[ConversationMessage] = []
+    for i in range(6):
+        messages.extend(_tool_round(f"t{i}", "read_file", tiny))
+    out, saved = microcompact_messages(messages, keep_recent=1)
+    assert saved == 0
+    contents = [
+        block.content
+        for msg in out
+        for block in msg.content
+        if isinstance(block, ToolResultBlock)
+    ]
+    assert all(c == tiny for c in contents)
+
+
+def test_large_canonical_payload_above_threshold_is_still_compactable() -> None:
+    """Payloads larger than the sentinel remain compactable — the gate only
+    excludes the negative-compaction case.
+    """
+    big = "x" * (len(TIME_BASED_MC_CLEARED_MESSAGE) + 50)
+    messages: list[ConversationMessage] = []
+    for i in range(6):
+        messages.extend(_tool_round(f"t{i}", "read_file", big))
+    assert len(collect_compactable_tool_ids(messages)) == 6

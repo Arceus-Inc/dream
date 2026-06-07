@@ -93,6 +93,21 @@ def test_session_subcommand_accepts_all_flags(tmp_path: Path) -> None:
     assert args.max_turns == 3
 
 
+@pytest.mark.parametrize("bad", ["0", "-1", "-5"])
+def test_session_max_turns_rejects_non_positive(bad: str) -> None:
+    """``--max-turns`` must reject 0/negative at parse time -- otherwise the
+    engine does zero turns and returns nothing (#36)."""
+    parser = _build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["session", "--max-turns", bad])
+
+
+def test_session_max_turns_accepts_positive() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(["session", "--max-turns", "1"])
+    assert args.max_turns == 1
+
+
 # ---------------------------------------------------------------------------
 # Default harness construction from env
 # ---------------------------------------------------------------------------
@@ -101,7 +116,11 @@ def test_session_subcommand_accepts_all_flags(tmp_path: Path) -> None:
 def test_build_default_harness_rejects_missing_env(tmp_path: Path) -> None:
     with pytest.raises(KeyError) as ei:
         build_default_harness(env={}, working_dir=tmp_path)
-    assert "DREAM_SMOKE_API_KEY" in str(ei.value) or "DREAM_SMOKE_MODEL" in str(ei.value)
+    # With NO env set, the error must name *both* required keys, not just
+    # one -- an ``or`` here passes even if the message drops a key (#39).
+    message = str(ei.value)
+    assert "DREAM_SMOKE_API_KEY" in message
+    assert "DREAM_SMOKE_MODEL" in message
 
 
 def test_build_default_harness_returns_harness_with_engine_factory(
@@ -250,8 +269,18 @@ async def test_session_loop_quits_on_quit_command(tmp_path: Path) -> None:
         input_func=_scripted_input(["/quit"]),
         output=out,
     )
-    # No send fired -> no streamer turns consumed.
+    # The banner printed...
     assert "session " in out.getvalue()
+    # ...but ``/quit`` must NOT have triggered a model turn: the streamer
+    # saw zero calls and no ``session.turn_failed`` was recorded (#40).
+    assert streamer.calls == []
+    events_file = tmp_path / "e.jsonl"
+    if events_file.exists():
+        types = [
+            json.loads(line)["type"]
+            for line in events_file.read_text(encoding="utf-8").splitlines()
+        ]
+        assert "session.turn_failed" not in types
 
 
 async def test_session_loop_streams_send_events(tmp_path: Path) -> None:
@@ -354,6 +383,34 @@ def test_run_session_repl_without_env_or_harness_returns_nonzero(
         output=out,
     )
     assert rc != 0
+
+
+def test_run_session_repl_emits_stopped_even_on_exception(tmp_path: Path) -> None:
+    """If the loop raises, the stop lifecycle event must still be written so
+    the JSONL watch panel always sees a terminal event (#38).
+    """
+
+    def _boom_factory(session_id: str, options: SessionOptions) -> QueryEngine:
+        raise RuntimeError("engine construction blew up")
+
+    harness = Harness(HarnessConfig(_engine_factory=_boom_factory))  # type: ignore[call-arg]
+    events_path = tmp_path / "e.jsonl"
+    out = io.StringIO()
+
+    with pytest.raises(RuntimeError, match="blew up"):
+        run_session_repl(
+            events_path=events_path,
+            harness=harness,
+            input_func=_scripted_input(["hi"]),
+            output=out,
+        )
+
+    types = [
+        json.loads(line)["type"]
+        for line in events_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert "session.repl.started" in types
+    assert "session.repl.stopped" in types
 
 
 # ---------------------------------------------------------------------------
@@ -479,6 +536,34 @@ async def test_handle_slash_compact_runs_microcompact_and_emits_event(
     types = [p["type"] for p in payloads]
     assert "context.compaction.completed" in types
     assert any("compact" in line.lower() for line in out.getvalue().splitlines())
+
+
+async def test_handle_slash_compact_reports_noop_when_nothing_to_compact(
+    tmp_path: Path,
+) -> None:
+    """With a compactor wired but a tiny transcript, ``/compact`` reclaims
+    nothing. Because it forces ``force=True``, ``result is None`` is never
+    reached -- the no-op must instead be detected via pre/post deltas and
+    reported as ``session.compact_skipped`` (#37).
+    """
+    session, _compactor, _caps = await _session_with_compactor()
+    # A single short user message -- nothing compactable.
+    session._transcript.append(ConversationMessage(role="user", content=[TextBlock(text="hi")]))
+    sink = EventSink(tmp_path / "e.jsonl")
+    out = io.StringIO()
+
+    keep = _handle_slash("/compact", session=session, sink=sink, output=out)
+    assert keep is True
+
+    payloads = [
+        json.loads(line)
+        for line in (tmp_path / "e.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    types = [p["type"] for p in payloads]
+    # Must report a skip, NOT a completed compaction.
+    assert "session.compact_skipped" in types
+    assert "context.compaction.completed" not in types
+    assert "nothing to compact" in out.getvalue().lower()
 
 
 async def test_handle_slash_compact_no_compactor_warns(tmp_path: Path) -> None:

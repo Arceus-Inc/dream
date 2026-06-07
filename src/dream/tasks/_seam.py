@@ -26,10 +26,17 @@ shell tasks aren't tied to a ledger.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 
-from dream.tasks._ledger import Ledger, read_ledger, write_ledger
+from dream.tasks._ledger import (
+    Ledger,
+    LedgerStateError,
+    read_ledger,
+    write_ledger,
+)
 from dream.tasks._manager import CompletionListener
 from dream.tasks._types import TaskRecord
+from dream.utils.file_lock import exclusive_file_lock
 
 __all__ = ["make_ledger_completion_listener"]
 
@@ -52,7 +59,10 @@ def make_ledger_completion_listener() -> CompletionListener:
     """Build a completion listener that updates the tagged ledger entry.
 
     The listener is synchronous (no I/O wait), since the read-modify-write
-    on the ledger is local-disk-bound and small. Atomic writes are handled
+    on the ledger is local-disk-bound and small. The whole
+    read→update→write transaction runs under a per-ledger exclusive file
+    lock so two completions on the same ``ledger_path`` serialise instead of
+    racing and losing each other's updates. Atomic writes are still handled
     inside ``write_ledger``.
     """
 
@@ -63,25 +73,32 @@ def make_ledger_completion_listener() -> CompletionListener:
         if not ledger_path or not entry_id:
             return  # untagged — not seam business
 
-        ledger: Ledger = read_ledger(ledger_path)
         next_status, note = _terminal_outcome(task)
         now = datetime.now(UTC)
+        lock_path = Path(f"{ledger_path}.lock")
 
-        # Append the note first so it's recorded even if mark_done rejects
-        # under evaluator_enabled (we don't have evaluator evidence here).
-        ledger = ledger.append_note(entry_id=entry_id, note=note)
-        if next_status == "done":
-            # passes=False because slice 2 has no evaluator signal; the
-            # evaluator pass (#12) populates passes in a separate step.
-            try:
-                ledger = ledger.mark_done(entry_id=entry_id, passes=False, now=now)
-            except Exception:
-                # evaluator_enabled blocks done-without-passes — fall back
-                # to blocked so the entry isn't left dangling in_progress.
+        # Lock spans the entire read-modify-write so concurrent completions
+        # on the same ledger can't clobber one another's appends/transitions.
+        with exclusive_file_lock(lock_path):
+            ledger: Ledger = read_ledger(ledger_path)
+
+            # Append the note first so it's recorded even if mark_done rejects
+            # under evaluator_enabled (we don't have evaluator evidence here).
+            ledger = ledger.append_note(entry_id=entry_id, note=note, now=now)
+            if next_status == "done":
+                # passes=False because slice 2 has no evaluator signal; the
+                # evaluator pass (#12) populates passes in a separate step.
+                try:
+                    ledger = ledger.mark_done(
+                        entry_id=entry_id, passes=False, now=now
+                    )
+                except LedgerStateError:
+                    # evaluator_enabled blocks done-without-passes — fall back
+                    # to blocked so the entry isn't left dangling in_progress.
+                    ledger = ledger.mark_blocked(entry_id=entry_id, now=now)
+            else:
                 ledger = ledger.mark_blocked(entry_id=entry_id, now=now)
-        else:
-            ledger = ledger.mark_blocked(entry_id=entry_id, now=now)
 
-        write_ledger(ledger_path, ledger)
+            write_ledger(ledger_path, ledger)
 
     return listener

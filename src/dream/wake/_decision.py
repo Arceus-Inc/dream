@@ -84,9 +84,20 @@ def from_jsonl_line(line: str) -> HeartbeatDecision:
                 f"tasks must be a list, got {type(tasks_raw).__name__}"
             )
         ws_raw = data.get("wake_source")
-        ws: WakeSource | None = (
-            wake_source_from_dict(ws_raw) if isinstance(ws_raw, dict) else None
-        )
+        ws: WakeSource | None
+        if ws_raw is None:
+            ws = None
+        elif isinstance(ws_raw, dict):
+            ws = wake_source_from_dict(ws_raw)
+        else:
+            # A present-but-non-dict wake_source is a corrupted record, not an
+            # absent one. Silently coercing it to None would lose provenance
+            # and accept malformed lines, breaking the "shape errors become
+            # ValueError" contract.
+            raise ValueError(
+                f"wake_source must be a JSON object or null, "
+                f"got {type(ws_raw).__name__}"
+            )
         return HeartbeatDecision(
             decided_at=datetime.fromisoformat(data["decided_at"]),
             action=data["action"],

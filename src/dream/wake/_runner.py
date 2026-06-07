@@ -22,13 +22,15 @@ declined-skip count, and the runner refuses to honour a ``skip`` /
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import contextlib
+from collections.abc import AsyncGenerator, Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 from pydantic import ValidationError
 
-from dream.engine._events import AssistantTurnComplete
+from dream.engine._events import AssistantTurnComplete, StreamEvent
 from dream.engine._loop import TurnStreamer
 from dream.engine._messages import (
     ConversationMessage,
@@ -52,8 +54,12 @@ def _build_stimulus(
     forced: bool,
     forced_skip_streak: int,
 ) -> ConversationMessage:
-    """The single user message that drives the wake turn."""
-    body = system_prompt.rstrip()
+    """The single user message that drives the wake turn.
+
+    The prompt body is used verbatim — operator override prompts can carry
+    deliberate trailing formatting, so we do NOT trim it.
+    """
+    body = system_prompt
     if forced:
         body = body + forced_addendum(forced_skip_streak)
     text = (
@@ -158,16 +164,26 @@ async def run_background_turn(
     stimulus = _build_stimulus(
         prompt, wake_source, forced=forced, forced_skip_streak=forced_skip_streak
     )
-    decided_at = now()
 
     captured: ToolUseBlock | None = None
-    async for ev in streamer.stream_turn([stimulus]):
-        if isinstance(ev, AssistantTurnComplete):
-            for block in ev.blocks:
-                if isinstance(block, ToolUseBlock) and block.name == "heartbeat":
-                    captured = block
-                    break
-            break
+    # ``aclosing`` guarantees the turn stream — which may own transport
+    # resources — is closed even though we break out of it on the first
+    # ``AssistantTurnComplete`` (or if the caller cancels us mid-iteration).
+    turn_stream = streamer.stream_turn([stimulus])
+    async with contextlib.aclosing(
+        cast(AsyncGenerator[StreamEvent, None], turn_stream)
+    ):
+        async for ev in turn_stream:
+            if isinstance(ev, AssistantTurnComplete):
+                for block in ev.blocks:
+                    if isinstance(block, ToolUseBlock) and block.name == "heartbeat":
+                        captured = block
+                        break
+                break
+
+    # Captured after the turn produces (or fails to produce) a decision, so
+    # ``decided_at`` records the decision time, not the request-start time.
+    decided_at = now()
 
     if captured is None:
         if forced:

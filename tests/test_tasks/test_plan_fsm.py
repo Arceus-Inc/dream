@@ -205,3 +205,35 @@ def test_archive_candidates_uses_default_retention_of_90_days(tmp_path: Path) ->
     )
     cands = archive_candidates(root, now=_t())
     assert len(cands) == 1
+
+
+def test_archive_candidates_excludes_boundary_day(tmp_path: Path) -> None:
+    """"Older than ``retention_days``" is strict: a plan created exactly at
+    the cutoff instant is NOT yet older than the window (#56)."""
+    root = tmp_path / "docs" / "exec-plans"
+    # created_at == now - retention_days  →  created_at == cutoff exactly.
+    write_plan(
+        plan_dir(root, state="completed"),
+        _make_plan(
+            task_id="BOUNDARY",
+            state="completed",
+            created_at=_t() - timedelta(days=90),
+        ),
+    )
+    cands = archive_candidates(root, now=_t(), retention_days=90)
+    assert cands == ()
+
+
+def test_archive_candidates_includes_just_past_boundary(tmp_path: Path) -> None:
+    """One instant past the cutoff is older-than and does archive (#56)."""
+    root = tmp_path / "docs" / "exec-plans"
+    write_plan(
+        plan_dir(root, state="completed"),
+        _make_plan(
+            task_id="OVER",
+            state="completed",
+            created_at=_t() - timedelta(days=90, seconds=1),
+        ),
+    )
+    cands = archive_candidates(root, now=_t(), retention_days=90)
+    assert len(cands) == 1

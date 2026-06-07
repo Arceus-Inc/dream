@@ -17,13 +17,15 @@ from dream.contracts.tool import ToolResult
 from dream.services.tool_outputs import read_offloaded
 from dream.tools._base import BaseTool, ToolDeclaration
 from dream.tools._context import ToolExecutionContext
+from dream.tools._paths import PathEscapesRoot, resolve_within
 
 
 class ReadOffloadedInput(BaseModel):
     """Arguments for the ``read_offloaded`` tool."""
 
     path: str = Field(
-        description="Offloaded artifact path, relative to the session scratch dir.",
+        description="Offloaded artifact path, relative to the session scratch dir "
+        "(must stay within the scratch directory).",
     )
     start: int = Field(default=0, ge=0, description="Inclusive char offset.")
     end: int | None = Field(default=None, description="Exclusive char offset; null = EOF.")
@@ -57,8 +59,20 @@ class ReadOffloadedTool(BaseTool):
                 stop_condition="do not retry with the same path",
             )
 
-        target = scratch / rel
-        if not target.exists():
+        # Confine the *resolved* target to scratch: ``..``/absolute are caught
+        # above, but a symlink under scratch pointing outside is only visible
+        # after resolution. ``resolve_within`` raises ``PathEscapesRoot`` then.
+        try:
+            confined = resolve_within(scratch, str(rel))
+        except PathEscapesRoot as exc:
+            return _err(
+                f"path traversal rejected: {args.path}",
+                root_cause=str(exc),
+                safe_retry="pass a scratch-relative path that stays inside the scratch dir",
+                stop_condition="do not retry with the same path",
+            )
+
+        if not confined.exists():
             return _err(
                 f"offloaded file not found: {args.path}",
                 root_cause=f"path not found under scratch: {args.path}",
@@ -67,12 +81,15 @@ class ReadOffloadedTool(BaseTool):
             )
 
         try:
-            text = read_offloaded(target, start=args.start, end=args.end)
-        except ValueError as exc:
+            text = read_offloaded(confined, start=args.start, end=args.end, root=scratch)
+        except (ValueError, OSError) as exc:
+            # ValueError covers traversal/containment; OSError covers
+            # IsADirectoryError/PermissionError and friends — without this they
+            # would escape as an unhandled exception instead of a tool error.
             return _err(
-                str(exc),
+                f"could not read offloaded file: {exc}",
                 root_cause=str(exc),
-                safe_retry="pass a scratch-relative path with no '..' segments",
+                safe_retry="pass a readable scratch-relative file path",
                 stop_condition="do not retry with the same path",
             )
         return ToolResult(

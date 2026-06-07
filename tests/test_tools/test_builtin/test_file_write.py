@@ -85,3 +85,48 @@ async def test_write_to_directory_is_error(tool: FileWriteTool, ctx, tmp_path: P
     assert "root_cause" in result.metadata
     assert "safe_retry" in result.metadata
     assert "stop_condition" in result.metadata
+
+
+async def test_absolute_path_outside_cwd_is_rejected(
+    tool: FileWriteTool, ctx, tmp_path: Path
+) -> None:
+    target = tmp_path.parent / f"escape_{tmp_path.name}.txt"
+    try:
+        result = await tool.execute({"path": str(target), "content": "pwned"}, ctx)
+        assert result.is_error is True
+        assert "escapes" in result.metadata["root_cause"].lower()
+        assert not target.exists()
+    finally:
+        target.unlink(missing_ok=True)
+
+
+async def test_dotdot_traversal_is_rejected(tool: FileWriteTool, ctx, tmp_path: Path) -> None:
+    target = tmp_path.parent / f"escape2_{tmp_path.name}.txt"
+    try:
+        result = await tool.execute({"path": f"../{target.name}", "content": "pwned"}, ctx)
+        assert result.is_error is True
+        assert not target.exists()
+    finally:
+        target.unlink(missing_ok=True)
+
+
+async def test_atomic_write_failure_returns_structured_error(
+    tool: FileWriteTool, ctx, tmp_path: Path
+) -> None:
+    # A permission/disk-full/invalid-path failure from atomic_write_text must
+    # become a structured tool error, not an unhandled OSError.
+    import dream.tools.builtin.file_write as mod
+
+    def boom(path, text, **kw):  # type: ignore[no-untyped-def]
+        raise PermissionError("denied")
+
+    orig = mod.atomic_write_text
+    mod.atomic_write_text = boom  # type: ignore[assignment]
+    try:
+        result = await tool.execute({"path": "out.txt", "content": "data"}, ctx)
+        assert result.is_error is True
+        assert "denied" in result.metadata["root_cause"]
+        assert "safe_retry" in result.metadata
+        assert "stop_condition" in result.metadata
+    finally:
+        mod.atomic_write_text = orig  # type: ignore[assignment]

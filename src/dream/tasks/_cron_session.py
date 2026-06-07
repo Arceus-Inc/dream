@@ -21,6 +21,7 @@ This module supplies the small piece that ties the runtime layer
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -133,7 +134,7 @@ def _derive_outcome(task: TaskRecord) -> tuple[CronRunOutcome, str | None]:
     return "failed", f"return_code={rc}"
 
 
-def _split_prs(metadata: dict[str, str]) -> tuple[str, ...]:
+def _split_prs(metadata: Mapping[str, str]) -> tuple[str, ...]:
     raw = metadata.get("cron.prs_opened", "")
     if not raw:
         return ()

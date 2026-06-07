@@ -17,6 +17,7 @@ side-effecting operations the engine wants tools to route through it:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -58,18 +59,42 @@ class ToolExecutionContext:
         carries ``returncode``, ``stdout_bytes``, ``stderr_bytes`` so the
         observation derivation does not need to parse the stream.
         """
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            cwd=str(cwd or self.working_dir),
-            env=env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                cwd=str(cwd or self.working_dir),
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except OSError as exc:
+            # FileNotFoundError / NotADirectoryError / PermissionError are all
+            # OSError subclasses; catching the base covers every spawn failure.
+            # #13: process-creation failures (missing executable, invalid
+            # cwd, permission denied) must not escape as a raw exception —
+            # that breaks the ToolResult contract. Return the structured
+            # error shape used by the timeout path instead.
+            return ToolResult(
+                content=f"failed to spawn subprocess: {exc}",
+                is_error=True,
+                metadata={
+                    "argv": argv,
+                    "returncode": None,
+                    "root_cause": f"subprocess spawn failed: {exc}",
+                    "safe_retry": "verify the executable exists and cwd is a valid directory",
+                    "stop_condition": "do not retry until the command/cwd is corrected",
+                },
+            )
         try:
             stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except TimeoutError:
-            proc.kill()
-            await proc.wait()
+            # #15: the child may exit between the timeout firing and our
+            # kill()/wait(), which raises ProcessLookupError. Suppress the
+            # already-exited race so the structured timeout result is always
+            # returned.
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+                await proc.wait()
             return ToolResult(
                 content=f"subprocess timed out after {timeout}s",
                 is_error=True,

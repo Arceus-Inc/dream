@@ -21,6 +21,7 @@ from dream.engine._messages import (
 from dream.services.compact import (
     CompactionResult,
     record_compact_checkpoint,
+    split_preserving_tool_pairs,
     truncate_head_for_ptl_retry,
     try_context_collapse,
 )
@@ -248,3 +249,47 @@ def test_truncate_head_prepends_marker_when_starts_with_assistant() -> None:
     out = truncate_head_for_ptl_retry(rounds)
     assert out is not None
     assert out[0].role == "user"
+
+
+# --- split_preserving_tool_pairs: negative preserve_recent clamp -------------
+
+
+def test_split_clamps_negative_preserve_recent_no_indexerror() -> None:
+    """A negative preserve_recent must be clamped to 0, not push split_index
+    out of bounds (IndexError on boundary_crosses_tool_pair).
+    """
+    msgs = [
+        _user_text("a"),
+        _assistant_text("b"),
+        _user_text("c"),
+    ]
+    older, newer = split_preserving_tool_pairs(msgs, preserve_recent=-5)
+    # preserve_recent clamped to 0 => everything is "older", nothing preserved.
+    assert older == msgs
+    assert newer == []
+
+
+# --- truncate_head re-sanitizes a dangling tool_use -------------------------
+
+
+def test_truncate_head_resanitizes_orphan_tool_use_tail() -> None:
+    """If dropping head rounds leaves the retained tail ending on an assistant
+    ToolUseBlock with no matching result, truncate must re-sanitize it away so
+    the next provider call is valid.
+    """
+    rounds: list[ConversationMessage] = []
+    # Several complete prompt rounds so drop_count >= 1.
+    for i in range(6):
+        rounds.append(_user_text(f"turn-{i}"))
+        rounds.append(_assistant_text(f"reply-{i}"))
+    # Tail: an assistant tool_use with NO following tool_result (orphan).
+    rounds.append(
+        ConversationMessage(
+            role="assistant",
+            content=[ToolUseBlock(id="orphan", name="bash", input={})],
+        )
+    )
+    out = truncate_head_for_ptl_retry(rounds)
+    assert out is not None
+    # No trailing orphan tool_use may survive the boundary.
+    assert not (out[-1].role == "assistant" and out[-1].tool_uses)
