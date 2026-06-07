@@ -21,7 +21,7 @@ never instantiate the dispatcher by hand.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +30,7 @@ from dream.engine._loop import ToolDispatcher, TurnStreamer
 from dream.engine._records import TurnRecord
 from dream.engine._session import SessionConfig
 from dream.engine._tool_dispatch import DispatchRecord, EngineToolDispatcher
+from dream.observability._tracer import NoopTracer, Tracer
 from dream.services.compact import DEFAULT_KEEP_RECENT
 from dream.services.compact._orchestrator import AutoCompactState
 from dream.tools._registry import ToolRegistry
@@ -59,6 +60,8 @@ class QueryEngine:
     compaction_threshold: float = 0.7
     compaction_preserve_recent: int = DEFAULT_KEEP_RECENT
     compaction_capabilities: ProviderCapabilities | None = None
+    tracer: Tracer = field(default_factory=NoopTracer)
+    model: str = ""
 
     def make_session_config(
         self,
@@ -82,6 +85,8 @@ class QueryEngine:
             compaction_threshold=self.compaction_threshold,
             compaction_preserve_recent=self.compaction_preserve_recent,
             compaction_capabilities=self.compaction_capabilities,
+            tracer=self.tracer,
+            model=self.model,
         )
 
 
@@ -99,6 +104,8 @@ def build_query_engine(
     compaction_threshold: float = 0.7,
     compaction_preserve_recent: int = DEFAULT_KEEP_RECENT,
     compaction_capabilities: ProviderCapabilities | None = None,
+    tracer: Tracer | None = None,
+    model: str = "",
 ) -> QueryEngine:
     """Wrap a ``ToolRegistry`` in the canonical dispatcher and bind a streamer.
 
@@ -124,6 +131,8 @@ def build_query_engine(
         compaction_threshold=compaction_threshold,
         compaction_preserve_recent=compaction_preserve_recent,
         compaction_capabilities=compaction_capabilities,
+        tracer=tracer or NoopTracer(),
+        model=model,
     )
 
 

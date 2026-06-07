@@ -75,6 +75,8 @@ from dream.engine._records import (
 )
 from dream.engine._reviewer import ReviewerConfig
 from dream.engine._transitions import TransitionBus, TransitionEvent
+from dream.observability._events import state_transition_attrs, validator_finding_attrs
+from dream.observability._tracer import NoopTracer, Tracer
 from dream.services.compact import DEFAULT_KEEP_RECENT
 from dream.services.compact._orchestrator import (
     AutoCompactState,
@@ -114,6 +116,8 @@ class SessionConfig:
     compaction_threshold: float = 0.7
     compaction_preserve_recent: int = DEFAULT_KEEP_RECENT
     compaction_capabilities: ProviderCapabilities | None = None
+    tracer: Tracer = field(default_factory=NoopTracer)
+    model: str = ""
 
     def __post_init__(self) -> None:
         # 0/negative would satisfy ``consecutive_timeouts >= max`` immediately
@@ -227,6 +231,19 @@ async def run_session(
     """
     session_started_at = config.now()
 
+    # Mirror every FSM transition into the trace (Spec 12a). Registered before
+    # the first ``_fire`` so the starting->orienting edge is captured too; a
+    # NoopTracer makes this a cheap no-op when tracing is off.
+    if transitions is not None:
+        transitions.register(
+            lambda ev: config.tracer.event(
+                "state.transition",
+                state_transition_attrs(
+                    kind=ev.kind, from_state=ev.from_state, to_state=ev.to_state
+                ),
+            )
+        )
+
     # starting -> orienting (always fired; the orientation ritual runs
     # between this transition and the orienting -> working one below).
     yield _fire(
@@ -245,6 +262,16 @@ async def run_session(
     # violate "orientation runs exactly once per session").
     if config.orientation is not None and resume_messages is None:
         brief = await run_orientation(config.orientation)
+        for finding in brief.validator_findings:
+            config.tracer.event(
+                "validator.finding",
+                validator_finding_attrs(
+                    severity=finding.severity,
+                    code=finding.code,
+                    message=finding.message,
+                    path=finding.path,
+                ),
+            )
         if brief.has_blocking_findings:
             yield _fire(
                 transitions,
@@ -350,7 +377,13 @@ async def run_session(
         turn_coma = False
         turn_error: str | None = None
 
-        ctx = QueryContext(client=config.client, tools=config.tools, max_turns=config.max_turns)
+        ctx = QueryContext(
+            client=config.client,
+            tools=config.tools,
+            max_turns=config.max_turns,
+            tracer=config.tracer,
+            model=config.model,
+        )
         # ``run_query`` is declared as ``AsyncIterator`` but is in fact an
         # async generator; the cast lets us call ``aclose()`` on timeout to
         # release the inner streamer promptly.

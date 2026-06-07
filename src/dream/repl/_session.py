@@ -19,6 +19,7 @@ from dataclasses import fields
 from pathlib import Path
 from typing import Any, TextIO
 
+from dream.config.paths import DreamPaths
 from dream.contracts.provider import ProviderCapabilities
 from dream.engine._adapter_openai import (
     OpenAIChatStreamer,
@@ -36,6 +37,7 @@ from dream.events import (
 )
 from dream.harness import Harness, HarnessConfig
 from dream.mcp import McpClientManager
+from dream.observability import JsonlTracer, TraceWriter
 from dream.repl._events import EventSink
 from dream.repl._mcp import mcp_paths, setup_mcp_session
 from dream.services.compact._orchestrator import (
@@ -165,6 +167,13 @@ def build_default_harness(
             model=options.model or model,
             system_prompt=system_prompt,
         )
+        # OTel-shaped trace (Spec 12a): one durable JSONL per session under the
+        # task sidecar. The session_id doubles as the sidecar dir key in the REPL.
+        tracer = JsonlTracer(
+            TraceWriter(DreamPaths(repo=working_dir, home=Path.home()).trace_log(session_id)),
+            session_id=session_id,
+            task_id=session_id,
+        )
         return build_query_engine(
             streamer=streamer,
             registry=tool_registry,
@@ -176,6 +185,8 @@ def build_default_harness(
             ),
             compactor=compactor,
             compaction_capabilities=capabilities,
+            tracer=tracer,
+            model=options.model or model,
         )
 
     return Harness(HarnessConfig(working_dir=working_dir, _engine_factory=_factory))
