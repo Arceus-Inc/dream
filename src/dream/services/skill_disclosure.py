@@ -90,6 +90,31 @@ def parse_skill_frontmatter(text: str) -> tuple[SkillFrontmatter, str]:
 # --- discovery ---------------------------------------------------------------
 
 
+def read_skill_frontmatter(path: Path) -> SkillFrontmatter:
+    """Parse only the frontmatter of a SKILL.md, stopping at the closing ``---``.
+
+    Progressive disclosure (Spec 04 #10/#11): startup cost MUST NOT scale with
+    body size, so we read line-by-line and stop once the closing fence is seen
+    rather than slurping and parsing the whole file body.
+    """
+    header_lines: list[str] = []
+    with path.open("r", encoding="utf-8") as fh:
+        first = fh.readline()
+        if first.strip() != "---":
+            raise ValueError("skill frontmatter must start with '---'")
+        header_lines.append(first.rstrip("\n"))
+        closed = False
+        for line in fh:
+            header_lines.append(line.rstrip("\n"))
+            if line.strip() == "---":
+                closed = True
+                break
+        if not closed:
+            raise ValueError("skill frontmatter missing closing '---'")
+    fm, _ = parse_skill_frontmatter("\n".join(header_lines))
+    return fm
+
+
 def discover_skill_frontmatter(
     roots: Iterable[Path],
 ) -> list[SkillFrontmatter]:
@@ -99,9 +124,7 @@ def discover_skill_frontmatter(
         if not root.exists() or not root.is_dir():
             continue
         for skill_file in sorted(root.glob(f"*/{_SKILL_FILENAME}")):
-            text = skill_file.read_text(encoding="utf-8")
-            fm, _ = parse_skill_frontmatter(text)
-            found.append(fm)
+            found.append(read_skill_frontmatter(skill_file))
     return found
 
 
@@ -112,8 +135,7 @@ def _discover_entries(roots: Iterable[Path]) -> dict[str, _SkillEntry]:
         if not root.exists() or not root.is_dir():
             continue
         for skill_file in sorted(root.glob(f"*/{_SKILL_FILENAME}")):
-            text = skill_file.read_text(encoding="utf-8")
-            fm, _ = parse_skill_frontmatter(text)
+            fm = read_skill_frontmatter(skill_file)
             entries[fm.name] = _SkillEntry(frontmatter=fm, body_path=skill_file)
     return entries
 
@@ -169,4 +191,5 @@ __all__: list[str] = [
     "SkillRegistry",
     "discover_skill_frontmatter",
     "parse_skill_frontmatter",
+    "read_skill_frontmatter",
 ]

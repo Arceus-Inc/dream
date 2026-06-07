@@ -25,6 +25,7 @@ from dream.engine._messages import (
 from dream.services.compact import (
     CompactAttachment,
     CompactionResult,
+    build_post_compact_messages,
 )
 from dream.services.compact._orchestrator import (
     AutoCompactState,
@@ -457,3 +458,55 @@ def test_reactive_falls_back_to_head_truncation_when_collapse_fails() -> None:
     new_msgs, did_shrink = react_to_ptl(messages, already_attempted=False)
     assert did_shrink is True
     assert len(new_msgs) < len(messages)
+
+
+# --- micro tier returns the rebuilt transcript (contract parity with full) ---
+
+
+def test_micro_tier_returns_rebuilt_transcript_with_boundary() -> None:
+    """The micro tier must return the rebuilt post-compact transcript (boundary
+    + attachments) — not the raw microcompacted messages — so it honours the
+    same contract as the full tier (Spec 04 #9 tier-parity).
+    """
+    messages = _pressure_messages(num_rounds=10, payload_chars=8_000)
+    state = AutoCompactState()
+    carryover: dict[str, Any] = {"failing_tests": ["test_foo", "test_bar"]}
+
+    returned, result = auto_compact_if_needed(
+        messages,
+        capabilities=_caps(30_000),  # over before, under after microcompact
+        state=state,
+        summariser=None,  # force microcompact-only path
+        carryover_metadata=carryover,
+    )
+
+    assert result is not None
+    assert result.tier == "microcompact"
+    # The returned transcript MUST equal the rebuilt-from-result transcript,
+    # i.e. it carries the boundary marker + attachments, not the raw messages.
+    assert returned == build_post_compact_messages(result)
+    assert returned[0] is result.boundary_marker
+    assert "[Compact boundary marker]" in returned[0].text
+    # Attachment built from carryover must be present in the returned transcript.
+    assert result.attachments, "failing_tests carryover should yield an attachment"
+
+
+def test_micro_tier_boundary_carries_pre_compact_footprint() -> None:
+    """The micro boundary marker must carry pre-compact recovery data via the
+    keys create_compact_boundary_message actually consumes.
+    """
+    messages = _pressure_messages(num_rounds=10, payload_chars=8_000)
+    state = AutoCompactState()
+
+    returned, result = auto_compact_if_needed(
+        messages,
+        capabilities=_caps(30_000),
+        state=state,
+        summariser=None,
+    )
+
+    assert result is not None
+    assert result.tier == "microcompact"
+    assert "Pre-compact footprint" in returned[0].text
+    # The pre-compact message count is the original transcript length.
+    assert f"messages={len(messages)}" in returned[0].text

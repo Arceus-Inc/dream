@@ -156,6 +156,27 @@ def test_from_jsonl_line_rejects_malformed_json() -> None:
         from_jsonl_line("not json at all")
 
 
+def test_from_jsonl_line_rejects_non_string_name() -> None:
+    """A non-string 'name' MUST raise ValueError, not an unhandled TypeError."""
+    with pytest.raises(ValueError):
+        from_jsonl_line('{"name": []}')
+
+
+def test_from_jsonl_line_rejects_missing_required_field() -> None:
+    """A known event missing a required field surfaces as ValueError uniformly."""
+    # context.skill.loaded requires skill_name; omit it.
+    with pytest.raises(ValueError):
+        from_jsonl_line('{"name": "context.skill.loaded"}')
+
+
+def test_read_context_log_surfaces_missing_field_as_valueerror(tmp_path: Path) -> None:
+    """read_context_log callers see ValueError (not TypeError) for malformed lines."""
+    path = tmp_path / "context.jsonl"
+    path.write_text('{"name": "context.skill.loaded"}\n', encoding="utf-8")
+    with pytest.raises(ValueError):
+        read_context_log(path)
+
+
 def test_to_jsonl_line_includes_iso_timestamp_when_present() -> None:
     when = datetime(2024, 1, 2, 3, 4, 5, tzinfo=UTC).isoformat()
     line = to_jsonl_line(ContextSkillLoaded(skill_name="x", at=when))
@@ -183,15 +204,21 @@ def test_writer_appends_when_file_already_exists(tmp_path: Path) -> None:
     """A re-opened log MUST extend rather than overwrite — sessions resume."""
     path = tmp_path / "context.jsonl"
     w1 = ContextLogWriter(path)
-    w1.emit(ContextSkillLoaded(skill_name="first"))
-    w1.close()
+    try:
+        w1.emit(ContextSkillLoaded(skill_name="first"))
+    finally:
+        w1.close()
 
     w2 = ContextLogWriter(path)
-    w2.emit(ContextSkillLoaded(skill_name="second"))
-    w2.close()
+    try:
+        w2.emit(ContextSkillLoaded(skill_name="second"))
+    finally:
+        w2.close()
 
     events = read_context_log(path)
-    assert [e for e in events if isinstance(e, ContextSkillLoaded)] == [
+    # Assert the FULL event list — filtering by type would let stray appended
+    # events slip through undetected.
+    assert events == [
         ContextSkillLoaded(skill_name="first"),
         ContextSkillLoaded(skill_name="second"),
     ]

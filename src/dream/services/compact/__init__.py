@@ -69,6 +69,11 @@ COMPACTABLE_TOOLS: frozenset[str] = frozenset(
 TIME_BASED_MC_CLEARED_MESSAGE = "[Old tool result content cleared]"
 DEFAULT_KEEP_RECENT = 5
 
+# A canonical-tool result is only worth clearing when its content is larger
+# than the sentinel that replaces it; otherwise microcompaction would *grow*
+# the transcript while reporting savings (negative compaction).
+_MC_REPLACEMENT_SIZE = len(TIME_BASED_MC_CLEARED_MESSAGE)
+
 # Char limits for try_context_collapse. Picked to match openharness so the
 # behaviour is identical when both harnesses see the same transcript.
 CONTEXT_COLLAPSE_TEXT_CHAR_LIMIT = 2_400
@@ -126,15 +131,19 @@ def collect_compactable_tool_ids(messages: list[ConversationMessage]) -> list[st
                 tool_names[block.id] = block.name
             elif isinstance(block, ToolResultBlock):
                 result_content[block.tool_use_id] = block.content
-    return [
-        tool_id
-        for tool_id in ordered_ids
-        if tool_names.get(tool_id, "") in COMPACTABLE_TOOLS
-        or is_microcompactable_tool_result(
-            tool_names.get(tool_id, ""),
-            result_content.get(tool_id, ""),
-        )
-    ]
+    compactable: list[str] = []
+    for tool_id in ordered_ids:
+        name = tool_names.get(tool_id, "")
+        content = result_content.get(tool_id, "")
+        if name in COMPACTABLE_TOOLS:
+            # Only clear when the payload is larger than its replacement
+            # sentinel — otherwise we'd grow the transcript (negative
+            # compaction) while reporting savings.
+            if len(content) > _MC_REPLACEMENT_SIZE:
+                compactable.append(tool_id)
+        elif is_microcompactable_tool_result(name, content):
+            compactable.append(tool_id)
+    return compactable
 
 
 def microcompact_messages(
@@ -219,12 +228,19 @@ def split_preserving_tool_pairs(
     The newer segment is also sanitised so a trailing orphan ``ToolUseBlock``
     never survives the boundary.
     """
+    preserve_recent = max(0, preserve_recent)
     if len(messages) <= preserve_recent:
         return [], sanitize_conversation_messages(list(messages))
 
     split_index = max(0, len(messages) - preserve_recent)
-    while split_index > 0 and boundary_crosses_tool_pair(
-        messages[split_index - 1], messages[split_index]
+    # split_index == len(messages) (preserve_recent == 0) means the whole
+    # transcript is "older" and nothing is preserved — there is no boundary to
+    # check, and messages[split_index] would be out of range.
+    while (
+        0 < split_index < len(messages)
+        and boundary_crosses_tool_pair(
+            messages[split_index - 1], messages[split_index]
+        )
     ):
         split_index -= 1
 
@@ -605,8 +621,10 @@ def truncate_head_for_ptl_retry(
         marker = ConversationMessage(
             role="user", content=[TextBlock(text=PTL_RETRY_MARKER)]
         )
-        return [marker, *retained]
-    return retained
+        retained = [marker, *retained]
+    # Re-sanitize: dropping head rounds can leave the retained tail ending on
+    # an orphan assistant ToolUseBlock, which the next provider call rejects.
+    return sanitize_conversation_messages(retained)
 
 
 __all__ = [

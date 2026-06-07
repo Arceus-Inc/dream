@@ -28,6 +28,7 @@ from dream.services.compact import (
     DEFAULT_KEEP_RECENT,
     CompactionResult,
     build_compact_attachments,
+    build_post_compact_messages,
     create_compact_boundary_message,
     microcompact_messages,
     record_compact_checkpoint,
@@ -149,17 +150,22 @@ def auto_compact_if_needed(
             trigger=trigger,
             preserve_recent=preserve_recent,
             carryover_metadata=carryover_metadata,
+            pre_compact_message_count=len(messages),
+            pre_compact_token_count=estimate_conversation_tokens(messages),
         )
         state.compacted_this_turn = True
+        # Return the rebuilt post-compact transcript (boundary + attachments
+        # included) so the micro tier honours the same contract as full.
+        rebuilt = build_post_compact_messages(result)
         _emit(
             event_sink,
             ContextCompactionCompleted(
                 tier="microcompact",
                 preserved_attachments=len(result.attachments),
-                resulting_utilisation=post_util,
+                resulting_utilisation=utilisation(rebuilt, capabilities),
             ),
         )
-        return microcompacted, result
+        return rebuilt, result
 
     # --- Tier 2: full LLM summarisation -------------------------------------
     older, newer = split_preserving_tool_pairs(
@@ -186,8 +192,9 @@ def auto_compact_if_needed(
     boundary = create_compact_boundary_message(
         {
             "trigger": trigger,
-            "pre_messages": len(messages),
-            "pre_tokens": estimate_conversation_tokens(messages),
+            "tier": "full",
+            "pre_compact_message_count": len(messages),
+            "pre_compact_token_count": estimate_conversation_tokens(messages),
         }
     )
     result = CompactionResult(
@@ -203,8 +210,6 @@ def auto_compact_if_needed(
     state.consecutive_failures = 0
 
     # Build the rebuilt list for utilisation measurement + return.
-    from dream.services.compact import build_post_compact_messages
-
     rebuilt = build_post_compact_messages(result)
     _emit(
         event_sink,
@@ -260,6 +265,8 @@ def _build_microcompact_result(
     trigger: CompactTrigger,
     preserve_recent: int,
     carryover_metadata: dict[str, Any] | None,
+    pre_compact_message_count: int,
+    pre_compact_token_count: int,
 ) -> CompactionResult:
     """Wrap a microcompact-only outcome in a CompactionResult.
 
@@ -268,7 +275,12 @@ def _build_microcompact_result(
     """
     _ = preserve_recent  # boundary placement is downstream; field documented for symmetry
     boundary = create_compact_boundary_message(
-        {"trigger": trigger, "tier": "microcompact"}
+        {
+            "trigger": trigger,
+            "tier": "microcompact",
+            "pre_compact_message_count": pre_compact_message_count,
+            "pre_compact_token_count": pre_compact_token_count,
+        }
     )
     attachments = build_compact_attachments(carryover_metadata or {})
     return CompactionResult(

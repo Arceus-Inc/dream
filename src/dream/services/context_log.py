@@ -127,12 +127,19 @@ def from_jsonl_line(line: str) -> ContextEvent:
     if not isinstance(payload, dict) or "name" not in payload:
         raise ValueError(f"jsonl payload missing 'name': {line!r}")
     name = payload["name"]
+    if not isinstance(name, str):
+        raise ValueError(f"jsonl 'name' must be a string: {line!r}")
     cls = _EVENT_BY_NAME.get(name)
     if cls is None:
         raise ValueError(f"unknown context event name: {name!r}")
     field_names = {f.name for f in fields(cls)}
     kwargs = {k: v for k, v in payload.items() if k in field_names}
-    return cls(**kwargs)
+    try:
+        return cls(**kwargs)
+    except TypeError as exc:
+        # Missing/extra required fields surface as ValueError so every
+        # malformed line is uniform for read_context_log callers.
+        raise ValueError(f"malformed jsonl line for {name!r}: {line!r}") from exc
 
 
 # --- append-only file sink ---------------------------------------------------
