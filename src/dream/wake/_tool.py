@@ -12,9 +12,9 @@ that slice 2 will wire up.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, StringConstraints, ValidationError
 
 from dream.contracts.tool import ToolResult
 from dream.tools._base import BaseTool, ToolDeclaration
@@ -23,6 +23,11 @@ from dream.tools._context import ToolExecutionContext
 _MAX_TASKS = 5
 _MAX_TASK_LEN = 200
 _MAX_REASON_LEN = 200
+
+# Per-task item type: the max-length cap lives in the type so it is both
+# enforced by pydantic AND advertised in the published JSON schema, guiding
+# the model rather than only rejecting oversize input after the fact.
+TaskItem = Annotated[str, StringConstraints(max_length=_MAX_TASK_LEN)]
 
 
 class HeartbeatInput(BaseModel):
@@ -34,7 +39,7 @@ class HeartbeatInput(BaseModel):
             "Exactly one wake-cycle decision per call."
         ),
     )
-    tasks: list[str] = Field(
+    tasks: list[TaskItem] = Field(
         default_factory=list,
         max_length=_MAX_TASKS,
         description=(
@@ -48,8 +53,9 @@ class HeartbeatInput(BaseModel):
     )
 
     def model_post_init(self, __context: Any) -> None:
-        # Per-item length cap; field-level ``max_length`` on ``list[str]`` only
-        # bounds the list length, not the strings inside it.
+        # Defence in depth: the per-item cap is enforced by ``TaskItem`` (and
+        # surfaced in the schema), but we re-check at runtime so the invariant
+        # holds even if the field type is ever loosened.
         for t in self.tasks:
             if len(t) > _MAX_TASK_LEN:
                 raise ValueError(
@@ -75,7 +81,7 @@ class ForcedHeartbeatInput(BaseModel):
             "too many consecutive wake cycles and must do something this turn."
         ),
     )
-    tasks: list[str] = Field(
+    tasks: list[TaskItem] = Field(
         default_factory=list,
         max_length=_MAX_TASKS,
         description="Tasks to queue. Empty list is allowed (synthesised wake).",

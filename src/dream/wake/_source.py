@@ -107,7 +107,15 @@ def wake_source_from_dict(d: dict[str, Any]) -> WakeSource:
     if kind == "cron":
         return CronWake(cron_kind=d["cron_kind"], run_id=d.get("run_id"))
     if kind == "idle_timer":
-        return IdleTimerWake(idle_minutes=int(d["idle_minutes"]))
+        idle_minutes = d["idle_minutes"]
+        # ``int(...)`` would silently accept bool/float and truncate. Require a
+        # real ``int`` and reject ``bool`` (an ``int`` subclass) so corrupted
+        # records raise instead of being coerced.
+        if not isinstance(idle_minutes, int) or isinstance(idle_minutes, bool):
+            raise ValueError(
+                f"idle_minutes must be an int, got {type(idle_minutes).__name__}"
+            )
+        return IdleTimerWake(idle_minutes=idle_minutes)
     if kind == "inbound_message":
         return InboundMessageWake(channel=d["channel"], message_ref=d["message_ref"])
     if kind == "manual":

@@ -16,6 +16,7 @@ decision. The lock is released as soon as the decision is committed.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -80,7 +81,14 @@ def _lock_path_for(coordination_dir: Path, *, agent_id: str) -> Path:
 def _emit(
     sink: EventEmitter | None, event_type: str, payload: dict[str, Any]
 ) -> None:
-    if sink is not None:
+    # The observer is untrusted from the orchestrator's perspective: a faulty
+    # callback must not abort the wake cycle *after* the decision and state
+    # update have already been committed (which would risk partial-commit and
+    # duplicate decisions on a retry). Trap observer failures the same way the
+    # engine's TransitionBus traps listener exceptions.
+    if sink is None:
+        return
+    with contextlib.suppress(Exception):
         sink(event_type, payload)
 
 
