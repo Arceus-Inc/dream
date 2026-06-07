@@ -22,7 +22,7 @@ from __future__ import annotations
 import inspect
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 from pydantic import BaseModel
 
@@ -177,10 +177,14 @@ class BaseTool(ABC):
     forced to subclass.
     """
 
-    name: ClassVar[str]
-    description: ClassVar[str]
-    declaration: ClassVar[ToolDeclaration]
-    input_model: ClassVar[type[BaseModel]]
+    # Class-level by convention (most tools are one-class-per-tool), but plain
+    # attributes — not ``ClassVar`` — so a per-instance tool (the MCP adapter,
+    # Spec 06) can override them on the instance. This also matches the public
+    # ``Tool`` Protocol, which declares them as instance attributes.
+    name: str
+    description: str
+    declaration: ToolDeclaration
+    input_model: type[BaseModel]
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)

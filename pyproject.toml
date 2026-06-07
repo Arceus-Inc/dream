@@ -28,13 +28,13 @@ dependencies = [
   "croniter>=2.0",
   "jsonschema>=4.0",
   "pyyaml>=6.0",
+  "mcp>=1.0",
   "tzdata>=2024.1; platform_system == 'Windows'",
 ]
 
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.40"]
 openai    = ["openai>=1.50"]
-mcp       = ["mcp>=1.0"]
 docker    = ["docker>=7.1"]
 dev = [
   "pytest>=8.2",
