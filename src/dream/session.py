@@ -58,6 +58,16 @@ if TYPE_CHECKING:
     from dream.engine._engine import QueryEngine
 
 
+def _tool_failed_marker(tool_name: str) -> str:
+    """Generic, non-revealing tool-failure marker for the transcript.
+
+    Mirrors ``run_query``'s own transcript contract (``_loop.py``): the
+    detailed failure stays on the event stream while the transcript the
+    model re-reads on resume only ever sees this generic line.
+    """
+    return f"tool {tool_name!r} failed to execute"
+
+
 @dataclass(frozen=True)
 class SessionOptions:
     """Per-session overrides. All fields optional."""
@@ -107,9 +117,13 @@ class Session:
         self.cost = SessionCost()
         self._engine = _engine
         self._transcript: list[ConversationMessage] = []
-        self._inner: AsyncGenerator[Any, None] | None = None
         self._cancel_event: asyncio.Event | None = None
         self._closed = False
+        # Single-flight guard: ``Session`` keeps per-call cancel state on the
+        # instance, so two overlapping ``send`` calls would clobber each
+        # other and ``cancel`` could target the wrong stream. Only one
+        # ``send`` may be in flight at a time (#33).
+        self._active = False
 
     async def send(self, prompt: str) -> AsyncIterator[Event]:
         """Submit a user prompt and stream typed events back.
@@ -123,6 +137,11 @@ class Session:
             raise RuntimeError("session is closed")
         if self._engine is None:
             raise NotImplementedError("engine binding not yet implemented")
+        if self._active:
+            # Single-flight: per-call cancel state lives on the instance, so
+            # overlapping sends would corrupt each other's cancel routing.
+            raise RuntimeError("a send is already in flight on this session")
+        self._active = True
 
         # ``resume`` is the transcript as we knew it before this call;
         # ``run_session`` sanitizes it on entry. We then append the new
@@ -137,11 +156,9 @@ class Session:
             config, [user_msg], resume_messages=resume
         )
         cancel_event = asyncio.Event()
-        self._inner = inner
         self._cancel_event = cancel_event
 
         pending_tool_results: list[ToolResultBlock] = []
-        cancelled = False
 
         try:
             # Race ``inner.__anext__`` against the cancel event so a
@@ -167,7 +184,6 @@ class Session:
                     await cancel_task
 
                 if cancel_event.is_set():
-                    cancelled = True
                     next_task.cancel()
                     with contextlib.suppress(BaseException):
                         await next_task
@@ -183,19 +199,21 @@ class Session:
                     continue
                 yield public
         finally:
-            self._inner = None
             self._cancel_event = None
+            self._active = False
             # ``aclose`` is the canonical way to cascade cleanup down
             # through ``run_session`` / ``run_query`` / the provider
             # stream. Safe here because no other task is iterating
             # ``inner`` -- this generator was its sole driver.
             with contextlib.suppress(BaseException):
                 await inner.aclose()
-            # Defensive: if the stream terminated mid-tool (rare; e.g.
-            # cancel between ToolExecutionCompleted and the next
-            # AssistantTurnComplete), flush remaining results so the
-            # transcript reflects what the model would see on resume.
-            if not cancelled and pending_tool_results:
+            # Flush any tool results buffered but not yet committed to the
+            # transcript (the stream ended mid-tool: either normally between
+            # ToolExecutionCompleted and the next AssistantTurnComplete, or
+            # via cancel). Persisting them on *both* paths keeps the
+            # transcript from carrying a dangling assistant tool_use with no
+            # matching tool_result, which the model rejects on resume (#34).
+            if pending_tool_results:
                 self._transcript.append(
                     ConversationMessage(role="user", content=list(pending_tool_results))
                 )
@@ -217,10 +235,20 @@ class Session:
             return ToolUseStart(tool_use_id=ev.id, name=ev.tool, input=dict(ev.input))
 
         if isinstance(ev, ToolExecutionCompleted):
+            # Transcript vs. event split, mirroring ``run_query``'s contract
+            # (#35): the event carries ``ev.result`` verbatim (the engine's
+            # observability side-channel), but the transcript the model
+            # re-reads on resume must NOT carry internal error detail. For
+            # an error result we write the same generic, non-revealing
+            # marker the engine writes into its own transcript; a successful
+            # result is committed verbatim.
+            transcript_content = (
+                _tool_failed_marker(ev.tool) if ev.is_error else ev.result
+            )
             pending_tool_results.append(
                 ToolResultBlock(
                     tool_use_id=ev.id,
-                    content=ev.result,
+                    content=transcript_content,
                     is_error=ev.is_error,
                 )
             )
@@ -260,6 +288,13 @@ class Session:
             return Error(code="engine", message=ev.message)
 
         if isinstance(ev, CompactionDoneEvent):
+            # ``run_session`` compacted its *own* internal transcript; our
+            # mirror is still the pre-compaction shape, so the next ``send``
+            # would resume from stale history (#41). Re-apply the same
+            # deterministic compaction to ``self._transcript`` using the
+            # engine's compaction settings so resume starts from the
+            # compacted shape the model actually saw.
+            self._apply_compaction()
             return Compacted(
                 removed_messages=ev.removed_messages,
                 summary_tokens=ev.freed_tokens,
@@ -273,6 +308,36 @@ class Session:
         # Orchestration events (TransitionEvent / TurnRecord / SessionEnd)
         # plus any unknown internal type: drop silently.
         return None
+
+    def _apply_compaction(self) -> None:
+        """Bring ``self._transcript`` to the compacted shape (#41).
+
+        ``run_session`` compacts an internal copy of the transcript; the
+        ``CompactionDoneEvent`` carries only deltas, not the compacted
+        messages. Microcompaction is a pure function of the input, so we
+        reproduce the same shape by re-running the engine's compactor over
+        our mirror with ``force=True`` (the engine already consumed this
+        turn's cooldown). A no-op when no engine / compactor is bound.
+        """
+        engine = self._engine
+        if engine is None or engine.compactor is None:
+            return
+        compactor = engine.compactor
+        # Local import keeps the orchestrator out of the module import graph
+        # for engine-less sessions (e.g. the unit-level _translate test).
+        from dream.services.compact._orchestrator import auto_compact_if_needed
+
+        new_transcript, result = auto_compact_if_needed(
+            self._transcript,
+            capabilities=engine.compaction_capabilities,
+            state=compactor,
+            trigger="manual",
+            threshold=engine.compaction_threshold,
+            preserve_recent=engine.compaction_preserve_recent,
+            force=True,
+        )
+        if result is not None:
+            self._transcript[:] = new_transcript
 
     async def cancel(self) -> None:
         """Cancel the in-flight ``send``, if any.

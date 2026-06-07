@@ -14,6 +14,21 @@ _DEFAULT_EVENTS = Path(".dream") / "repl-events.jsonl"
 _DEFAULT_ENV_FILE = Path(".env.local")
 
 
+def _positive_int(raw: str) -> int:
+    """argparse type: a strictly positive integer.
+
+    Guards ``--max-turns`` so a 0/negative value fails fast at parse time
+    instead of the engine silently doing zero turns and returning nothing.
+    """
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{raw!r} is not an integer") from exc
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"must be a positive integer, got {value}")
+    return value
+
+
 def _load_env_file(path: Path) -> int:
     """Load ``KEY=VALUE`` lines from ``path`` into ``os.environ`` (no overwrite).
 
@@ -120,9 +135,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     session.add_argument(
         "--max-turns",
-        type=int,
+        type=_positive_int,
         default=8,
-        help="hard cap on assistant turns per send (default: 8)",
+        help="hard cap on assistant turns per send; must be >= 1 (default: 8)",
     )
 
     return parser
