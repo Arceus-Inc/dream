@@ -202,6 +202,112 @@ def test_two_failures_in_one_session_append_two_bullets(tmp_path: Path) -> None:
     assert len(bullets) == 2
 
 
+# --- markdown injection hardening (#54) ------------------------------------
+
+
+@pytest.mark.parametrize("bad", ["line1\nline2", "line1\rline2", "x\n## fake"])
+def test_missing_field_rejects_newlines(bad: str) -> None:
+    """A newline in ``missing`` would inject fake bullets/sections."""
+    with pytest.raises(Exception, match="single line"):
+        TechDebtEntry(ts=_t(), source="manual", missing=bad, evidence="y")
+
+
+def test_evidence_field_rejects_newlines() -> None:
+    with pytest.raises(Exception, match="single line"):
+        TechDebtEntry(
+            ts=_t(), source="manual", missing="x", evidence="a\n- injected"
+        )
+
+
+def test_task_id_field_rejects_newlines() -> None:
+    with pytest.raises(Exception, match="single line"):
+        TechDebtEntry(
+            ts=_t(),
+            source="manual",
+            missing="x",
+            evidence="y",
+            task_id="T1\n## Heading",
+        )
+
+
+def test_bullet_stays_single_line_for_valid_entry() -> None:
+    """Sanity: a well-formed entry renders to exactly one line."""
+    bullet = TechDebtEntry(
+        ts=_t(), source="manual", missing="x", evidence="y"
+    ).to_bullet()
+    assert "\n" not in bullet
+    assert "\r" not in bullet
+
+
+# --- concurrency: lock-serialised append (#55) -----------------------------
+
+
+def test_append_is_lock_serialised(tmp_path: Path, monkeypatch) -> None:
+    """The read-modify-write must hold an exclusive lock so concurrent
+    writers can't both read the same prior content and lose an append."""
+    import dream.tasks._tech_debt as mod
+
+    events: list[str] = []
+    real_lock = mod.exclusive_file_lock
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def spy_lock(path, **kw):  # type: ignore[no-untyped-def]
+        events.append(f"lock:{Path(path).name}")
+        with real_lock(path, **kw):
+            yield
+        events.append(f"unlock:{Path(path).name}")
+
+    real_write = mod.atomic_write_text
+
+    def spy_write(path, text, **kw):  # type: ignore[no-untyped-def]
+        events.append("write")
+        real_write(path, text, **kw)
+
+    monkeypatch.setattr(mod, "exclusive_file_lock", spy_lock)
+    monkeypatch.setattr(mod, "atomic_write_text", spy_write)
+
+    root = tmp_path / "docs" / "exec-plans"
+    append_tech_debt_entry(
+        root,
+        TechDebtEntry(ts=_t(), source="manual", missing="x", evidence="y"),
+    )
+    # The write must happen strictly inside the lock window.
+    assert events[0].startswith("lock:")
+    assert events[-1].startswith("unlock:")
+    assert events.index("write") < events.index(events[-1])
+
+
+def test_concurrent_appends_all_land(tmp_path: Path) -> None:
+    """Threads appending in parallel must not clobber each other (lock holds
+    each read+write together)."""
+    import threading
+
+    root = tmp_path / "docs" / "exec-plans"
+    n = 12
+
+    def worker(i: int) -> None:
+        append_tech_debt_entry(
+            root,
+            TechDebtEntry(
+                ts=_t(), source="manual", missing=f"finding-{i}", evidence="e"
+            ),
+        )
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join()
+
+    body = tech_debt_path(root).read_text(encoding="utf-8")
+    bullets = [line for line in body.splitlines() if line.startswith("- ")]
+    assert len(bullets) == n
+    for i in range(n):
+        assert f"finding-{i}" in body
+
+
 def test_append_uses_atomic_helper(tmp_path: Path, monkeypatch) -> None:
     """Spec 01 decision 9 — append goes through ``atomic_write_text``
     (read-modify-write atomic swap), not ``open(..., "a")``."""

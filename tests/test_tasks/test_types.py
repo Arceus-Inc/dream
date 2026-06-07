@@ -90,6 +90,42 @@ def test_task_record_is_frozen() -> None:
         setattr(r, "status", "running")
 
 
+# --- frozen containers (#59) -----------------------------------------------
+
+
+def test_metadata_container_is_read_only() -> None:
+    """A mutable dict passed in must not give callers a mutation handle."""
+    r = _record(metadata={"task_id": "T1"})
+    with pytest.raises(TypeError):
+        r.metadata["task_id"] = "EVIL"  # type: ignore[index]
+    assert r.metadata == {"task_id": "T1"}
+
+
+def test_metadata_snapshot_decouples_from_source_dict() -> None:
+    """Mutating the source dict after construction must not leak in."""
+    source = {"task_id": "T1"}
+    r = _record(metadata=source)
+    source["task_id"] = "EVIL"
+    assert r.metadata == {"task_id": "T1"}
+
+
+def test_env_container_is_read_only() -> None:
+    r = _record(env={"PATH": "/bin"})
+    assert r.env is not None
+    with pytest.raises(TypeError):
+        r.env["PATH"] = "/evil"  # type: ignore[index]
+    assert r.env == {"PATH": "/bin"}
+
+
+def test_argv_is_an_immutable_tuple() -> None:
+    """argv is stored as a tuple, so in-place mutation is impossible."""
+    r = _record(argv=["echo", "hi"])
+    assert r.argv == ("echo", "hi")
+    assert isinstance(r.argv, tuple)
+    with pytest.raises((AttributeError, TypeError)):
+        r.argv[0] = "evil"  # type: ignore[index]
+
+
 # --- transition helpers -----------------------------------------------------
 
 

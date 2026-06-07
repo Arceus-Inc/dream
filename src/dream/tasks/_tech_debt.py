@@ -23,8 +23,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from dream.utils.file_lock import exclusive_file_lock
 from dream.utils.fs import atomic_write_text
 
 __all__ = [
@@ -58,6 +59,21 @@ class TechDebtEntry(BaseModel):
     evidence: str = Field(min_length=1)
     task_id: str | None = None
 
+    @field_validator("missing", "evidence", "task_id")
+    @classmethod
+    def _no_newlines(cls, value: str | None) -> str | None:
+        """Reject control characters that would break the single-line bullet.
+
+        Each entry renders as exactly one Markdown bullet via :meth:`to_bullet`.
+        A newline (or carriage return) in any free-text field would inject fake
+        bullets or headings into the operator-facing tracker — a Markdown
+        injection. Constrain these fields to a single line at the boundary so
+        the renderer can never emit a multi-line bullet.
+        """
+        if value is not None and ("\n" in value or "\r" in value):
+            raise ValueError("must be a single line (no newline/carriage return)")
+        return value
+
     def to_bullet(self) -> str:
         """Render as one Markdown bullet (a single line)."""
         bits = [
@@ -82,13 +98,19 @@ def append_tech_debt_entry(root: str | Path, entry: TechDebtEntry) -> None:
     The whole file is rewritten through :func:`atomic_write_text` (Spec 01
     decision 9). Existing content is preserved verbatim — operator edits
     above the new bullet are never disturbed.
+
+    The read→append→write runs under an exclusive file lock so concurrent
+    writers serialise: without it the unlocked read-modify-write loses
+    appends when two callers read the same prior content and both write back.
     """
     path = tech_debt_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        existing = path.read_text(encoding="utf-8")
-        if not existing.endswith("\n"):
-            existing += "\n"
-    else:
-        existing = _HEADER
-    atomic_write_text(path, existing + entry.to_bullet() + "\n")
+    lock_path = path.with_name(path.name + ".lock")
+    with exclusive_file_lock(lock_path):
+        if path.exists():
+            existing = path.read_text(encoding="utf-8")
+            if not existing.endswith("\n"):
+                existing += "\n"
+        else:
+            existing = _HEADER
+        atomic_write_text(path, existing + entry.to_bullet() + "\n")

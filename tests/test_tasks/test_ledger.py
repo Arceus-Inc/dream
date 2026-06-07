@@ -167,22 +167,62 @@ def test_done_without_pass_under_evaluator_disabled_ok() -> None:
 
 def test_append_note_returns_new_ledger_with_note_appended() -> None:
     led = _ledger(entries=(_entry(id="a"),))
-    led2 = led.append_note(entry_id="a", note="first note")
+    led2 = led.append_note(entry_id="a", note="first note", now=_t())
     assert led2.entries[0].notes == ("first note",)
     assert led.entries[0].notes == ()  # original untouched
 
 
 def test_append_note_preserves_prior_notes() -> None:
     led = _ledger(entries=(_entry(id="a", notes=("n1",)),))
-    led2 = led.append_note(entry_id="a", note="n2")
-    led3 = led2.append_note(entry_id="a", note="n3")
+    led2 = led.append_note(entry_id="a", note="n2", now=_t())
+    led3 = led2.append_note(entry_id="a", note="n3", now=_t())
     assert led3.entries[0].notes == ("n1", "n2", "n3")
 
 
 def test_append_note_unknown_entry_raises() -> None:
     led = _ledger(entries=(_entry(id="a"),))
     with pytest.raises(LedgerStateError, match="unknown entry"):
-        led.append_note(entry_id="missing", note="x")
+        led.append_note(entry_id="missing", note="x", now=_t())
+
+
+def test_append_note_bumps_updated_at() -> None:
+    """A note is a content mutation; it must move ``updated_at`` like the
+    status-transition helpers do (#53)."""
+    led = _ledger(entries=(_entry(id="a"),))
+    later = datetime(2026, 7, 1, 9, 0, 0, tzinfo=UTC)
+    assert led.updated_at != later
+    led2 = led.append_note(entry_id="a", note="n", now=later)
+    assert led2.updated_at == later
+    assert led.updated_at == _t()  # original untouched
+
+
+# --- duplicate entry ids (#52) ---------------------------------------------
+
+
+def test_duplicate_entry_ids_rejected_at_construction() -> None:
+    """Two entries with the same id make append_note/mark_done ambiguous."""
+    with pytest.raises(LedgerStateError, match="duplicate entry id"):
+        _ledger(entries=(_entry(id="dup"), _entry(id="dup")))
+
+
+def test_duplicate_entry_ids_rejected_on_disk_load(tmp_path: Path) -> None:
+    """The on-disk load path must reject duplicates too — surfaced as a
+    classifiable ``LedgerSchemaError`` like every other shape failure."""
+    payload = {
+        "$schema": "./docs/_schemas/exec-plan-ledger.schema.json",
+        "task_id": "T1",
+        "state": "active",
+        "created_at": _t().isoformat(),
+        "updated_at": _t().isoformat(),
+        "entries": [
+            {"id": "dup", "description": "first"},
+            {"id": "dup", "description": "second"},
+        ],
+    }
+    path = tmp_path / "dup.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(LedgerSchemaError, match="duplicate entry id"):
+        read_ledger(path)
 
 
 # --- transition helpers -----------------------------------------------------

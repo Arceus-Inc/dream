@@ -119,6 +119,9 @@ def archive_candidates(
             plan = read_plan(completed, task_id=task_id)
         except (FileNotFoundError, ValueError):
             continue  # half-written pair; skip
-        if plan.ledger.created_at <= cutoff:
+        # Strict ``<``: "older than ``retention_days``" excludes plans born
+        # exactly on the boundary day — a plan created at the cutoff instant
+        # is not yet older than the window.
+        if plan.ledger.created_at < cutoff:
             out.append(plan)
     return tuple(out)

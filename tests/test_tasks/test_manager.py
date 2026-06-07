@@ -91,7 +91,7 @@ async def test_create_shell_task_via_argv_sets_record_fields(tmp_path: Path) -> 
     assert record.type == "local_bash"
     assert record.status == "running"
     assert record.cwd == str(tmp_path.resolve())
-    assert record.argv == _py_argv("print('ok')")
+    assert record.argv == tuple(_py_argv("print('ok')"))
     assert record.command is None
     assert record.output_file.parent == tmp_path
     assert record.output_file.exists()  # opened eagerly
@@ -252,6 +252,103 @@ async def test_restart_bumps_generation(tmp_path: Path) -> None:
     out = mgr.read_task_output(record.id)
     assert "restarted" in out.lower()
     await mgr.stop_task(record.id)
+
+
+async def test_restart_clears_terminal_fields(tmp_path: Path) -> None:
+    """A restart must rebind to a fresh run: clear ``ended_at`` /
+    ``return_code`` and stamp a new ``started_at`` (#62). Otherwise the
+    restarted task still looks finished to observers."""
+    mgr = BackgroundTaskManager(tasks_dir=tmp_path)
+    record = await mgr.create_shell_task(
+        description="agent",
+        cwd=tmp_path,
+        argv=_py_argv("import sys; sys.exit(0)"),
+        task_type="local_agent",
+    )
+    # Let it exit naturally so terminal fields are populated.
+    done = await _wait_until_done(mgr, record.id)
+    assert done.ended_at is not None
+    assert done.return_code is not None
+    old_started = done.started_at
+
+    await mgr.restart_task(record.id)
+    after = mgr.get_task(record.id)
+    assert after is not None
+    assert after.status == "running"
+    assert after.ended_at is None
+    assert after.return_code is None
+    assert after.started_at is not None
+    assert after.started_at != old_started
+    await mgr.stop_task(record.id)
+
+
+async def test_stop_task_clears_suppression_on_process_lookup_error(
+    tmp_path: Path,
+) -> None:
+    """If ``terminate()`` raises ``ProcessLookupError`` (child already gone),
+    the watcher-suppression set must still be cleared in ``finally`` (#61).
+    Otherwise the id is wedged and later notifications never fire."""
+    mgr = BackgroundTaskManager(tasks_dir=tmp_path)
+    record = await mgr.create_shell_task(
+        description="boom",
+        cwd=tmp_path,
+        argv=_py_argv("import time; time.sleep(30)"),
+    )
+    await asyncio.sleep(0.1)
+
+    process = mgr._processes[record.id]
+
+    def _raise() -> None:
+        raise ProcessLookupError("already reaped")
+
+    # Make terminate raise; the real process is still killed via process.kill
+    # in the timeout path, but suppression must clear regardless.
+    process.terminate = _raise  # type: ignore[method-assign]
+
+    await mgr.stop_task(record.id)
+    assert record.id not in mgr._suppress_watcher_notify
+
+
+async def test_create_shell_task_no_ghost_on_spawn_failure(tmp_path: Path) -> None:
+    """A spawn failure must not leave a ghost task in ``running`` state with
+    no process behind it (#60)."""
+    mgr = BackgroundTaskManager(tasks_dir=tmp_path)
+    # A non-existent executable makes create_subprocess_exec raise.
+    with pytest.raises((FileNotFoundError, OSError)):
+        await mgr.create_shell_task(
+            description="bad",
+            cwd=tmp_path,
+            argv=["/nonexistent/definitely-not-here-xyz"],
+        )
+    # No task, lock, or generation should linger.
+    assert mgr.list_tasks() == []
+    assert mgr._output_locks == {}
+    assert mgr._generations == {}
+
+
+async def test_awaitable_non_coroutine_listener_is_awaited(tmp_path: Path) -> None:
+    """Listeners returning a non-coroutine awaitable (e.g. a Future) must be
+    awaited, not silently dropped (#63)."""
+    mgr = BackgroundTaskManager(tasks_dir=tmp_path)
+    awaited = asyncio.Event()
+
+    class _Awaitable:
+        def __await__(self):  # type: ignore[no-untyped-def]
+            awaited.set()
+            yield from asyncio.sleep(0).__await__()
+
+    def listener(task: TaskRecord) -> _Awaitable:
+        return _Awaitable()
+
+    mgr.register_completion_listener(listener)
+    record = await mgr.create_shell_task(
+        description="x",
+        cwd=tmp_path,
+        argv=_py_argv("pass"),
+    )
+    await _wait_until_done(mgr, record.id)
+    await asyncio.sleep(0.1)
+    assert awaited.is_set()
 
 
 async def test_restart_rejected_for_shell_task(tmp_path: Path) -> None:

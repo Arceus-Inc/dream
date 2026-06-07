@@ -28,11 +28,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import os
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from pathlib import Path
-from typing import Any
 from uuid import uuid4
 
 from dream.tasks._types import TaskRecord, TaskStatus, TaskType
@@ -119,7 +120,7 @@ class BackgroundTaskManager:
             cwd=str(Path(cwd).resolve()),
             output_file=output_path,
             command=command,
-            argv=list(argv) if argv is not None else None,
+            argv=tuple(argv) if argv is not None else None,
             created_at=now,
             started_at=now,
             env=dict(env) if env is not None else None,
@@ -127,7 +128,19 @@ class BackgroundTaskManager:
         )
         self._tasks[task_id] = record
         self._output_locks[task_id] = asyncio.Lock()
-        await self._start_process(task_id)
+        try:
+            await self._start_process(task_id)
+        except BaseException:
+            # Spawn failed (e.g. argv[0] not found): roll back so we don't
+            # leave a ghost task stuck in ``running`` with no process behind
+            # it. The manager state must only reflect successfully started
+            # tasks.
+            self._tasks.pop(task_id, None)
+            self._output_locks.pop(task_id, None)
+            self._generations.pop(task_id, None)
+            self._processes.pop(task_id, None)
+            self._waiters.pop(task_id, None)
+            raise
         return record
 
     # --- lookup -----------------------------------------------------------
@@ -166,19 +179,26 @@ class BackgroundTaskManager:
             raise ValueError(f"Task {task_id} is not running")
 
         # Tell the watcher to skip its own notification — stop_task owns
-        # this terminal transition.
+        # this terminal transition. The suppression must be cleared even if
+        # ``terminate()`` raises (e.g. ``ProcessLookupError`` when the child
+        # already exited), otherwise the task id is wedged in the suppress
+        # set forever and a later natural completion never notifies.
         self._suppress_watcher_notify.add(task_id)
-        process.terminate()
         try:
-            await asyncio.wait_for(process.wait(), timeout=3)
-        except TimeoutError:
-            process.kill()
-            await process.wait()
+            with contextlib.suppress(ProcessLookupError):
+                process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=3)
+            except TimeoutError:
+                with contextlib.suppress(ProcessLookupError):
+                    process.kill()
+                await process.wait()
 
-        # Wait for the watcher to finish so it doesn't race the final
-        # record rebind below.
-        await self._cancel_waiter(task_id)
-        self._suppress_watcher_notify.discard(task_id)
+            # Wait for the watcher to finish so it doesn't race the final
+            # record rebind below.
+            await self._cancel_waiter(task_id)
+        finally:
+            self._suppress_watcher_notify.discard(task_id)
 
         updated = task.with_status("killed").with_ended(time.time())
         if process.returncode is not None:
@@ -203,21 +223,35 @@ class BackgroundTaskManager:
         process = self._processes.get(task_id)
         if process is not None:
             self._suppress_watcher_notify.add(task_id)
-            process.terminate()
             try:
-                await asyncio.wait_for(process.wait(), timeout=3)
-            except TimeoutError:
-                process.kill()
-                await process.wait()
-            await self._cancel_waiter(task_id)
-            self._suppress_watcher_notify.discard(task_id)
+                with contextlib.suppress(ProcessLookupError):
+                    process.terminate()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=3)
+                except TimeoutError:
+                    with contextlib.suppress(ProcessLookupError):
+                        process.kill()
+                    await process.wait()
+                await self._cancel_waiter(task_id)
+            finally:
+                self._suppress_watcher_notify.discard(task_id)
             self._processes.pop(task_id, None)
 
         async with self._output_locks[task_id]:
             with task.output_file.open("a", encoding="utf-8") as fh:
                 fh.write(RESTART_NOTICE)
 
-        self._tasks[task_id] = task.with_status("running")
+        # Rebind to a fresh run: status back to ``running`` AND clear the
+        # terminal fields from the prior generation. Leaving stale
+        # ``ended_at``/``return_code`` (and a prior ``started_at``) would
+        # make the restarted task look already-finished to observers.
+        self._tasks[task_id] = replace(
+            task,
+            status="running",
+            started_at=time.time(),
+            ended_at=None,
+            return_code=None,
+        )
         await self._start_process(task_id)
         return self._tasks[task_id]
 
@@ -336,8 +370,11 @@ class BackgroundTaskManager:
         # ad-hoc logging — see Spec 00 rule 4.
         for listener in list(self._listeners.values()):
             try:
-                result: Any = listener(task)
-                if asyncio.iscoroutine(result):
+                result = listener(task)
+                # ``inspect.isawaitable`` covers coroutines AND other
+                # awaitables (Futures, objects with ``__await__``) — not just
+                # native coroutines like ``asyncio.iscoroutine`` does.
+                if inspect.isawaitable(result):
                     await result
             except Exception:
                 pass

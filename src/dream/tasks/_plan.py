@@ -18,6 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from dream.config.paths import _checked_task_id
 from dream.tasks._ledger import Ledger, read_ledger, write_ledger
 from dream.utils.fs import atomic_write_text
 
@@ -117,21 +118,35 @@ def _parse_sections(markdown: str) -> dict[str, str]:
 
 def write_plan(directory: str | Path, plan: ExecPlan) -> None:
     """Write both halves of the plan into ``directory`` atomically."""
+    safe_id = _checked_task_id(plan.task_id)
     d = Path(directory)
     d.mkdir(parents=True, exist_ok=True)
-    atomic_write_text(d / f"{plan.task_id}.md", plan.to_markdown())
-    write_ledger(d / f"{plan.task_id}.json", plan.ledger)
+    atomic_write_text(d / f"{safe_id}.md", plan.to_markdown())
+    write_ledger(d / f"{safe_id}.json", plan.ledger)
 
 
 def read_plan(directory: str | Path, *, task_id: str) -> ExecPlan:
-    """Load both halves of the plan from ``directory``."""
+    """Load both halves of the plan from ``directory``.
+
+    ``task_id`` is validated against the shared safe-segment guard before it
+    is joined into any filesystem path, so a traversal id (``../foo``) can
+    never escape ``directory``. The loaded ledger's ``task_id`` must also
+    match the requested one — a mismatch means the on-disk pair was
+    tampered with or mis-filed and is rejected.
+    """
+    safe_id = _checked_task_id(task_id)
     d = Path(directory)
-    md_path = d / f"{task_id}.md"
-    json_path = d / f"{task_id}.json"
+    md_path = d / f"{safe_id}.md"
+    json_path = d / f"{safe_id}.json"
     if not md_path.exists():
         raise FileNotFoundError(f"exec-plan markdown missing: {md_path}")
     if not json_path.exists():
         raise FileNotFoundError(f"exec-plan ledger missing: {json_path}")
     markdown = md_path.read_text(encoding="utf-8")
     ledger = read_ledger(json_path)
+    if ledger.task_id != safe_id:
+        raise ValueError(
+            f"exec-plan ledger task_id {ledger.task_id!r} does not match "
+            f"requested task_id {safe_id!r} (path: {json_path})"
+        )
     return ExecPlan.from_markdown_and_ledger(markdown, ledger)
