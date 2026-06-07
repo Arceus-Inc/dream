@@ -18,12 +18,22 @@ from dream.observability._events import (
     tool_result_attrs,
     validator_finding_attrs,
 )
+from dream.observability._query import (
+    LogQuery,
+    QueryError,
+    parse_window,
+    query_logs,
+    query_metrics,
+    read_events,
+)
 from dream.observability._tracer import JsonlTracer, NoopTracer, Span, Tracer
 from dream.observability._writer import TraceWriter
 
 __all__ = [
     "JsonlTracer",
+    "LogQuery",
     "NoopTracer",
+    "QueryError",
     "Span",
     "TraceEvent",
     "TraceEventType",
@@ -31,6 +41,10 @@ __all__ = [
     "Tracer",
     "from_jsonl_line",
     "llm_call_attrs",
+    "parse_window",
+    "query_logs",
+    "query_metrics",
+    "read_events",
     "state_transition_attrs",
     "to_jsonl_line",
     "tool_call_attrs",

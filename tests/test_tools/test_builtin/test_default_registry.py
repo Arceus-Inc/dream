@@ -19,6 +19,8 @@ def test_default_registry_holds_all_default_tools() -> None:
         "git",
         "read_offloaded",
         "skill",
+        "query_logs",
+        "query_metrics",
     }
 
 
@@ -34,6 +36,8 @@ def test_default_registry_order_is_canonical() -> None:
         "git",
         "read_offloaded",
         "skill",
+        "query_logs",
+        "query_metrics",
     ]
 
 
