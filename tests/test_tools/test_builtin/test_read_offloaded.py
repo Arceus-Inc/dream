@@ -80,3 +80,43 @@ async def test_missing_scratch_dir_is_error(tool: ReadOffloadedTool, tmp_path: P
     result = await tool.execute({"path": "abc.txt"}, ctx)
     assert result.is_error is True
     assert "scratch" in result.metadata["root_cause"].lower()
+
+
+async def test_absolute_path_rejected(
+    tool: ReadOffloadedTool, ctx_with_scratch: ToolExecutionContext, tmp_path: Path
+) -> None:
+    secret = tmp_path / "secret.txt"
+    secret.write_text("classified", encoding="utf-8")
+    result = await tool.execute({"path": str(secret)}, ctx_with_scratch)
+    assert result.is_error is True
+    assert "classified" not in result.content
+
+
+async def test_symlink_escaping_scratch_is_rejected(
+    tool: ReadOffloadedTool, ctx_with_scratch: ToolExecutionContext, tmp_path: Path
+) -> None:
+    # A symlink *inside* scratch pointing outside has no ``..`` and is not
+    # absolute, so only post-resolution containment catches it.
+    scratch = ctx_with_scratch.scratch_dir
+    assert scratch is not None
+    secret = tmp_path / "outside_secret.txt"
+    secret.write_text("leaked-via-symlink", encoding="utf-8")
+    (scratch / "sneaky.txt").symlink_to(secret)
+    result = await tool.execute({"path": "sneaky.txt"}, ctx_with_scratch)
+    assert result.is_error is True
+    assert "leaked-via-symlink" not in result.content
+
+
+async def test_directory_path_returns_structured_error(
+    tool: ReadOffloadedTool, ctx_with_scratch: ToolExecutionContext
+) -> None:
+    # IsADirectoryError is an OSError, not a ValueError — it must still come
+    # back as a structured tool error rather than escaping.
+    scratch = ctx_with_scratch.scratch_dir
+    assert scratch is not None
+    (scratch / "adir").mkdir()
+    result = await tool.execute({"path": "adir"}, ctx_with_scratch)
+    assert result.is_error is True
+    assert "root_cause" in result.metadata
+    assert "safe_retry" in result.metadata
+    assert "stop_condition" in result.metadata

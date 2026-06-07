@@ -348,3 +348,32 @@ def test_read_offloaded_rejects_path_outside_scratch(tmp_path: Path) -> None:
 def test_read_offloaded_missing_file_raises(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         read_offloaded(tmp_path / "nope.txt")
+
+
+def test_read_offloaded_root_rejects_absolute_escape(tmp_path: Path) -> None:
+    """With ``root`` set, an absolute path outside it is rejected (no ``..`` needed)."""
+    root = tmp_path / "scratch"
+    root.mkdir()
+    secret = tmp_path / "etc_passwd.txt"
+    secret.write_text("root:x:0:0", encoding="utf-8")
+    with pytest.raises(ValueError, match="escapes the allowed root"):
+        read_offloaded(secret, root=root)
+
+
+def test_read_offloaded_root_rejects_symlink_escape(tmp_path: Path) -> None:
+    """A symlink inside root pointing outside is caught after resolution."""
+    root = tmp_path / "scratch"
+    root.mkdir()
+    secret = tmp_path / "outside.txt"
+    secret.write_text("classified", encoding="utf-8")
+    link = root / "link.txt"
+    link.symlink_to(secret)
+    with pytest.raises(ValueError, match="escapes the allowed root"):
+        read_offloaded(link, root=root)
+
+
+def test_read_offloaded_root_allows_contained_file(tmp_path: Path) -> None:
+    root = tmp_path / "scratch"
+    root.mkdir()
+    (root / "ok.txt").write_text("inside", encoding="utf-8")
+    assert read_offloaded(root / "ok.txt", root=root) == "inside"

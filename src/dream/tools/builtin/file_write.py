@@ -9,7 +9,6 @@ engine in dream.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -17,13 +16,14 @@ from pydantic import BaseModel, Field
 from dream.contracts.tool import ToolResult
 from dream.tools._base import BaseTool, ToolDeclaration
 from dream.tools._context import ToolExecutionContext
+from dream.tools._paths import PathEscapesRoot, resolve_within
 from dream.utils.fs import atomic_write_text
 
 
 class FileWriteInput(BaseModel):
     """Arguments for the ``write_file`` tool."""
 
-    path: str = Field(description="File path, absolute or relative to cwd.")
+    path: str = Field(description="File path, relative to or within the working directory.")
     content: str = Field(description="Full file contents to write.")
 
 
@@ -37,7 +37,15 @@ class FileWriteTool(BaseTool):
 
     async def execute(self, input: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
         args = FileWriteInput.model_validate(input)
-        path = _resolve(ctx.working_dir, args.path)
+        try:
+            path = resolve_within(ctx.working_dir, args.path)
+        except PathEscapesRoot as exc:
+            return _err(
+                f"Path outside the working directory: {args.path}",
+                root_cause=str(exc),
+                safe_retry="pass a path that stays within the working directory",
+                stop_condition="do not retry with the same out-of-tree path",
+            )
 
         if path.exists() and path.is_dir():
             return _err(
@@ -47,7 +55,17 @@ class FileWriteTool(BaseTool):
                 stop_condition="do not retry on the same directory path",
             )
 
-        atomic_write_text(path, args.content)
+        try:
+            atomic_write_text(path, args.content)
+        except OSError as exc:
+            # Permission denied, disk full, invalid path component, etc. —
+            # surface a structured tool error instead of crashing the act-loop.
+            return _err(
+                f"Could not write file: {exc}",
+                root_cause=str(exc),
+                safe_retry="check directory permissions and available disk space",
+                stop_condition="do not retry until the underlying write error is resolved",
+            )
         encoded = args.content.encode("utf-8")
         return ToolResult(
             content=f"Wrote {path}",
@@ -57,13 +75,6 @@ class FileWriteTool(BaseTool):
                 "summary": f"wrote {len(encoded)} bytes",
             },
         )
-
-
-def _resolve(base: Path, candidate: str) -> Path:
-    p = Path(candidate).expanduser()
-    if not p.is_absolute():
-        p = base / p
-    return p.resolve()
 
 
 def _err(content: str, *, root_cause: str, safe_retry: str, stop_condition: str) -> ToolResult:

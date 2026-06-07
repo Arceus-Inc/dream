@@ -8,7 +8,6 @@ the first occurrence (matching OpenHarness semantics) but reports
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -16,13 +15,14 @@ from pydantic import BaseModel, Field
 from dream.contracts.tool import ToolResult
 from dream.tools._base import BaseTool, ToolDeclaration
 from dream.tools._context import ToolExecutionContext
+from dream.tools._paths import PathEscapesRoot, resolve_within
 from dream.utils.fs import atomic_write_text
 
 
 class FileEditInput(BaseModel):
     """Arguments for the ``edit_file`` tool."""
 
-    path: str = Field(description="File path, absolute or relative to cwd.")
+    path: str = Field(description="File path, relative to or within the working directory.")
     old_str: str = Field(description="Existing substring to replace.")
     new_str: str = Field(description="Replacement substring.")
     replace_all: bool = Field(default=False, description="Replace every occurrence.")
@@ -38,7 +38,15 @@ class FileEditTool(BaseTool):
 
     async def execute(self, input: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
         args = FileEditInput.model_validate(input)
-        path = _resolve(ctx.working_dir, args.path)
+        try:
+            path = resolve_within(ctx.working_dir, args.path)
+        except PathEscapesRoot as exc:
+            return _err(
+                f"Path outside the working directory: {args.path}",
+                root_cause=str(exc),
+                safe_retry="pass a path that stays within the working directory",
+                stop_condition="do not retry with the same out-of-tree path",
+            )
 
         if not path.exists():
             return _err(
@@ -55,6 +63,17 @@ class FileEditTool(BaseTool):
                 stop_condition="do not retry on the same directory path",
             )
 
+        if args.old_str == "":
+            # ``"x".count("")`` is ``len(x) + 1`` and ``str.replace`` inserts at
+            # every boundary — an empty match would silently rewrite the whole
+            # file, so reject it before any counting/replacement.
+            return _err(
+                "old_str must not be empty",
+                root_cause="empty old_str matches every position and would corrupt the file",
+                safe_retry="pass the exact non-empty substring to replace",
+                stop_condition="do not retry with an empty old_str",
+            )
+
         if args.old_str == args.new_str:
             return _err(
                 "old_str equals new_str: nothing to do",
@@ -63,7 +82,17 @@ class FileEditTool(BaseTool):
                 stop_condition="do not retry with the same identical arguments",
             )
 
-        original = path.read_text(encoding="utf-8")
+        try:
+            original = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError as exc:
+            # Strict UTF-8 keeps us from silently corrupting a non-text file on
+            # write-back; surface it as a structured error instead.
+            return _err(
+                f"Cannot edit non-UTF-8 file: {path}",
+                root_cause=f"file is not valid UTF-8: {exc}",
+                safe_retry="edit a UTF-8 text file, or use a binary-aware tool",
+                stop_condition="do not retry editing this file as text",
+            )
         occurrences = original.count(args.old_str)
         if occurrences == 0:
             return _err(
@@ -94,13 +123,6 @@ class FileEditTool(BaseTool):
                 "summary": f"replaced {replacements} of {occurrences} occurrence(s)",
             },
         )
-
-
-def _resolve(base: Path, candidate: str) -> Path:
-    p = Path(candidate).expanduser()
-    if not p.is_absolute():
-        p = base / p
-    return p.resolve()
 
 
 def _err(content: str, *, root_cause: str, safe_retry: str, stop_condition: str) -> ToolResult:

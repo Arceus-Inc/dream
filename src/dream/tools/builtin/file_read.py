@@ -8,7 +8,7 @@ stop_condition) in metadata so ``derive_observation`` lifts them into
 
 from __future__ import annotations
 
-from pathlib import Path
+import itertools
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -16,12 +16,17 @@ from pydantic import BaseModel, Field
 from dream.contracts.tool import ToolResult
 from dream.tools._base import BaseTool, ToolDeclaration
 from dream.tools._context import ToolExecutionContext
+from dream.tools._paths import PathEscapesRoot, resolve_within
+
+# Bytes sampled to decide text-vs-binary; large enough to catch a leading NUL
+# in any real binary, small enough not to load a big file up front.
+_BINARY_SNIFF_BYTES = 8192
 
 
 class FileReadInput(BaseModel):
     """Arguments for the ``read_file`` tool."""
 
-    path: str = Field(description="File path, absolute or relative to cwd.")
+    path: str = Field(description="File path, relative to or within the working directory.")
     offset: int = Field(default=0, ge=0, description="Zero-based starting line.")
     limit: int = Field(default=2000, ge=1, le=10000, description="Max lines to return.")
 
@@ -36,7 +41,15 @@ class FileReadTool(BaseTool):
 
     async def execute(self, input: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
         args = FileReadInput.model_validate(input)
-        path = _resolve(ctx.working_dir, args.path)
+        try:
+            path = resolve_within(ctx.working_dir, args.path)
+        except PathEscapesRoot as exc:
+            return _err(
+                f"Path outside the working directory: {args.path}",
+                root_cause=str(exc),
+                safe_retry="pass a path that stays within the working directory",
+                stop_condition="do not retry with the same out-of-tree path",
+            )
 
         if not path.exists():
             return _err(
@@ -53,8 +66,11 @@ class FileReadTool(BaseTool):
                 stop_condition="do not retry on the same directory path",
             )
 
-        raw = path.read_bytes()
-        if b"\x00" in raw:
+        # Binary sniff on a bounded prefix only — reading the whole file just to
+        # detect a NUL byte would defeat the windowed read below.
+        with path.open("rb") as fb:
+            prefix = fb.read(_BINARY_SNIFF_BYTES)
+        if b"\x00" in prefix:
             return _err(
                 f"Binary file: {path}",
                 root_cause="binary content (NUL byte) cannot be read as text",
@@ -62,9 +78,12 @@ class FileReadTool(BaseTool):
                 stop_condition="do not retry on the same binary path",
             )
 
-        text = raw.decode("utf-8", errors="replace")
-        lines = text.splitlines()
-        selected = lines[args.offset : args.offset + args.limit]
+        # Stream only the requested line window instead of loading the whole
+        # file: ``islice`` advances the file iterator without materialising the
+        # skipped or trailing lines, so a small slice of a huge file stays cheap.
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            window = itertools.islice(fh, args.offset, args.offset + args.limit)
+            selected = [line.rstrip("\r\n") for line in window]
         if not selected:
             return ToolResult(
                 content=f"(no content in selected range for {path})",
@@ -81,13 +100,6 @@ class FileReadTool(BaseTool):
                 "summary": f"{len(selected)} lines",
             },
         )
-
-
-def _resolve(base: Path, candidate: str) -> Path:
-    p = Path(candidate).expanduser()
-    if not p.is_absolute():
-        p = base / p
-    return p.resolve()
 
 
 def _err(content: str, *, root_cause: str, safe_retry: str, stop_condition: str) -> ToolResult:
