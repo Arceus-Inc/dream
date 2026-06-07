@@ -29,6 +29,7 @@ from dream.utils.fs import atomic_write_text
 __all__ = [
     "LEDGER_SCHEMA_PATH",
     "LEDGER_SCHEMA_URI",
+    "ClaimRecord",
     "Ledger",
     "LedgerEntry",
     "LedgerEntryStatus",
@@ -56,6 +57,23 @@ class LedgerStateError(ValueError):
 
 class LedgerSchemaError(ValueError):
     """The on-disk JSON does not match the ledger schema."""
+
+
+class ClaimRecord(BaseModel):
+    """Durable ownership mirror written by ``#08`` at claim boundaries.
+
+    The board (`.dream/coordination/board.sqlite`) is the source of truth *of
+    now*; this field is the of-record audit and the source the board is rebuilt
+    from if it is lost. Written on grant / release / reclaim only — never per
+    heartbeat. ``#10p5`` extends it with ``recovery_count``.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    checkout_run_id: str
+    claimed_by: str
+    claimed_at: datetime
+    released_at: datetime | None = None
 
 
 class LedgerEntry(BaseModel):
@@ -114,6 +132,9 @@ class Ledger(BaseModel):
     entries: tuple[LedgerEntry, ...]
     evaluator_enabled: bool = False
     weights: dict[str, float] = Field(default_factory=dict)
+    # Durable ownership mirror (Spec 08). Defaults to None so ledgers written
+    # before #08 still validate unchanged.
+    claim: ClaimRecord | None = None
 
     def __setattr__(self, name: str, value: Any) -> None:
         raise AttributeError(f"{type(self).__name__} is frozen")

@@ -44,10 +44,11 @@ a slow-clock mechanism or vice versa:
   Owned by the **engine** (spec 03) over **providers** (02) and **context** (04), acting
   through **tools/skills/MCP** (05, 06).
 - **Session clock (hours, the first crash):** a process dies and another picks up its work.
-  Owned by the **task engine** (07) and **claim/recovery/liveness** (08).
+  Owned by the **task engine** (07) and **task claim & lease** (08); graceful crash
+  **recovery & liveness** (10p5) is the resilience layer added once the swarm exercises it.
 - **Sprint clock (days, the ledger):** a unit of work with a life of its own — intake →
   verify → PR → CI → repair → merge. Owned by the **autopilot pipeline** (09) and
-  **orchestration/swarm** (10).
+  **orchestration/swarm** (10), with **recovery & liveness** (10p5) hardening dead-runner handling.
 - **Month clock (memory & evolution):** the harness gets *better* without a human in the
   loop and without drowning in its own history. Owned by **memory/self-evolution** (11),
   **verification/observability** (12), and **sandbox/governance** (13).
@@ -63,9 +64,10 @@ a slow-clock mechanism or vice versa:
 | [05](05-tools-and-action-space.md) | Tools & action space | `tools/` | turn |
 | [06](06-skills-and-mcp.md) | Skills (progressive disclosure) & MCP client | `skills/`, `mcp/` | turn/month |
 | [07](07-task-engine-and-cron.md) | Background task engine & cron | `tasks/`, `services/cron_scheduler` | session |
-| [08](08-claim-recovery-liveness.md) | Claim, recovery & liveness | `swarm/lockfile`, `utils/file_lock` | session |
+| [08](08-task-claim-and-lease.md) | Task claim & lease (CAS coordination floor) | `swarm/lockfile`, `utils/file_lock` | session |
 | [09](09-autopilot-pipeline.md) | Autonomous repo-work pipeline | `autopilot/` | sprint |
 | [10](10-orchestration-and-swarm.md) | Orchestration, swarm & bridge | `coordinator/`, `swarm/`, `bridge/` | sprint |
+| [10p5](10p5-runner-recovery-and-liveness.md) | Runner recovery & liveness (resilience layer on 08) | `swarm/`, `engine/` | sprint |
 | [11](11-memory-and-self-evolution.md) | Memory & self-evolution | `memory/`, `services/autodream`, `services/memory_extract` | month |
 | [12](12-verification-and-observability.md) | Verification, evals & observability | (cross-cutting; traces) | month |
 | [13](13-sandbox-governance-hooks-plugins.md) | Sandbox, security, governance, hooks, plugins | `permissions/`, `sandbox/`, `hooks/`, `plugins/` | month |
@@ -79,7 +81,7 @@ well it does its own job.
    compact between them, never inject between them, never drain a queue between them, never
    checkpoint with a `tool_use` block whose `tool_result` is missing. This single rule kills
    an entire genus of provider-400 bugs and corrupt transcripts; it recurs in the turn FSM
-   (03), compaction (04), queue drain (10), and recovery (08). `sanitize_conversation_messages`
+   (03), compaction (04), queue drain (10), and recovery (10p5). `sanitize_conversation_messages`
    in `engine/query` exists precisely to enforce it on restored history.
 2. **The repo is the system of record.** Durable state is committed files; anything that
    lives only in a process's memory or an external DB makes the harness uninspectable and
@@ -91,7 +93,7 @@ well it does its own job.
    supports" — a single-file, revertible fix. Never mix tool logic into system rules, never
    stuff memory into the system prompt, never let two components own one job. (AHE §34.)
 4. **Bounded everything, escalate at the cap.** Every loop has a ceiling and an escalation
-   path: injection cycles (03), claim failures (08), repair attempts (09), retrieval depth
+   path: injection cycles (03), claim failures (10p5), repair attempts (09), retrieval depth
    (06). The three invariants carved above the door: *productive work continues, only real
    blockers stop the agent, no infinite loops.*
 
@@ -133,11 +135,11 @@ dependency graph:
    single-turn agent. Stop here and dogfood before adding anything.
 2. **Real turns:** 04 context/compaction (so sessions outlive the context window) → more of
    05's tool catalog → 06 skills + MCP (action surface grows on demand).
-3. **Work that survives crashes (session clock):** 07 task engine → 08 claim/recovery
-   (start with the *status-guard floor*; add the two-lock lease only when you actually run
-   multiple runners).
+3. **Work that survives crashes (session clock):** 07 task engine → 08 task claim & lease
+   (the two-lock CAS floor — build before you run multiple runners pulling one board).
 4. **Autonomous delivery (sprint clock):** 09 autopilot pipeline → 10 orchestration/swarm
-   (only when a real bottleneck demands parallelism — not before).
+   (only when a real bottleneck demands parallelism — not before) → 10p5 recovery & liveness
+   (harden dead-runner handling once the swarm exercises it).
 5. **Self-improvement (month clock):** 12 verification/observability (you cannot improve on
    a scalar — traces first) → 11 memory/self-evolution → 13 sandbox/governance/hooks/plugins
    as the safety envelope hardens.

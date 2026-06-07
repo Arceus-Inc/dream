@@ -95,8 +95,8 @@ operations and the `RepoAutopilotRegistry` persistence shape; `source_kind`/`sou
 intake provenance.
 
 **Out:** the inner turn loop a `running` card executes (→ `#03`); the worktree the card runs in
-(→ `#02`, reused as-is); cross-runner claiming/leases/heartbeats and runner-death recovery
-(→ `#08`-the-claim-spec — this spec assumes the status guard is the single-runner floor and the
+(→ `#02`, reused as-is); cross-runner claiming/leases/heartbeats (→ `#08`-the-claim-spec) and
+runner-death recovery (→ `#10p5` recovery & liveness) — this spec assumes the status guard is the single-runner floor and the
 two-lock lease is the multi-runner upgrade); the verifier's grading rubric and critic isolation
 (→ `#12`, consumed here); model/provider failover (→ `#02`/`#11`); the intake adapters' transport
 details (GitHub API, cron wiring) — `source_kind` is the seam, adapters are `#13` plugin territory.
@@ -468,8 +468,9 @@ Scenario: State is replayable from the journal
 
 - The inner turn loop a `running` card executes, and its FSM/flight-recorder (→ `#03`).
 - Worktree creation/teardown, checkpoints, atomic writes (→ `#02`; reused as-is).
-- Cross-runner claiming, leases, heartbeats, recovery-on-runner-death (→ `#08`-the-claim-spec; this
-  spec defines the loop, that spec defines who may run it concurrently).
+- Cross-runner claiming, leases, heartbeats (→ `#08`-the-claim-spec) and recovery-on-runner-death
+  (→ `#10p5`); this spec defines the loop, those specs define who may run it concurrently and how a
+  dead runner is recovered.
 - The verifier's grading rubric and critic-isolation discipline (→ `#12`; consumed here).
 - Model/provider failover and cooldowns (→ `#02`/`#11`).
 - The intake adapters' transport details (GitHub API, cron wiring) — `source_kind` is the seam;
