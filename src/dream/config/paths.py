@@ -140,6 +140,10 @@ class DreamPaths:
     def sidecar(self, task_id: str) -> Path:
         return self.sidecars_dir / _checked_task_id(task_id)
 
+    def trace_log(self, task_id: str) -> Path:
+        """The OTel-shaped trace JSONL for a task (Spec 12a)."""
+        return self.sidecar(task_id) / "logs" / "trace.jsonl"
+
     def checkpoint_ref(self, task_id: str, n: int | str) -> str:
         return f"{CHECKPOINT_REF_PREFIX}/{_checked_task_id(task_id)}/{n}"
 

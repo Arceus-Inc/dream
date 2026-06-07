@@ -25,7 +25,7 @@ from __future__ import annotations
 import contextlib
 import copy
 from collections.abc import AsyncGenerator, AsyncIterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol, cast
 
 from dream.engine._events import (
@@ -40,6 +40,8 @@ from dream.engine._messages import (
     ToolResultBlock,
     ToolUseBlock,
 )
+from dream.observability._events import llm_call_attrs, tool_call_attrs, tool_result_attrs
+from dream.observability._tracer import NoopTracer, Tracer
 
 
 class TurnStreamer(Protocol):
@@ -78,6 +80,9 @@ class QueryContext:
     client: TurnStreamer
     tools: ToolDispatcher
     max_turns: int = 8
+    tracer: Tracer = field(default_factory=NoopTracer)
+    model: str = ""
+    system: str = "openai"
 
 
 async def run_query(
@@ -97,66 +102,94 @@ async def run_query(
     bound is reached — never infinite.
     """
     for _ in range(ctx.max_turns):
-        complete: AssistantTurnComplete | None = None
-        # ``aclosing`` ensures the per-turn provider stream is closed when this
-        # loop is itself closed mid-flight (timeout/coma/cancel), cascading the
-        # ``aclose()`` down to the underlying transport so it can't leak.
-        turn_stream = ctx.client.stream_turn(messages)
-        async with contextlib.aclosing(
-            cast(AsyncGenerator[StreamEvent, None], turn_stream)
-        ):
-            async for ev in turn_stream:
-                yield ev
-                if isinstance(ev, AssistantTurnComplete):
-                    complete = ev
-        if complete is None:
-            return
+        # The llm.call span stays open across this turn's tool dispatch, so the
+        # tool.call / tool.result events nest under it (Spec 12a, AC #17).
+        # Seed the span at open with model + zero usage, so a turn cancelled
+        # mid-stream (timeout/coma) still emits a usable llm.call (model present,
+        # zero tokens) rather than a usage-less stub. Real usage overrides below.
+        with ctx.tracer.span(
+            "llm.call",
+            llm_call_attrs(
+                system=ctx.system, model=ctx.model, prompt_tokens=0, completion_tokens=0
+            ),
+        ) as llm_span:
+            complete: AssistantTurnComplete | None = None
+            # ``aclosing`` ensures the per-turn provider stream is closed when
+            # this loop is itself closed mid-flight (timeout/coma/cancel),
+            # cascading the ``aclose()`` down to the transport so it can't leak.
+            turn_stream = ctx.client.stream_turn(messages)
+            async with contextlib.aclosing(
+                cast(AsyncGenerator[StreamEvent, None], turn_stream)
+            ):
+                async for ev in turn_stream:
+                    yield ev
+                    if isinstance(ev, AssistantTurnComplete):
+                        complete = ev
+            if complete is None:
+                return
 
-        messages.append(
-            ConversationMessage(role="assistant", content=list(complete.blocks))
-        )
+            llm_span.update(
+                llm_call_attrs(
+                    system=ctx.system,
+                    model=ctx.model,
+                    prompt_tokens=complete.usage.input_tokens,
+                    completion_tokens=complete.usage.output_tokens,
+                    cache_read_tokens=complete.usage.cache_read_tokens,
+                )
+            )
+            messages.append(
+                ConversationMessage(role="assistant", content=list(complete.blocks))
+            )
 
-        tool_uses: list[ToolUseBlock] = [
-            b for b in complete.blocks if isinstance(b, ToolUseBlock)
-        ]
-        if not tool_uses:
-            return
+            tool_uses: list[ToolUseBlock] = [
+                b for b in complete.blocks if isinstance(b, ToolUseBlock)
+            ]
+            if not tool_uses:
+                return
 
-        results: list[ContentBlock] = []
-        for tu in tool_uses:
-            # Deep copy: the transcript block, the emitted event payload, and the
-            # dispatch argument must each be isolated, so an in-place mutation by a
-            # dispatcher can never rewrite history or an already-emitted event.
-            yield ToolExecutionStarted(tool=tu.name, id=tu.id, input=copy.deepcopy(tu.input))
-            try:
-                content, is_error = await ctx.tools.dispatch(tu.name, copy.deepcopy(tu.input))
-            except Exception as exc:  # never crash the loop on a tool failure
-                # A *raised* exception is an infrastructure failure (sandbox,
-                # permissions, MCP transport) — not a tool-logic result a tool
-                # would return via ``is_error=True``. Keep the real detail on the
-                # observability side-channel (the event), but never leak engine
-                # internals into the transcript the model re-reads: send it a
-                # generic, non-revealing failure marker instead.
-                detail = f"{type(exc).__name__}: {exc}"
+            results: list[ContentBlock] = []
+            for tu in tool_uses:
+                # Deep copy: the transcript block, the emitted event payload, and
+                # the dispatch argument must each be isolated, so an in-place
+                # mutation by a dispatcher can never rewrite history or an
+                # already-emitted event.
+                yield ToolExecutionStarted(tool=tu.name, id=tu.id, input=copy.deepcopy(tu.input))
+                ctx.tracer.event("tool.call", tool_call_attrs(tool_name=tu.name))
+                try:
+                    content, is_error = await ctx.tools.dispatch(tu.name, copy.deepcopy(tu.input))
+                except Exception as exc:  # never crash the loop on a tool failure
+                    # A *raised* exception is an infrastructure failure (sandbox,
+                    # permissions, MCP transport) — not a tool-logic result a tool
+                    # would return via ``is_error=True``. Keep the real detail on
+                    # the observability side-channel (the event), but never leak
+                    # engine internals into the transcript the model re-reads:
+                    # send it a generic, non-revealing failure marker instead.
+                    detail = f"{type(exc).__name__}: {exc}"
+                    yield ToolExecutionCompleted(
+                        tool=tu.name, id=tu.id, result=detail, is_error=True
+                    )
+                    ctx.tracer.event(
+                        "tool.result", tool_result_attrs(tool_name=tu.name, is_error=True)
+                    )
+                    results.append(
+                        ToolResultBlock(
+                            tool_use_id=tu.id,
+                            content=f"tool {tu.name!r} failed to execute",
+                            is_error=True,
+                        )
+                    )
+                    continue
                 yield ToolExecutionCompleted(
-                    tool=tu.name, id=tu.id, result=detail, is_error=True
+                    tool=tu.name, id=tu.id, result=content, is_error=is_error
+                )
+                ctx.tracer.event(
+                    "tool.result", tool_result_attrs(tool_name=tu.name, is_error=is_error)
                 )
                 results.append(
-                    ToolResultBlock(
-                        tool_use_id=tu.id,
-                        content=f"tool {tu.name!r} failed to execute",
-                        is_error=True,
-                    )
+                    ToolResultBlock(tool_use_id=tu.id, content=content, is_error=is_error)
                 )
-                continue
-            yield ToolExecutionCompleted(
-                tool=tu.name, id=tu.id, result=content, is_error=is_error
-            )
-            results.append(
-                ToolResultBlock(tool_use_id=tu.id, content=content, is_error=is_error)
-            )
 
-        messages.append(ConversationMessage(role="user", content=results))
+            messages.append(ConversationMessage(role="user", content=results))
 
 
 __all__ = ["QueryContext", "ToolDispatcher", "TurnStreamer", "run_query"]
