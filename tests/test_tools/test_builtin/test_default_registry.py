@@ -8,7 +8,7 @@ from dream.tools._registry import ToolSource
 from dream.tools.builtin import default_registry
 
 
-def test_default_registry_holds_all_six_default_tools() -> None:
+def test_default_registry_holds_all_default_tools() -> None:
     reg = default_registry()
     names = [t.name for t in reg.list_tools()]
     assert set(names) == {
@@ -18,6 +18,7 @@ def test_default_registry_holds_all_six_default_tools() -> None:
         "bash",
         "git",
         "read_offloaded",
+        "skill",
     }
 
 
@@ -32,6 +33,7 @@ def test_default_registry_order_is_canonical() -> None:
         "bash",
         "git",
         "read_offloaded",
+        "skill",
     ]
 
 

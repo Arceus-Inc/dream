@@ -23,6 +23,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from dream.contracts.provider import ProviderCapabilities
 from dream.engine._loop import ToolDispatcher, TurnStreamer
@@ -93,6 +94,7 @@ def build_query_engine(
     scratch_dir: Path | None = None,
     max_turns: int = 8,
     on_dispatch: Callable[[DispatchRecord], None] | None = None,
+    context_metadata: dict[str, Any] | None = None,
     compactor: AutoCompactState | None = None,
     compaction_threshold: float = 0.7,
     compaction_preserve_recent: int = DEFAULT_KEEP_RECENT,
@@ -110,6 +112,7 @@ def build_query_engine(
         session_id=session_id,
         scratch_dir=scratch_dir,
         on_dispatch=on_dispatch,
+        context_metadata=context_metadata or {},
     )
     return QueryEngine(
         streamer=streamer,

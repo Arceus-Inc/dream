@@ -9,6 +9,7 @@ from dream.tools.builtin.file_read import FileReadTool
 from dream.tools.builtin.file_write import FileWriteTool
 from dream.tools.builtin.git import GitTool
 from dream.tools.builtin.read_offloaded import ReadOffloadedTool
+from dream.tools.builtin.skill import SkillTool
 
 # Canonical ordering for the model-facing tool schema. Stable across processes
 # so prompt caches downstream actually hit; alphabetical within a "phase".
@@ -19,11 +20,12 @@ _DEFAULT_ORDER: tuple[str, ...] = (
     "bash",
     "git",
     "read_offloaded",
+    "skill",
 )
 
 
 def default_registry() -> ToolRegistry:
-    """Return a fresh ``ToolRegistry`` populated with the six default tools."""
+    """Return a fresh ``ToolRegistry`` populated with the default tools."""
     registry = ToolRegistry(default_order=_DEFAULT_ORDER)
     registry.register(FileReadTool(), source=ToolSource.DEFAULT)
     registry.register(FileEditTool(), source=ToolSource.DEFAULT)
@@ -31,6 +33,7 @@ def default_registry() -> ToolRegistry:
     registry.register(BashTool(), source=ToolSource.DEFAULT)
     registry.register(GitTool(), source=ToolSource.DEFAULT)
     registry.register(ReadOffloadedTool(), source=ToolSource.DEFAULT)
+    registry.register(SkillTool(), source=ToolSource.DEFAULT)
     return registry
 
 

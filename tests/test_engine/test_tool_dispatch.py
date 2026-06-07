@@ -497,3 +497,43 @@ def test_engine_tool_dispatcher_satisfies_loop_protocol(tmp_path: Path) -> None:
     # someone accidentally renaming the ``dispatch`` method.
     assert hasattr(disp, "dispatch")
     assert callable(disp.dispatch)
+
+
+# --- Spec 06 slice 2: context_metadata passthrough into ctx.metadata ---------
+
+
+class _MetadataProbeInput(BaseModel):
+    pass
+
+
+class _MetadataProbeTool(BaseTool):
+    name = "probe_metadata"
+    description = "Echo a value read from ctx.metadata, to prove passthrough."
+    declaration = ToolDeclaration(risk="safe", tier_required=0, timeout_seconds=5.0)
+    input_model = _MetadataProbeInput
+
+    async def execute(self, input: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
+        del input
+        return ToolResult(content=str(ctx.metadata.get("probe_key")))
+
+
+async def test_context_metadata_is_passed_into_ctx(tmp_path: Path) -> None:
+    registry = ToolRegistry()
+    registry.register(_MetadataProbeTool(), source=ToolSource.DEFAULT)
+    dispatcher = EngineToolDispatcher(
+        registry=registry,
+        working_dir=tmp_path,
+        session_id="s",
+        context_metadata={"probe_key": "passed-through"},
+    )
+    content, is_error = await dispatcher.dispatch("probe_metadata", {})
+    assert is_error is False
+    assert "passed-through" in content
+
+
+async def test_context_metadata_defaults_empty(tmp_path: Path) -> None:
+    registry = ToolRegistry()
+    registry.register(_MetadataProbeTool(), source=ToolSource.DEFAULT)
+    dispatcher = EngineToolDispatcher(registry=registry, working_dir=tmp_path, session_id="s")
+    content, _ = await dispatcher.dispatch("probe_metadata", {})
+    assert "None" in content
