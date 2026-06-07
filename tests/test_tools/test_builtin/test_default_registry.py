@@ -21,6 +21,13 @@ def test_default_registry_holds_all_default_tools() -> None:
         "skill",
         "query_logs",
         "query_metrics",
+        "task_create",
+        "task_get",
+        "task_output",
+        "task_stop",
+        "cron_list",
+        "cron_show",
+        "plan_show",
     }
 
 
@@ -38,6 +45,13 @@ def test_default_registry_order_is_canonical() -> None:
         "skill",
         "query_logs",
         "query_metrics",
+        "task_create",
+        "task_get",
+        "task_output",
+        "task_stop",
+        "cron_list",
+        "cron_show",
+        "plan_show",
     ]
 
 

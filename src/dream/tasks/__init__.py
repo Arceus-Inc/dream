@@ -90,6 +90,12 @@ from dream.tasks._plan import (
     write_plan,
 )
 from dream.tasks._seam import make_ledger_completion_listener
+from dream.tasks._session import (
+    TASK_CONTEXT_KEY,
+    TaskSessionContext,
+    put_task_context,
+    read_task_context,
+)
 from dream.tasks._tech_debt import (
     TECH_DEBT_FILENAME,
     TechDebtEntry,
@@ -111,6 +117,7 @@ __all__ = [
     "MAX_SESSION_MINUTES_METADATA_KEY",
     "PLAN_STATES",
     "RESTART_NOTICE",
+    "TASK_CONTEXT_KEY",
     "TECH_DEBT_FILENAME",
     "BackgroundTaskManager",
     "CompletionListener",
@@ -129,6 +136,7 @@ __all__ = [
     "MissingSectionError",
     "PlanFSMError",
     "TaskRecord",
+    "TaskSessionContext",
     "TaskStatus",
     "TaskType",
     "TechDebtEntry",
@@ -150,9 +158,11 @@ __all__ = [
     "move_plan",
     "next_run_time",
     "plan_dir",
+    "put_task_context",
     "read_cron_run_records",
     "read_ledger",
     "read_plan",
+    "read_task_context",
     "save_cron_jobs",
     "set_job_enabled",
     "spawn_cron_session",

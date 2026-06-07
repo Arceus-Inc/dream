@@ -59,6 +59,11 @@ from dream.skills import (
     render_skill_catalogue,
     validate_skills,
 )
+from dream.tasks import (
+    TASK_CONTEXT_KEY,
+    BackgroundTaskManager,
+    TaskSessionContext,
+)
 from dream.tools._registry import ToolRegistry
 from dream.tools.builtin import default_registry
 
@@ -110,6 +115,18 @@ def build_default_harness(
     base_url = env.get("DREAM_SMOKE_BASE_URL", "https://api.openai.com/v1")
     tool_registry = registry if registry is not None else default_registry()
     compactor = AutoCompactState()
+    paths = DreamPaths(repo=working_dir, home=Path.home()).ensure()
+    # Task tools (Spec 07): one BackgroundTaskManager per harness, shared across
+    # sessions in this REPL so task IDs / archives stay consistent. The cron
+    # registry lives at the in-repo convention (``.dream/cron/registry.json``);
+    # the exec-plans root is the parent of ``exec_plans_active`` since the FSM
+    # appends the state segment itself via :func:`plan_dir`.
+    task_manager = BackgroundTaskManager(tasks_dir=paths.tasks_dir)
+    task_context = TaskSessionContext(
+        manager=task_manager,
+        cron_registry_path=paths.dream_dir / "cron" / "registry.json",
+        plans_root=paths.exec_plans_active.parent,
+    )
     # 128K is the default we use throughout Spec 02; the watch panel /
     # /util command surface utilisation against this number.
     capabilities = ProviderCapabilities(max_context_tokens=128_000)
@@ -180,8 +197,8 @@ def build_default_harness(
             session_id=session_id,
             working_dir=working_dir,
             max_turns=options.max_turns or max_turns,
-            context_metadata=(
-                {SKILL_CONTEXT_KEY: skill_context} if skill_context is not None else None
+            context_metadata=_build_context_metadata(
+                skill_context=skill_context, task_context=task_context
             ),
             compactor=compactor,
             compaction_capabilities=capabilities,
@@ -190,6 +207,16 @@ def build_default_harness(
         )
 
     return Harness(HarnessConfig(working_dir=working_dir, _engine_factory=_factory))
+
+
+def _build_context_metadata(
+    *, skill_context: SkillContext | None, task_context: TaskSessionContext
+) -> dict[str, Any]:
+    """Merge skill + task contexts into the dispatcher's ``context_metadata``."""
+    metadata: dict[str, Any] = {TASK_CONTEXT_KEY: task_context}
+    if skill_context is not None:
+        metadata[SKILL_CONTEXT_KEY] = skill_context
+    return metadata
 
 
 # ---------------------------------------------------------------------------
