@@ -11,20 +11,18 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-from collections.abc import AsyncIterator, Callable
-from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
+from contextlib import AsyncExitStack
+from pathlib import Path
 from typing import Any
 
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+from mcp import ClientSession
 from pydantic import AnyUrl
 
-from dream.mcp._allowlist import entry_to_config
+from dream.mcp._openers import SessionOpener, UnsupportedTransportError, make_default_opener
 from dream.mcp._types import (
     AllowlistEntry,
     McpConnectionStatus,
     McpResourceInfo,
-    McpStdioServerConfig,
     McpToolInfo,
 )
 from dream.services.repo_validator import Finding
@@ -34,31 +32,6 @@ class McpServerNotConnectedError(RuntimeError):
     """Raised when a tool/resource call targets a server with no live session."""
 
 
-class UnsupportedTransportError(RuntimeError):
-    """Raised by an opener for a transport this build can't connect."""
-
-
-SessionOpener = Callable[[AllowlistEntry], AbstractAsyncContextManager[ClientSession]]
-
-
-@asynccontextmanager
-async def _default_opener(entry: AllowlistEntry) -> AsyncIterator[ClientSession]:
-    """Open a real stdio ``ClientSession`` for ``entry`` (http/ws land in slice 4)."""
-    config = entry_to_config(entry)
-    if not isinstance(config, McpStdioServerConfig):
-        raise UnsupportedTransportError(
-            f"transport {entry.transport!r} is not supported in this build"
-        )
-    params = StdioServerParameters(
-        command=config.command, args=config.args, env=config.env, cwd=config.cwd
-    )
-    async with (
-        stdio_client(params) as (read_stream, write_stream),
-        ClientSession(read_stream, write_stream) as session,
-    ):
-        yield session
-
-
 class McpClientManager:
     """Manage MCP connections for the admitted allowlist entries."""
 
@@ -66,10 +39,11 @@ class McpClientManager:
         self,
         entries: list[AllowlistEntry],
         *,
+        credentials_path: Path | None = None,
         session_opener: SessionOpener | None = None,
     ) -> None:
         self._entries: dict[str, AllowlistEntry] = {e.name: e for e in entries}
-        self._opener: SessionOpener = session_opener or _default_opener
+        self._opener: SessionOpener = session_opener or make_default_opener(credentials_path)
         self._statuses: dict[str, McpConnectionStatus] = {
             e.name: McpConnectionStatus(name=e.name, state="pending", transport=e.transport)
             for e in entries

@@ -14,6 +14,7 @@ from dream.tools.builtin.mcp_tool import (
     McpToolAdapter,
     input_model_from_schema,
     mcp_tool_name,
+    register_mcp_management_tools,
     register_mcp_tools,
 )
 from tests.test_mcp._fakes import build_server, opener_for
@@ -92,6 +93,32 @@ async def test_register_mcp_tools_uses_mcp_source_and_deterministic_order(tmp_pa
     # MCP tools come after the default bucket in the deterministic order.
     names = [t.name for t in registry.list_tools()]
     assert names[-1] == "mcp__pw__navigate"
+    await mgr.close()
+
+
+async def test_register_management_tools_adds_three(tmp_path: Path) -> None:
+    mgr = await _connected_manager()
+    registry = default_registry()
+    added = register_mcp_management_tools(registry, mgr, tmp_path / "creds.toml")
+    assert set(added) == {"list_mcp_resources", "read_mcp_resource", "mcp_auth"}
+    for name in added:
+        assert name in registry
+    await mgr.close()
+
+
+async def test_management_tools_share_mcp_bucket_order(tmp_path: Path) -> None:
+    mgr = await _connected_manager()
+    registry = default_registry()
+    register_mcp_tools(registry, mgr)
+    register_mcp_management_tools(registry, mgr, tmp_path / "creds.toml")
+    names = [t.name for t in registry.list_tools()]
+    mcp_names = [n for n in names if n in {
+        "mcp__pw__navigate", "list_mcp_resources", "read_mcp_resource", "mcp_auth"
+    }]
+    # All MCP-bucket tools are contiguous at the tail and alphabetically sorted.
+    assert names[-len(mcp_names):] == mcp_names
+    assert mcp_names == sorted(mcp_names)
+    await mgr.close()
 
 
 class _DummyManager:

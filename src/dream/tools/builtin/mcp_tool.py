@@ -13,6 +13,7 @@ a small divergence from the OpenHarness reference whose BaseTool is lenient.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, create_model
@@ -125,6 +126,31 @@ def register_mcp_tools(registry: ToolRegistry, manager: McpClientManager) -> lis
     return added
 
 
+def register_mcp_management_tools(
+    registry: ToolRegistry, manager: McpClientManager, credentials_path: Path
+) -> list[str]:
+    """Register the MCP management tools (resources + auth); return names added.
+
+    Registered under ``ToolSource.MCP`` so they share the deterministic MCP
+    bucket with the per-server adapters. Imported lazily to avoid a module-load
+    cycle (these tools import the manager which imports this module's siblings).
+    """
+    from dream.tools.builtin.mcp_auth import McpAuthTool
+    from dream.tools.builtin.mcp_resources import (
+        ListMcpResourcesTool,
+        ReadMcpResourceTool,
+    )
+
+    tools: list[BaseTool] = [
+        ListMcpResourcesTool(manager),
+        ReadMcpResourceTool(manager),
+        McpAuthTool(manager, credentials_path),
+    ]
+    for tool in tools:
+        registry.register(tool, source=ToolSource.MCP)
+    return [tool.name for tool in tools]
+
+
 def _sanitize_segment(value: str) -> str:
     sanitized = re.sub(r"[^A-Za-z0-9_-]", "_", value)
     return sanitized or "tool"
@@ -138,5 +164,6 @@ __all__ = [
     "McpToolAdapter",
     "input_model_from_schema",
     "mcp_tool_name",
+    "register_mcp_management_tools",
     "register_mcp_tools",
 ]
