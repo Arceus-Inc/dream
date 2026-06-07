@@ -32,15 +32,16 @@ def atomic_write_bytes(
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.with_name(f"{dst.name}.tmp.{uuid.uuid4().hex}")
     try:
-        with open(tmp, "wb") as f:
+        # Create the temp file with the requested mode from the start. ``os.open``
+        # with O_CREAT|O_EXCL never widens past the given bits (umask can only
+        # clear them), so a secret (mode=0o600) never sits in a world-readable
+        # file. ``0o666`` for the default path matches the prior ``open()`` mode.
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        fd = os.open(tmp, flags, mode if mode is not None else 0o666)
+        with os.fdopen(fd, "wb") as f:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        if mode is not None:
-            # An explicit mode is part of the caller's contract: surface a chmod
-            # failure (the outer handler removes the temp) rather than returning
-            # success with the wrong permissions.
-            os.chmod(tmp, mode)
         os.replace(tmp, dst)
         _fsync_dir(dst.parent)
     except BaseException:

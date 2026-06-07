@@ -87,17 +87,28 @@ def test_clean_orphan_temp_files_removes_only_scheme_matches(tmp_path: Path) -> 
     assert removed == [orphan]
 
 
+def test_explicit_mode_applied_at_creation(tmp_path: Path) -> None:
+    target = tmp_path / "secret"
+    atomic_write_bytes(target, b"x", mode=0o600)
+    assert target.read_bytes() == b"x"
+    # Mode is applied when the temp file is created (no world-readable window),
+    # so the destination carries exactly the requested permission bits.
+    assert (target.stat().st_mode & 0o777) == 0o600
+
+
 def test_explicit_mode_failure_surfaces(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     target = tmp_path / "secret"
 
-    def boom(*_a: object, **_k: object) -> None:
-        raise OSError("chmod denied")
+    def boom(*_a: object, **_k: object) -> int:
+        raise OSError("open denied")
 
-    monkeypatch.setattr("dream.utils.fs.os.chmod", boom)
+    # The mode path creates the temp via os.open; a failure there must surface
+    # (the write must not report success) and leave no temp behind.
+    monkeypatch.setattr("dream.utils.fs.os.open", boom)
     with pytest.raises(OSError):
         atomic_write_bytes(target, b"x", mode=0o600)
 
-    assert not target.exists()  # write must not report success with wrong perms
+    assert not target.exists()
     assert list(tmp_path.glob("*.tmp.*")) == []  # temp cleaned by the error path
 
 

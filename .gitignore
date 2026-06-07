@@ -45,3 +45,6 @@ Thumbs.db
 
 # uv
 uv.lock
+
+# MCP credentials — secrets live OUT of the version-controlled allowlist (Spec 06)
+.harness/mcp-credentials.toml

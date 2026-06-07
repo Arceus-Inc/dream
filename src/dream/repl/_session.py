@@ -35,7 +35,9 @@ from dream.events import (
     TurnComplete,
 )
 from dream.harness import Harness, HarnessConfig
+from dream.mcp import McpClientManager
 from dream.repl._events import EventSink
+from dream.repl._mcp import mcp_paths, setup_mcp_session
 from dream.services.compact._orchestrator import (
     AutoCompactState,
     auto_compact_if_needed,
@@ -55,6 +57,7 @@ from dream.skills import (
     render_skill_catalogue,
     validate_skills,
 )
+from dream.tools._registry import ToolRegistry
 from dream.tools.builtin import default_registry
 
 # A context-event sink the skill registry calls when a body loads.
@@ -77,6 +80,7 @@ def build_default_harness(
     env: Mapping[str, str],
     working_dir: Path,
     max_turns: int = 8,
+    registry: ToolRegistry | None = None,
     skill_registry: SkillRegistry | None = None,
     skill_event_sink: SkillEventSink | None = None,
 ) -> Harness:
@@ -89,6 +93,12 @@ def build_default_harness(
     ``ToolRegistry`` and ``AutoCompactState`` are shared so registrations
     and compaction-cooldown state survive across sessions in the same
     REPL process.
+
+    ``registry`` may be supplied so the caller can register additional tools
+    (e.g. MCP, Spec 06 slice 4) into the same registry *after* this returns but
+    *before* the first session starts — the tool wire-schema and the skill
+    available-tool set are computed lazily per session, so late registrations
+    are reflected.
     """
     missing = _missing(env)
     if missing:
@@ -96,23 +106,7 @@ def build_default_harness(
     api_key = env["DREAM_SMOKE_API_KEY"]
     model = env["DREAM_SMOKE_MODEL"]
     base_url = env.get("DREAM_SMOKE_BASE_URL", "https://api.openai.com/v1")
-    registry = default_registry()
-    # Render the registry into OpenAI ``tools`` wire shape once. The engine's
-    # TurnStreamer Protocol has no tools parameter (only messages), so we
-    # smuggle the schema through ``httpx_chat_completion_stream``'s
-    # ``extra_params`` — splatted verbatim into every request body. Without
-    # this the model has no idea any tools exist and will refuse to call them.
-    tools_wire: list[dict[str, Any]] = [
-        {
-            "type": "function",
-            "function": {
-                "name": t.name,
-                "description": t.description,
-                "parameters": t.input_schema(),
-            },
-        }
-        for t in registry.list_tools()
-    ]
+    tool_registry = registry if registry is not None else default_registry()
     compactor = AutoCompactState()
     # 128K is the default we use throughout Spec 02; the watch panel /
     # /util command surface utilisation against this number.
@@ -124,17 +118,37 @@ def build_default_harness(
     catalogue = (
         render_skill_catalogue(skill_registry.list_meta()) if skill_registry else ""
     )
-    skill_context = (
-        SkillContext(
-            registry=skill_registry,
-            available_tools=frozenset(t.name for t in registry.list_tools()),
-            event_sink=skill_event_sink,
-        )
-        if skill_registry is not None
-        else None
-    )
 
     def _factory(session_id: str, options: SessionOptions) -> QueryEngine:
+        # Render the registry into OpenAI ``tools`` wire shape per session (cheap;
+        # a handful of tools) so tools registered after build — MCP adapters /
+        # resource + auth tools — are visible to the model. The engine's
+        # TurnStreamer Protocol has no tools parameter (only messages), so we
+        # smuggle the schema through ``httpx_chat_completion_stream``'s
+        # ``extra_params`` — splatted verbatim into every request body.
+        tools = tool_registry.list_tools()
+        tools_wire: list[dict[str, Any]] = [
+            {
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.input_schema(),
+                },
+            }
+            for t in tools
+        ]
+        # Built per session too, so the available-tool set the `skill` tool
+        # checks ``tools_required`` against includes late (MCP) registrations.
+        skill_context = (
+            SkillContext(
+                registry=skill_registry,
+                available_tools=frozenset(t.name for t in tools),
+                event_sink=skill_event_sink,
+            )
+            if skill_registry is not None
+            else None
+        )
         system_prompt = options.system_prompt
         if catalogue:
             system_prompt = (
@@ -153,7 +167,7 @@ def build_default_harness(
         )
         return build_query_engine(
             streamer=streamer,
-            registry=registry,
+            registry=tool_registry,
             session_id=session_id,
             working_dir=working_dir,
             max_turns=options.max_turns or max_turns,
@@ -355,12 +369,39 @@ def _cmd_skill(
     output.write(defn.content.rstrip() + "\n")
 
 
+def _cmd_mcp(
+    manager: McpClientManager | None, *, output: TextIO, use: bool
+) -> None:
+    """Print per-server MCP connection status, or a hint if MCP is absent."""
+    statuses = manager.list_statuses() if manager is not None else []
+    if not statuses:
+        output.write(_c(_DIM, "no MCP servers configured", use=use) + "\n")
+        return
+    output.write(_c(_CYAN, "mcp servers", use=use) + "\n")
+    for status in statuses:
+        tone = _GREEN if status.state == "connected" else _YELLOW
+        detail = f" · {status.detail}" if status.detail else ""
+        output.write(
+            "  "
+            + _c(_BOLD, status.name, use=use)
+            + _c(tone, f" [{status.state}]", use=use)
+            + _c(
+                _DIM,
+                f" {status.transport} · tools={len(status.tools)} "
+                f"resources={len(status.resources)}{detail}",
+                use=use,
+            )
+            + "\n"
+        )
+
+
 def _handle_slash(
     line: str,
     *,
     session: Session,
     sink: EventSink,
     skill_registry: SkillRegistry | None = None,
+    mcp_manager: McpClientManager | None = None,
     output: TextIO,
 ) -> bool:
     """Dispatch one slash command. Returns True to keep looping, False to quit."""
@@ -377,6 +418,10 @@ def _handle_slash(
     if cmd == "/skill":
         _cmd_skill(arg, skill_registry, sink=sink, output=output, use=use)
         return True
+    if cmd == "/mcp":
+        _cmd_mcp(mcp_manager, output=output, use=use)
+        sink.emit("session.mcp_listed")
+        return True
     if cmd in ("/help", "/?"):
         commands = [
             ("/help", "this list"),
@@ -385,6 +430,7 @@ def _handle_slash(
             ("/compact", "force a Spec 04 microcompact now"),
             ("/skills", "list available skills (frontmatter)"),
             ("/skill <name>", "load a skill body (operator)"),
+            ("/mcp", "list MCP servers + connection status"),
             ("/reset", "clear transcript (keep engine + cost)"),
             ("/quit", "leave the REPL"),
         ]
@@ -526,6 +572,7 @@ async def session_loop(
     session: Session,
     sink: EventSink,
     skill_registry: SkillRegistry | None = None,
+    mcp_manager: McpClientManager | None = None,
     input_func: Callable[[str], str] = input,
     output: TextIO | None = None,
 ) -> None:
@@ -567,6 +614,7 @@ async def session_loop(
                 session=session,
                 sink=sink,
                 skill_registry=skill_registry,
+                mcp_manager=mcp_manager,
                 output=out,
             ):
                 break
@@ -608,7 +656,8 @@ def run_session_repl(
     """Build (or accept) a Harness and run ``session_loop`` to completion.
 
     Returns 0 on clean exit, 2 when required env vars are missing and no
-    ``harness`` was injected, 3 when a malformed skill blocks the session.
+    ``harness`` was injected, 3 when a malformed skill or a blocking MCP finding
+    (unlisted/malformed allowlist, version-pin mismatch) blocks the session.
     """
     import os as _os
 
@@ -635,15 +684,22 @@ def run_session_repl(
     def _skill_event_sink(event: ContextEvent) -> None:
         _emit_context_event(sink, event)
 
+    # MCP tools (Spec 06 slice 4) register into this shared registry inside the
+    # event loop (connect is async); the harness reads the registry lazily per
+    # session, so those late registrations are visible. Only when we build the
+    # harness ourselves — an injected harness owns its own registry.
+    tool_registry: ToolRegistry | None = None
     if harness is None:
         env_map = env if env is not None else _os.environ
         if _missing(env_map):
             out.write("missing env: " + ", ".join(_missing(env_map)) + "\n")
             return 2
+        tool_registry = default_registry()
         harness = build_default_harness(
             env=env_map,
             working_dir=work_dir,
             max_turns=max_turns,
+            registry=tool_registry,
             skill_registry=skill_registry,
             skill_event_sink=_skill_event_sink,
         )
@@ -654,26 +710,46 @@ def run_session_repl(
         model=model,
     )
     options = SessionOptions(model=model, system_prompt=system, max_turns=max_turns)
+    allowlist_path, credentials_path = mcp_paths(work_dir)
 
-    async def _run(harness: Harness) -> None:
+    async def _run(harness: Harness) -> int:
+        mcp_manager: McpClientManager | None = None
         async with harness:
-            session = await harness.start_session(options)
-            await session_loop(
-                session=session,
-                sink=sink,
-                skill_registry=skill_registry,
-                input_func=input_func,
-                output=out,
-            )
+            if tool_registry is not None:
+                setup = await setup_mcp_session(
+                    tool_registry,
+                    allowlist_path=allowlist_path,
+                    credentials_path=credentials_path,
+                )
+                if has_blocking(setup.findings):
+                    for finding in setup.findings:
+                        if finding.severity == "blocking":
+                            out.write(f"blocked: {finding.message} ({finding.path})\n")
+                    return 3
+                mcp_manager = setup.manager
+            try:
+                session = await harness.start_session(options)
+                await session_loop(
+                    session=session,
+                    sink=sink,
+                    skill_registry=skill_registry,
+                    mcp_manager=mcp_manager,
+                    input_func=input_func,
+                    output=out,
+                )
+            finally:
+                if mcp_manager is not None:
+                    await mcp_manager.close()
+        return 0
 
     # ``finally`` so the stop lifecycle event is written even when the loop
     # raises (otherwise an exception would skip ``session.repl.stopped`` and
     # leave the JSONL watch panel without a terminal event) (#38).
     try:
-        asyncio.run(_run(harness))
+        code = asyncio.run(_run(harness))
     finally:
         sink.emit("session.repl.stopped")
-    return 0
+    return code
 
 
 __all__ = [

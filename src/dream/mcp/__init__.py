@@ -21,6 +21,14 @@ from dream.mcp._client import (
     SessionOpener,
     UnsupportedTransportError,
 )
+from dream.mcp._credentials import (
+    CredentialMode,
+    CredentialsError,
+    ServerCredential,
+    apply_credentials,
+    read_credentials,
+    write_credential,
+)
 from dream.mcp._types import (
     AllowlistEntry,
     McpConnectionStatus,
@@ -37,6 +45,8 @@ from dream.mcp._types import (
 __all__ = [
     "AllowlistEntry",
     "AllowlistError",
+    "CredentialMode",
+    "CredentialsError",
     "McpClientManager",
     "McpConnectionStatus",
     "McpHttpServerConfig",
@@ -48,10 +58,14 @@ __all__ = [
     "McpToolInfo",
     "McpTransport",
     "McpWebSocketServerConfig",
+    "ServerCredential",
     "SessionOpener",
     "UnsupportedTransportError",
     "admit",
+    "apply_credentials",
     "entry_to_config",
     "parse_allowlist",
     "read_allowlist",
+    "read_credentials",
+    "write_credential",
 ]
