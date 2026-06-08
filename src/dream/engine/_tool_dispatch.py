@@ -46,9 +46,12 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
+from dream.permissions import Outcome, PermissionDecision, PermissionRequest
 from dream.services.tool_outputs import offload_tool_output
 from dream.tools._context import ToolExecutionContext
 from dream.tools._registry import ToolRegistry
+
+_PermissionGate = Callable[[PermissionRequest], PermissionDecision]
 
 
 @dataclass(frozen=True)
@@ -84,6 +87,9 @@ class EngineToolDispatcher:
     session_id: str
     scratch_dir: Path | None = None
     on_dispatch: _DispatchObserver | None = None
+    # Optional permission gate (Spec 13C): runs before execute. ``None`` means
+    # no gating, so existing call sites are unaffected.
+    permission_gate: _PermissionGate | None = None
     # Opaque per-session metadata merged into every ToolExecutionContext. Keeps
     # the engine skill-agnostic: the skills layer stuffs its SkillContext here
     # under its own key and the skill tool reads it back (Spec 06 slice 2).
@@ -100,6 +106,19 @@ class EngineToolDispatcher:
             return self._schema_invalid(tool_name=name, tool=tool, exc=exc)
 
         is_read_only = tool.is_read_only_for(input)
+        if self.permission_gate is not None:
+            effects = tool.effects_for(input)
+            request = PermissionRequest(
+                tool_name=name,
+                is_read_only=is_read_only,
+                target_paths=effects.target_paths,
+                command=effects.command,
+                network_host=effects.network_host,
+            )
+            decision = self.permission_gate(request)
+            if not decision.allowed:
+                return self._denied(name, decision, is_read_only)
+
         ctx = ToolExecutionContext(
             working_dir=self.working_dir,
             session_id=self.session_id,
@@ -179,6 +198,25 @@ class EngineToolDispatcher:
             elapsed=0.0,
             offloaded=False,
         )
+        return content, True
+
+    def _denied(
+        self, name: str, decision: PermissionDecision, is_read_only: bool
+    ) -> tuple[str, bool]:
+        if decision.outcome is Outcome.ASK:
+            safe_retry = (
+                "ask an operator to grant this, or promote the tool in "
+                ".harness/tool-tier-overrides.toml"
+            )
+        else:
+            safe_retry = "this action is blocked by the sandbox policy; do not retry as-is"
+        content = (
+            f"Permission denied for {name!r}: {decision.reason}\n"
+            f"root_cause: {decision.rule}\n"
+            f"safe_retry: {safe_retry}\n"
+            f"stop_condition: do not repeat this call under the current sandbox policy"
+        )
+        self._record(name, is_read_only=is_read_only, is_error=True, elapsed=0.0, offloaded=False)
         return content, True
 
     def _timeout(
