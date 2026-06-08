@@ -31,6 +31,7 @@ from dream.engine._records import TurnRecord
 from dream.engine._session import SessionConfig
 from dream.engine._tool_dispatch import DispatchRecord, EngineToolDispatcher, PermissionGate
 from dream.observability._tracer import NoopTracer, Tracer
+from dream.permissions import SessionLimiter, SessionLimits
 from dream.services.compact import DEFAULT_KEEP_RECENT
 from dream.services.compact._orchestrator import AutoCompactState
 from dream.tools._registry import ToolRegistry
@@ -62,6 +63,9 @@ class QueryEngine:
     compaction_capabilities: ProviderCapabilities | None = None
     tracer: Tracer = field(default_factory=NoopTracer)
     model: str = ""
+    # Spec 13D: per-session hard caps. A fresh SessionLimiter is minted per
+    # ``make_session_config`` call (per send), so counters reset each session.
+    limits: SessionLimits | None = None
 
     def make_session_config(
         self,
@@ -87,6 +91,7 @@ class QueryEngine:
             compaction_capabilities=self.compaction_capabilities,
             tracer=self.tracer,
             model=self.model,
+            limiter=SessionLimiter(self.limits) if self.limits is not None else None,
         )
 
 
@@ -101,6 +106,7 @@ def build_query_engine(
     on_dispatch: Callable[[DispatchRecord], None] | None = None,
     context_metadata: dict[str, Any] | None = None,
     permission_gate: PermissionGate | None = None,
+    limits: SessionLimits | None = None,
     compactor: AutoCompactState | None = None,
     compaction_threshold: float = 0.7,
     compaction_preserve_recent: int = DEFAULT_KEEP_RECENT,
@@ -135,6 +141,7 @@ def build_query_engine(
         compaction_capabilities=compaction_capabilities,
         tracer=tracer or NoopTracer(),
         model=model,
+        limits=limits,
     )
 
 

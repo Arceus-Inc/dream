@@ -18,6 +18,7 @@ from dream.permissions._credential_guard import (
     BUILTIN_CREDENTIAL_PATTERNS,
     is_credential_path,
 )
+from dream.permissions._limits import SessionLimiter, SessionLimits
 from dream.permissions._overrides import (
     TierOverrideError,
     TierOverrides,
@@ -50,6 +51,8 @@ __all__ = [
     "SandboxConfig",
     "SandboxConfigError",
     "SandboxTier",
+    "SessionLimiter",
+    "SessionLimits",
     "TierOverrideError",
     "TierOverrides",
     "build_policy",

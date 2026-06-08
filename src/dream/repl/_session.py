@@ -39,6 +39,7 @@ from dream.events import (
 from dream.harness import Harness, HarnessConfig
 from dream.mcp import McpClientManager
 from dream.observability import JsonlTracer, TraceWriter
+from dream.permissions import SessionLimits
 from dream.repl._events import EventSink
 from dream.repl._mcp import mcp_paths, setup_mcp_session
 from dream.repl._runtime_info import render_runtime_info
@@ -216,6 +217,7 @@ def build_default_harness(
             working_dir=working_dir,
             max_turns=options.max_turns or max_turns,
             permission_gate=permission_gate,
+            limits=SessionLimits(),
             context_metadata=_build_context_metadata(
                 skill_context=skill_context, task_context=task_context
             ),
