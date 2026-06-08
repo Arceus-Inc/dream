@@ -448,3 +448,150 @@ async def test_run_task_imposed_negotiation_emits_warning_event(tmp_path: Path) 
     assert len(warnings) == 1
     assert warnings[0]["level"] == "warning"
     assert warnings[0]["rounds"] == 3
+
+
+# --- 10-I: observer dispatch -------------------------------------------
+
+
+async def test_run_task_dispatches_macro_events_in_order(tmp_path: Path) -> None:
+    """A capturing observer sees task/planner/sprint/contract/generator/
+    evaluator/negotiation lifecycle events in the order they fire."""
+    from dream.runner import run_task
+    from dream.runner._observer import _CapturingObserver
+
+    observer = _CapturingObserver()
+
+    await run_task(
+        task_id="t1",
+        intent="x",
+        worktree_root=tmp_path,
+        planner=_make_planner(steps=1),
+        generator_execute=_noop_execute,
+        evaluator_propose=_accept_first_proposal_propose(["c"]),
+        generator_respond=_accept_first_proposal_respond(),
+        evaluator_run=_make_evaluator_run(outcome="pass"),
+        observer=observer,
+    )
+
+    kinds = [e["kind"] for e in observer.events]
+    assert kinds == [
+        "task.started",
+        "planner.started",
+        "planner.completed",
+        "sprint.started",
+        "contract.written",
+        "generator.started",
+        "generator.completed",
+        "evaluator.started",
+        "evaluator.completed",
+        "sprint.completed",
+        "task.completed",
+    ]
+
+
+async def test_run_task_observer_carries_payloads(tmp_path: Path) -> None:
+    from dream.runner import run_task
+    from dream.runner._observer import _CapturingObserver
+
+    observer = _CapturingObserver()
+
+    await run_task(
+        task_id="t1",
+        intent="ship",
+        worktree_root=tmp_path,
+        planner=_make_planner(steps=1),
+        generator_execute=_noop_execute,
+        evaluator_propose=_accept_first_proposal_propose(["c"]),
+        generator_respond=_accept_first_proposal_respond(),
+        evaluator_run=_make_evaluator_run(outcome="pass"),
+        observer=observer,
+    )
+
+    by_kind = {e["kind"]: e for e in observer.events}
+    assert by_kind["task.started"]["task_id"] == "t1"
+    assert by_kind["task.started"]["intent"] == "ship"
+    assert by_kind["planner.completed"]["step_count"] == 1
+    assert by_kind["sprint.started"]["sprint_number"] == 1
+    assert by_kind["sprint.started"]["step_id"] == "s1"
+    assert "path" in by_kind["contract.written"]
+    assert by_kind["generator.started"]["has_contract"] is True
+    assert by_kind["evaluator.completed"]["outcome"] == "pass"
+    assert by_kind["sprint.completed"]["outcome"] == "pass"
+    assert by_kind["task.completed"]["sprint_count"] == 1
+
+
+async def test_run_task_observer_marks_generator_without_contract_when_eval_off(
+    tmp_path: Path,
+) -> None:
+    from dream.runner import run_task
+    from dream.runner._observer import _CapturingObserver
+
+    observer = _CapturingObserver()
+
+    await run_task(
+        task_id="t1",
+        intent="x",
+        worktree_root=tmp_path,
+        planner=_make_planner(steps=1, evaluator_enabled=False),
+        generator_execute=_noop_execute,
+        evaluator_propose=_accept_first_proposal_propose(["c"]),
+        generator_respond=_accept_first_proposal_respond(),
+        evaluator_run=_make_evaluator_run(outcome="pass"),
+        observer=observer,
+    )
+
+    kinds = [e["kind"] for e in observer.events]
+    assert "contract.written" not in kinds
+    assert "evaluator.started" not in kinds
+    assert "evaluator.completed" not in kinds
+    gen_start = next(e for e in observer.events if e["kind"] == "generator.started")
+    assert gen_start["has_contract"] is False
+
+
+async def test_run_task_observer_emits_negotiation_imposed_at_cap(
+    tmp_path: Path,
+) -> None:
+    from dream.runner import run_task
+    from dream.runner._observer import _CapturingObserver
+
+    def propose(round_num, log):
+        return [f"r{round_num}"]
+
+    def respond(round_num, log, proposal):
+        return False, ["counter"]
+
+    observer = _CapturingObserver()
+    await run_task(
+        task_id="t1",
+        intent="x",
+        worktree_root=tmp_path,
+        planner=_make_planner(steps=1),
+        generator_execute=_noop_execute,
+        evaluator_propose=propose,
+        generator_respond=respond,
+        evaluator_run=_make_evaluator_run(outcome="pass"),
+        observer=observer,
+    )
+
+    imposed = [e for e in observer.events if e["kind"] == "negotiation.imposed"]
+    assert len(imposed) == 1
+    assert imposed[0]["sprint_number"] == 1
+    assert imposed[0]["rounds"] == 3
+
+
+async def test_run_task_with_no_observer_does_not_break(tmp_path: Path) -> None:
+    """observer=None is the default — runner stays silent and works."""
+    from dream.runner import run_task
+
+    result = await run_task(
+        task_id="t1",
+        intent="x",
+        worktree_root=tmp_path,
+        planner=_make_planner(steps=1),
+        generator_execute=_noop_execute,
+        evaluator_propose=_accept_first_proposal_propose(["c"]),
+        generator_respond=_accept_first_proposal_respond(),
+        evaluator_run=_make_evaluator_run(outcome="pass"),
+    )
+
+    assert result.sprints[0].outcome == "pass"

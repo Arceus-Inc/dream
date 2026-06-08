@@ -14,9 +14,10 @@ is emitted so the runner can surface it to the leader.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import inspect
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from ._contract import NegotiationEntry, SprintContract
@@ -30,14 +31,24 @@ __all__ = [
 ]
 
 
-EvaluatorPropose = Callable[[int, list[NegotiationEntry]], list[str]]
-"""``(round_num, log_so_far) -> proposed acceptance criteria``."""
+EvaluatorPropose = Callable[
+    [int, list[NegotiationEntry]],
+    "list[str] | Awaitable[list[str]]",
+]
+"""``(round_num, log_so_far) -> proposed acceptance criteria``.
+
+May return the proposal directly (sync) or as an awaitable (e.g. an LLM-backed
+head opening a session via :meth:`Harness.run_role`).
+"""
 
 GeneratorRespond = Callable[
     [int, list[NegotiationEntry], list[str]],
-    tuple[bool, list[str] | None],
+    "tuple[bool, list[str] | None] | Awaitable[tuple[bool, list[str] | None]]",
 ]
-"""``(round_num, log_so_far, evaluator_proposal) -> (accept?, counter_or_None)``."""
+"""``(round_num, log_so_far, evaluator_proposal) -> (accept?, counter_or_None)``.
+
+May return synchronously or as an awaitable, like :data:`EvaluatorPropose`.
+"""
 
 
 @dataclass(frozen=True)
@@ -52,7 +63,7 @@ class NegotiationResult:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def _seed_carry_log(carry_items: tuple[str, ...]) -> list[NegotiationEntry]:
@@ -83,6 +94,54 @@ def negotiate_contract(
     (the evaluator's current). On cap-out without acceptance, the
     evaluator's final proposal wins (``imposed=True``) and
     ``warning_event`` is populated.
+
+    Sync seam; for an LLM-backed negotiation use
+    :func:`negotiate_contract_async`.
+    """
+    return _run_negotiation(
+        evaluator_propose=evaluator_propose,
+        generator_respond=generator_respond,
+        max_rounds=max_rounds,
+        carry_items=carry_items,
+        await_results=False,
+    )
+
+
+async def negotiate_contract_async(
+    *,
+    evaluator_propose: EvaluatorPropose,
+    generator_respond: GeneratorRespond,
+    max_rounds: int = 3,
+    carry_items: tuple[str, ...] = (),
+) -> NegotiationResult:
+    """Async counterpart that awaits awaitables returned by the callables.
+
+    Accepts both sync- and async-shaped callables; the runner uses this so
+    LLM-backed negotiator heads (Spec 10-H) can open ``Harness.run_role``
+    sessions per round without a sync-over-async bridge.
+    """
+    gen = _run_negotiation_async(
+        evaluator_propose=evaluator_propose,
+        generator_respond=generator_respond,
+        max_rounds=max_rounds,
+        carry_items=carry_items,
+    )
+    return await gen
+
+
+def _run_negotiation(
+    *,
+    evaluator_propose: EvaluatorPropose,
+    generator_respond: GeneratorRespond,
+    max_rounds: int,
+    carry_items: tuple[str, ...],
+    await_results: bool,
+) -> NegotiationResult:
+    """Shared sync body used by :func:`negotiate_contract`.
+
+    ``await_results`` is always ``False`` here; the async path lives in
+    :func:`_run_negotiation_async` to keep the await keyword out of the
+    sync function body.
     """
     if max_rounds < 1:
         raise ValueError(f"max_rounds must be >= 1, got {max_rounds}")
@@ -93,7 +152,13 @@ def negotiate_contract(
 
     for round_num in range(1, max_rounds + 1):
         rounds = round_num
-        proposal = list(evaluator_propose(round_num, list(log)))
+        raw = evaluator_propose(round_num, list(log))
+        if inspect.isawaitable(raw):
+            raise TypeError(
+                "evaluator_propose returned an awaitable; use "
+                "negotiate_contract_async for LLM-backed heads"
+            )
+        proposal = list(raw)
         last_proposal = proposal
         log.append(
             NegotiationEntry(
@@ -103,7 +168,13 @@ def negotiate_contract(
                 message=f"propose r{round_num}: {proposal}",
             )
         )
-        accept, counter = generator_respond(round_num, list(log), list(proposal))
+        raw_resp = generator_respond(round_num, list(log), list(proposal))
+        if inspect.isawaitable(raw_resp):
+            raise TypeError(
+                "generator_respond returned an awaitable; use "
+                "negotiate_contract_async for LLM-backed heads"
+            )
+        accept, counter = raw_resp
         log.append(
             NegotiationEntry(
                 ts=_now_iso(),
@@ -125,6 +196,69 @@ def negotiate_contract(
                 warning_event=None,
             )
 
+    return _imposed_result(last_proposal, log, rounds)
+
+
+async def _run_negotiation_async(
+    *,
+    evaluator_propose: EvaluatorPropose,
+    generator_respond: GeneratorRespond,
+    max_rounds: int,
+    carry_items: tuple[str, ...],
+) -> NegotiationResult:
+    if max_rounds < 1:
+        raise ValueError(f"max_rounds must be >= 1, got {max_rounds}")
+
+    log: list[NegotiationEntry] = list(_seed_carry_log(carry_items))
+    last_proposal: list[str] = []
+    rounds = 0
+
+    for round_num in range(1, max_rounds + 1):
+        rounds = round_num
+        raw = evaluator_propose(round_num, list(log))
+        if inspect.isawaitable(raw):
+            raw = await raw
+        proposal = list(raw)
+        last_proposal = proposal
+        log.append(
+            NegotiationEntry(
+                ts=_now_iso(),
+                from_role="evaluator",
+                to_role="generator",
+                message=f"propose r{round_num}: {proposal}",
+            )
+        )
+        raw_resp = generator_respond(round_num, list(log), list(proposal))
+        if inspect.isawaitable(raw_resp):
+            raw_resp = await raw_resp
+        accept, counter = raw_resp
+        log.append(
+            NegotiationEntry(
+                ts=_now_iso(),
+                from_role="generator",
+                to_role="evaluator",
+                message=(
+                    f"accept r{round_num}"
+                    if accept
+                    else f"counter r{round_num}: {counter or []}"
+                ),
+            )
+        )
+        if accept:
+            return NegotiationResult(
+                criteria=tuple(proposal),
+                log=tuple(log),
+                imposed=False,
+                rounds=rounds,
+                warning_event=None,
+            )
+
+    return _imposed_result(last_proposal, log, rounds)
+
+
+def _imposed_result(
+    last_proposal: list[str], log: list[NegotiationEntry], rounds: int
+) -> NegotiationResult:
     warning = {
         "type": "sprint.negotiation_imposed",
         "level": "warning",

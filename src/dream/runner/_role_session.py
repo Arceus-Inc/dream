@@ -27,15 +27,16 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from dream.events import Error, Event, TextDelta
+from dream.events import Error, Event, TextDelta, ToolUseResult, ToolUseStart
 from dream.roles import (
     RoleManifest,
     RoleName,
     default_role_manifest,
     load_role_manifest,
 )
+from dream.runner._observer import RunTaskObserver
 from dream.session import SessionCost, SessionOptions
 
 if TYPE_CHECKING:
@@ -120,6 +121,7 @@ async def run_role(
     *,
     options: SessionOptions | None = None,
     harness_dir: Path | None = None,
+    observer: RunTaskObserver | None = None,
 ) -> RunRoleResult:
     """Run one session as ``role``; return assistant text + cost.
 
@@ -131,6 +133,13 @@ async def run_role(
     completion, and surfaces the result. The session is closed even on
     the error path. An ``events.Error`` mid-stream becomes a
     :class:`RoleSessionError`.
+
+    When ``observer`` is supplied, every mid-stream event is mirrored
+    to the observer in real time: ``role.session.opened`` /
+    ``role.session.closed`` bracket the session, with ``role.text``,
+    ``role.tool.start``, ``role.tool.result`` and ``role.error`` events
+    in between. Production heads forward the observer through this
+    kwarg so :func:`dream.runner.run_task` can drive a live walkthrough.
     """
     manifest = resolve_role_manifest(role, harness_dir=harness_dir)
     base = options if options is not None else SessionOptions()
@@ -152,6 +161,20 @@ async def run_role(
 
     session = await harness.start_session(effective)
 
+    role_label = str(manifest.name)
+
+    def _emit(event: dict[str, Any]) -> None:
+        if observer is not None:
+            observer.on_event(event)
+
+    _emit(
+        {
+            "kind": "role.session.opened",
+            "role": role_label,
+            "session_id": session.id,
+        }
+    )
+
     text_chunks: list[str] = []
     captured: list[Event] = []
     error: Error | None = None
@@ -161,13 +184,48 @@ async def run_role(
             captured.append(ev)
             if isinstance(ev, TextDelta):
                 text_chunks.append(ev.text)
+                _emit({"kind": "role.text", "role": role_label, "text": ev.text})
+            elif isinstance(ev, ToolUseStart):
+                _emit(
+                    {
+                        "kind": "role.tool.start",
+                        "role": role_label,
+                        "tool": ev.name,
+                        "input": dict(ev.input),
+                    }
+                )
+            elif isinstance(ev, ToolUseResult):
+                _emit(
+                    {
+                        "kind": "role.tool.result",
+                        "role": role_label,
+                        "tool": ev.name,
+                        "is_error": ev.is_error,
+                        "content_preview": ev.content[:240],
+                    }
+                )
             # First error wins; the engine may surface a follow-up
             # ``TurnComplete`` with empty blocks but the diagnosis
             # belongs to the first failure.
             elif isinstance(ev, Error) and error is None:
                 error = ev
+                _emit(
+                    {
+                        "kind": "role.error",
+                        "role": role_label,
+                        "message": ev.message,
+                    }
+                )
     finally:
         await session.close()
+        _emit(
+            {
+                "kind": "role.session.closed",
+                "role": role_label,
+                "session_id": session.id,
+                "cost_usd": getattr(session.cost, "cost_usd", None),
+            }
+        )
 
     if error is not None:
         raise RoleSessionError(

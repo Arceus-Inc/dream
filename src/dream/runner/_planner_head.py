@@ -36,6 +36,7 @@ from dream.planner import LedgerStep, PlannerLedger, PlannerOutput
 
 if TYPE_CHECKING:
     from dream.harness import Harness
+    from dream.runner._observer import RunTaskObserver
 
 __all__ = [
     "PLANNER_INSTRUCTION_TEMPLATE",
@@ -202,6 +203,7 @@ def make_planner_head(
     harness: Harness,
     *,
     harness_dir: Path | None = None,
+    observer: RunTaskObserver | None = None,
 ) -> Callable[[str, str], Awaitable[PlannerOutput]]:
     """Build a :data:`PlannerCallable` driven by :meth:`Harness.run_role`.
 
@@ -211,13 +213,15 @@ def make_planner_head(
     :func:`dream.planner.run_planner` to commit to the worktree.
 
     ``harness_dir`` is forwarded to ``run_role`` so per-task role overlays
-    in ``{harness_dir}/roles/planner.toml`` are honoured.
+    in ``{harness_dir}/roles/planner.toml`` are honoured. ``observer``
+    is forwarded so :func:`dream.runner.run_task` can stream the
+    planner's text and tool calls in real time.
     """
 
     async def planner(task_id: str, intent: str) -> PlannerOutput:
         prompt = _build_intent(task_id, intent)
         result = await harness.run_role(
-            "planner", prompt, harness_dir=harness_dir
+            "planner", prompt, harness_dir=harness_dir, observer=observer
         )
         spec = _extract_spec(result.final_text)
         ledger_data = _extract_ledger_json(result.final_text)

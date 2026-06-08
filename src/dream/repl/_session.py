@@ -27,7 +27,10 @@ from dream.engine._adapter_openai import (
     httpx_chat_completion_stream,
 )
 from dream.engine._engine import QueryEngine, build_query_engine
-from dream.engine._permission_gate import make_permission_gate
+from dream.engine._permission_gate import (
+    compute_session_role_allowlist,
+    make_permission_gate,
+)
 from dream.events import (
     Compacted,
     Error,
@@ -44,6 +47,8 @@ from dream.permissions import SessionLimits
 from dream.repl._events import EventSink
 from dream.repl._mcp import mcp_paths, setup_mcp_session
 from dream.repl._runtime_info import render_runtime_info
+from dream.roles import RoleManifest
+from dream.runner._role_session import ROLE_MANIFEST_METADATA_KEY
 from dream.services import cron as cron_service
 from dream.services.compact._orchestrator import (
     AutoCompactState,
@@ -228,8 +233,19 @@ def build_default_harness(
         # Spec 13C: gate every tool call against the sandbox policy assembled
         # from the registry's declared tiers + operator .harness config. Stale
         # promotions etc. surface as warnings (data); not emitted here yet.
+        # Spec 10-H: when the caller stamped a RoleManifest on
+        # ``options.metadata[ROLE_MANIFEST_METADATA_KEY]`` (the runner does
+        # this in ``open_role_session``), intersect with the active sandbox
+        # tier and pass the result to *both* the dispatcher (hard refusal
+        # before the gate) and the gate itself (defensive double-lock).
+        manifest = options.metadata.get(ROLE_MANIFEST_METADATA_KEY)
+        role_allowed: frozenset[str] | None = None
+        if isinstance(manifest, RoleManifest):
+            role_allowed = compute_session_role_allowlist(
+                tool_registry, paths=paths, cwd=working_dir, manifest=manifest
+            )
         permission_gate, _gate_warnings = make_permission_gate(
-            tool_registry, paths=paths, cwd=working_dir
+            tool_registry, paths=paths, cwd=working_dir, tool_allow=role_allowed
         )
         return build_query_engine(
             streamer=streamer,
@@ -238,6 +254,7 @@ def build_default_harness(
             working_dir=working_dir,
             max_turns=options.max_turns or max_turns,
             permission_gate=permission_gate,
+            role_allowed_tools=role_allowed,
             limits=SessionLimits(),
             context_metadata=_build_context_metadata(
                 skill_context=skill_context, task_context=task_context
