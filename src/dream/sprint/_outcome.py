@@ -1,0 +1,75 @@
+"""Outcome → ledger transition + tech-debt append.
+
+Spec 10 §"Generator + evaluator loop" step 6:
+
+- ``pass``           → step transitions to ``done`` (and advances).
+- ``needs-changes``  → step stays ``in_progress``; items are surfaced into
+  the next contract's negotiation log via
+  :func:`dream.sprint.load_pending_carry_items`.
+- ``fail``           → step transitions to ``blocked``; a tech-debt entry
+  is appended to ``<wt>/docs/exec-plans/tech-debt-tracker.md``.
+
+This module is pure transitions: no event emission, no contract writing.
+"""
+
+from __future__ import annotations
+
+from dataclasses import replace
+from datetime import datetime, timezone
+from pathlib import Path
+
+from dream.planner import PlannerLedger
+from dream.utils.fs import atomic_write_text
+
+from ._contract import tech_debt_path
+from ._evaluation import EvaluationRecord
+
+__all__ = ["append_tech_debt", "apply_outcome"]
+
+
+def apply_outcome(ledger: PlannerLedger, record: EvaluationRecord) -> PlannerLedger:
+    """Return a new ledger with ``record.step_id`` transitioned per the rules.
+
+    Raises ``KeyError`` if the step id isn't present in the ledger.
+    """
+    step_id = record.step_id
+    new_steps = list(ledger.steps)
+    for i, step in enumerate(new_steps):
+        if step.id == step_id:
+            if record.outcome == "pass":
+                new_status = "done"
+            elif record.outcome == "fail":
+                new_status = "blocked"
+            else:  # needs-changes
+                new_status = "in_progress"
+            new_steps[i] = replace(step, status=new_status)
+            return replace(ledger, steps=tuple(new_steps))
+    raise KeyError(f"step id not in ledger: {step_id!r}")
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def append_tech_debt(worktree_root: str | Path, record: EvaluationRecord) -> Path:
+    """Append a markdown entry describing the ``fail`` to the tech-debt log.
+
+    Refuses non-``fail`` records: the tracker is the inbox for blocked
+    work, not a general audit log.
+    """
+    if record.outcome != "fail":
+        raise ValueError(
+            f"append_tech_debt accepts only outcome='fail' records, got {record.outcome!r}"
+        )
+    path = tech_debt_path(worktree_root)
+    prior = path.read_text(encoding="utf-8") if path.exists() else ""
+    items_md = "\n".join(f"  - {item}" for item in record.items) if record.items else ""
+    entry = (
+        f"## {record.task_id} — sprint-{record.sprint_number} — step {record.step_id}\n"
+        f"- recorded: {_now_iso()}\n"
+        f"- notes: {record.notes}\n"
+        + (f"- items:\n{items_md}\n" if items_md else "")
+        + "\n"
+    )
+    atomic_write_text(path, prior + entry)
+    return path
