@@ -8,6 +8,7 @@ Spec 05 three-part structured error.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -47,7 +48,9 @@ async def test_stops_running_task(tmp_path: Path) -> None:
     task = await sc.manager.create_shell_task(
         description="sleeper",
         cwd=str(tmp_path),
-        argv=["cmd", "/c", "ping", "-n", "30", "127.0.0.1"],
+        # Portable long-runner: the interpreter is present on every OS the suite
+        # runs on (Windows ``cmd`` is not on macOS/Linux).
+        argv=[sys.executable, "-c", "import time; time.sleep(30)"],
     )
     result = await TaskStopTool().execute({"task_id": task.id}, _ctx(tmp_path, sc))
     assert result.is_error is False
@@ -75,7 +78,7 @@ async def test_stop_already_terminal_task_is_noop(tmp_path: Path) -> None:
     task = await sc.manager.create_shell_task(
         description="quick",
         cwd=str(tmp_path),
-        argv=["cmd", "/c", "echo", "hi"],
+        argv=[sys.executable, "-c", "print('hi')"],
     )
     # let it finish naturally
     await sc.manager.stop_task(task.id)

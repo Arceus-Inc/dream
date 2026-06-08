@@ -12,6 +12,7 @@ with a structured error.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -76,14 +77,15 @@ async def test_creates_shell_task_with_command(tmp_path: Path) -> None:
 
 async def test_creates_shell_task_with_argv(tmp_path: Path) -> None:
     sc = _session(tmp_path)
+    argv = [sys.executable, "-c", "print('hi')"]  # portable: cmd is Windows-only
     result = await TaskCreateTool().execute(
-        {"description": "list dir", "argv": ["cmd", "/c", "echo", "hi"]},
+        {"description": "list dir", "argv": argv},
         _ctx(tmp_path, sc),
     )
     assert result.is_error is False
     tasks = sc.manager.list_tasks()
     assert len(tasks) == 1
-    assert tasks[0].argv == ("cmd", "/c", "echo", "hi")
+    assert tasks[0].argv == tuple(argv)
     await sc.manager.stop_task(tasks[0].id)
 
 
