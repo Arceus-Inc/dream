@@ -24,6 +24,7 @@ from dream.permissions import (
     build_policy,
     evaluate,
 )
+from dream.roles import RoleManifest, compute_minimum_toolset
 from dream.tools._registry import ToolRegistry
 from dream.utils.clock import Clock
 
@@ -37,10 +38,7 @@ def make_permission_gate(
     clock: Clock | None = None,
 ) -> tuple[PermissionGate, tuple[str, ...]]:
     """Assemble the session policy and return ``(gate, warnings)``."""
-    trusted_tiers = {
-        tool.name: _tier_from_int(tool.declaration.tier_required)
-        for tool in registry.list_tools()
-    }
+    trusted_tiers = _trusted_tiers(registry)
     assembly = build_policy(
         paths, cwd=cwd, trusted_tiers=trusted_tiers, tool_allow=tool_allow, clock=clock
     )
@@ -52,6 +50,38 @@ def make_permission_gate(
     return gate, assembly.warnings
 
 
+def compute_session_role_allowlist(
+    registry: ToolRegistry,
+    *,
+    paths: DreamPaths,
+    cwd: Path,
+    manifest: RoleManifest,
+    clock: Clock | None = None,
+) -> frozenset[str]:
+    """Probe the active sandbox tier and intersect it with the role manifest.
+
+    Returned set is the dispatcher's hard allow-list (Spec 10 decision #8) —
+    a role cannot dispatch a tool outside this set even with an allow-all gate.
+    The same set should also be passed to :func:`make_permission_gate` as
+    ``tool_allow`` so the gate refuses unlisted tools defensively.
+    """
+    trusted_tiers = _trusted_tiers(registry)
+    assembly = build_policy(
+        paths, cwd=cwd, trusted_tiers=trusted_tiers, tool_allow=None, clock=clock
+    )
+    declarations = {tool.name: tool.declaration for tool in registry.list_tools()}
+    return compute_minimum_toolset(
+        manifest, sandbox_tier=assembly.policy.tier, declarations=declarations
+    )
+
+
+def _trusted_tiers(registry: ToolRegistry) -> dict[str, SandboxTier]:
+    return {
+        tool.name: _tier_from_int(tool.declaration.tier_required)
+        for tool in registry.list_tools()
+    }
+
+
 def _tier_from_int(value: int) -> SandboxTier:
     """Map a tool's declared integer tier to a SandboxTier, defaulting safe."""
     for tier in SandboxTier:
@@ -60,4 +90,4 @@ def _tier_from_int(value: int) -> SandboxTier:
     return SandboxTier.READ_ONLY
 
 
-__all__ = ["make_permission_gate"]
+__all__ = ["compute_session_role_allowlist", "make_permission_gate"]

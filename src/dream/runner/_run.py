@@ -17,8 +17,6 @@ from dream.planner import (
     LedgerStep,
     PlannerCallable,
     PlannerLedger,
-    planner_ledger_path,
-    planner_spec_path,
     run_planner,
 )
 from dream.sprint import (
@@ -32,7 +30,7 @@ from dream.sprint import (
     build_contract_from_negotiation,
     is_evaluator_enabled_for_sprint,
     load_pending_carry_items,
-    negotiate_contract,
+    negotiate_contract_async,
     pick_next_pending_step,
     record_evaluation,
     sprint_contract_path,
@@ -182,7 +180,7 @@ async def run_task(
                 carry = load_pending_carry_items(
                     root, task_id=task_id, step_id=step.id
                 )
-                negotiation = negotiate_contract(
+                negotiation = await negotiate_contract_async(
                     evaluator_propose=evaluator_propose,
                     generator_respond=generator_respond,
                     carry_items=carry,
@@ -222,7 +220,7 @@ async def run_task(
 
         # 2c. Evaluator branch (lock-protected, independent of generator lock).
         if enabled:
-            assert contract is not None  # noqa: S101 — invariant guaranteed above
+            assert contract is not None
             with acquire_role_lock(root, task_id=task_id, role="evaluator"):
                 record = await evaluator_run(task_id, sprint_number, contract, step)
                 eval_path = record_evaluation(root, record)

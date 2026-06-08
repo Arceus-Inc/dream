@@ -106,6 +106,7 @@ def build_query_engine(
     on_dispatch: Callable[[DispatchRecord], None] | None = None,
     context_metadata: dict[str, Any] | None = None,
     permission_gate: PermissionGate | None = None,
+    role_allowed_tools: frozenset[str] | None = None,
     limits: SessionLimits | None = None,
     compactor: AutoCompactState | None = None,
     compaction_threshold: float = 0.7,
@@ -128,6 +129,7 @@ def build_query_engine(
         on_dispatch=on_dispatch,
         context_metadata=context_metadata or {},
         permission_gate=permission_gate,
+        role_allowed_tools=role_allowed_tools,
     )
     return QueryEngine(
         streamer=streamer,

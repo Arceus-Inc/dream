@@ -20,8 +20,16 @@ from dream.session import Session, SessionOptions
 
 if TYPE_CHECKING:
     from dream.engine._engine import QueryEngine
+    from dream.planner import PlannerCallable
     from dream.roles import RoleManifest, RoleName
     from dream.runner._role_session import RunRoleResult
+    from dream.runner._run import (
+        EvaluatorRun,
+        GeneratorExecute,
+        RunTaskResult,
+        SprintGoalProvider,
+    )
+    from dream.sprint import EvaluatorPropose, GeneratorRespond
 
 
 # Slice D: the production wiring (Provider -> TurnStreamer adapter via
@@ -138,6 +146,50 @@ class Harness:
         return await _run_role(
             self, role, intent, options=options, harness_dir=harness_dir
         )
+
+    async def run_task(
+        self,
+        *,
+        task_id: str,
+        intent: str,
+        planner: PlannerCallable,
+        generator_execute: GeneratorExecute,
+        evaluator_propose: EvaluatorPropose,
+        generator_respond: GeneratorRespond,
+        evaluator_run: EvaluatorRun,
+        worktree_root: Path | None = None,
+        max_sprints: int | None = None,
+        verification_steps: tuple[dict[str, str], ...] | None = None,
+        goal_for_step: SprintGoalProvider | None = None,
+    ) -> RunTaskResult:
+        """Run an end-to-end task: planner → bounded sprint loop.
+
+        Thin facade over :func:`dream.runner.run_task`. ``worktree_root``
+        defaults to ``self.config.working_dir`` so a Harness with a
+        configured ``working_dir`` is a complete unit. Other optionals
+        are forwarded only when the caller explicitly supplies them, so
+        the runner's defaults remain the single source of truth.
+        """
+        from dream.runner._run import run_task as _run_task
+
+        root = worktree_root if worktree_root is not None else self.config.working_dir
+        kwargs: dict[str, Any] = {
+            "task_id": task_id,
+            "intent": intent,
+            "worktree_root": root,
+            "planner": planner,
+            "generator_execute": generator_execute,
+            "evaluator_propose": evaluator_propose,
+            "generator_respond": generator_respond,
+            "evaluator_run": evaluator_run,
+        }
+        if max_sprints is not None:
+            kwargs["max_sprints"] = max_sprints
+        if verification_steps is not None:
+            kwargs["verification_steps"] = verification_steps
+        if goal_for_step is not None:
+            kwargs["goal_for_step"] = goal_for_step
+        return await _run_task(**kwargs)
 
     # -- lifecycle --------------------------------------------------------
 

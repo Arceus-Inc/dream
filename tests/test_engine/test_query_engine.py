@@ -175,6 +175,39 @@ async def test_build_query_engine_dispatcher_actually_dispatches(
     assert content == "ok"
 
 
+def test_build_query_engine_threads_role_allowed_tools(tmp_path: Path) -> None:
+    """Spec 10-H: ``role_allowed_tools`` must reach the dispatcher so a
+    role cannot widen itself even with an allow-all permission gate."""
+    allowed = frozenset({"file_read", "file_write"})
+
+    engine = build_query_engine(
+        streamer=FakeStreamer(turns=[]),
+        registry=_registry_with(_NopTool()),
+        session_id="sf",
+        working_dir=tmp_path,
+        role_allowed_tools=allowed,
+    )
+
+    assert isinstance(engine.dispatcher, EngineToolDispatcher)
+    assert engine.dispatcher.role_allowed_tools == allowed
+
+
+def test_build_query_engine_role_allowed_tools_defaults_to_none(
+    tmp_path: Path,
+) -> None:
+    """Omitting ``role_allowed_tools`` leaves the dispatcher unconstrained
+    so every existing call site (REPL, ad-hoc sessions) keeps working."""
+    engine = build_query_engine(
+        streamer=FakeStreamer(turns=[]),
+        registry=_registry_with(_NopTool()),
+        session_id="sf",
+        working_dir=tmp_path,
+    )
+
+    assert isinstance(engine.dispatcher, EngineToolDispatcher)
+    assert engine.dispatcher.role_allowed_tools is None
+
+
 # --- private import surface --------------------------------------------------
 
 

@@ -10,9 +10,9 @@ units so each can be tested in isolation.
 from __future__ import annotations
 
 from ._contract import (
+    VALID_VERIFICATION_KINDS,
     NegotiationEntry,
     SprintContract,
-    VALID_VERIFICATION_KINDS,
     sprint_contract_path,
     tech_debt_path,
 )
@@ -37,10 +37,12 @@ from ._negotiation import (
     NegotiationResult,
     build_contract_from_negotiation,
     negotiate_contract,
+    negotiate_contract_async,
 )
 from ._outcome import append_tech_debt, apply_outcome
 
 __all__ = [
+    "VALID_VERIFICATION_KINDS",
     "EvaluationAlreadyRecorded",
     "EvaluationOutcome",
     "EvaluationRecord",
@@ -52,7 +54,6 @@ __all__ = [
     "SprintContract",
     "SprintRole",
     "StepNotPending",
-    "VALID_VERIFICATION_KINDS",
     "acquire_role_lock",
     "append_tech_debt",
     "apply_outcome",
@@ -61,6 +62,7 @@ __all__ = [
     "is_evaluator_enabled_for_sprint",
     "load_pending_carry_items",
     "negotiate_contract",
+    "negotiate_contract_async",
     "pick_next_pending_step",
     "record_evaluation",
     "sprint_contract_path",
