@@ -10,3 +10,4 @@ These are **not** new specs; they are follow-ups to existing numbered specs in
 | # | Deferred from | Title |
 |---|---|---|
 | [01](01-playwright-mcp-ui-verification.md) | `#12c` | Playwright-MCP UI verifier |
+| [02](02-rolling-pass-rate.md) | `#12e` | Rolling pass-rate metric |
