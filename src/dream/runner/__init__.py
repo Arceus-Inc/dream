@@ -37,6 +37,7 @@ or a remote backend.
 
 from __future__ import annotations
 
+from dream.runner._generator_head import make_generator_head
 from dream.runner._planner_head import (
     PlannerHeadParseError,
     make_planner_head,
@@ -65,6 +66,7 @@ __all__ = [
     "RunTaskResult",
     "SprintGoalProvider",
     "SprintRunResult",
+    "make_generator_head",
     "make_planner_head",
     "resolve_role_manifest",
     "run_role",
