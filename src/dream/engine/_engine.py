@@ -29,7 +29,7 @@ from dream.contracts.provider import ProviderCapabilities
 from dream.engine._loop import ToolDispatcher, TurnStreamer
 from dream.engine._records import TurnRecord
 from dream.engine._session import SessionConfig
-from dream.engine._tool_dispatch import DispatchRecord, EngineToolDispatcher
+from dream.engine._tool_dispatch import DispatchRecord, EngineToolDispatcher, PermissionGate
 from dream.observability._tracer import NoopTracer, Tracer
 from dream.services.compact import DEFAULT_KEEP_RECENT
 from dream.services.compact._orchestrator import AutoCompactState
@@ -100,6 +100,7 @@ def build_query_engine(
     max_turns: int = 8,
     on_dispatch: Callable[[DispatchRecord], None] | None = None,
     context_metadata: dict[str, Any] | None = None,
+    permission_gate: PermissionGate | None = None,
     compactor: AutoCompactState | None = None,
     compaction_threshold: float = 0.7,
     compaction_preserve_recent: int = DEFAULT_KEEP_RECENT,
@@ -120,6 +121,7 @@ def build_query_engine(
         scratch_dir=scratch_dir,
         on_dispatch=on_dispatch,
         context_metadata=context_metadata or {},
+        permission_gate=permission_gate,
     )
     return QueryEngine(
         streamer=streamer,

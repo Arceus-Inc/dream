@@ -51,7 +51,8 @@ from dream.services.tool_outputs import offload_tool_output
 from dream.tools._context import ToolExecutionContext
 from dream.tools._registry import ToolRegistry
 
-_PermissionGate = Callable[[PermissionRequest], PermissionDecision]
+PermissionGate = Callable[[PermissionRequest], PermissionDecision]
+"""A pure decision function the dispatcher consults before executing a tool."""
 
 
 @dataclass(frozen=True)
@@ -89,7 +90,7 @@ class EngineToolDispatcher:
     on_dispatch: _DispatchObserver | None = None
     # Optional permission gate (Spec 13C): runs before execute. ``None`` means
     # no gating, so existing call sites are unaffected.
-    permission_gate: _PermissionGate | None = None
+    permission_gate: PermissionGate | None = None
     # Opaque per-session metadata merged into every ToolExecutionContext. Keeps
     # the engine skill-agnostic: the skills layer stuffs its SkillContext here
     # under its own key and the skill tool reads it back (Spec 06 slice 2).
@@ -259,4 +260,4 @@ class EngineToolDispatcher:
         )
 
 
-__all__ = ["DispatchRecord", "EngineToolDispatcher"]
+__all__ = ["DispatchRecord", "EngineToolDispatcher", "PermissionGate"]

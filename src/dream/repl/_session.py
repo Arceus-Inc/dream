@@ -26,6 +26,7 @@ from dream.engine._adapter_openai import (
     httpx_chat_completion_stream,
 )
 from dream.engine._engine import QueryEngine, build_query_engine
+from dream.engine._permission_gate import make_permission_gate
 from dream.events import (
     Compacted,
     Error,
@@ -202,12 +203,19 @@ def build_default_harness(
             session_id=session_id,
             task_id=session_id,
         )
+        # Spec 13C: gate every tool call against the sandbox policy assembled
+        # from the registry's declared tiers + operator .harness config. Stale
+        # promotions etc. surface as warnings (data); not emitted here yet.
+        permission_gate, _gate_warnings = make_permission_gate(
+            tool_registry, paths=paths, cwd=working_dir
+        )
         return build_query_engine(
             streamer=streamer,
             registry=tool_registry,
             session_id=session_id,
             working_dir=working_dir,
             max_turns=options.max_turns or max_turns,
+            permission_gate=permission_gate,
             context_metadata=_build_context_metadata(
                 skill_context=skill_context, task_context=task_context
             ),
