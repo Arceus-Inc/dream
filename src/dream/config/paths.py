@@ -160,6 +160,13 @@ class DreamPaths:
         """Operator trust-ramp promotions for discovered tools/MCPs (Spec 13B)."""
         return self.repo / ".harness" / "tool-tier-overrides.toml"
 
+    def role_manifest_overlay(self, role: str) -> Path:
+        """Operator overlay for a role manifest (Spec 10 §Artefact shapes).
+
+        Layered over the bundled default by :func:`dream.roles.load_role_manifest`.
+        """
+        return self.repo / ".harness" / "roles" / f"{role}.toml"
+
     def checkpoint_ref(self, task_id: str, n: int | str) -> str:
         return f"{CHECKPOINT_REF_PREFIX}/{_checked_task_id(task_id)}/{n}"
 
