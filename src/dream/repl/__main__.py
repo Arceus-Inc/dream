@@ -195,15 +195,14 @@ def main(argv: list[str] | None = None) -> int:
             system=args.system,
             max_turns=args.max_turns,
         )
-    if args.command == "cron":
-        if args.cron_command == "run":
-            from dream.repl._cron_cli import run_cron_cli
+    if args.command == "cron" and args.cron_command == "run":
+        from dream.repl._cron_cli import run_cron_cli
 
-            return run_cron_cli(
-                kind=args.kind,
-                working_dir=args.working_dir,
-                timeout=args.timeout,
-            )
+        return run_cron_cli(
+            kind=args.kind,
+            working_dir=args.working_dir,
+            timeout=args.timeout,
+        )
     return 2
 
 

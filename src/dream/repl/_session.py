@@ -13,6 +13,7 @@ a manual Spec 04 compaction on the bound engine's transcript).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sys
 from collections.abc import Callable, Mapping
 from dataclasses import fields
@@ -130,9 +131,10 @@ def build_default_harness(
     # the exec-plans root is the parent of ``exec_plans_active`` since the FSM
     # appends the state segment itself via :func:`plan_dir`.
     task_manager = BackgroundTaskManager(tasks_dir=paths.tasks_dir)
+    cron_registry_path = paths.dream_dir / "cron" / "registry.json"
     task_context = TaskSessionContext(
         manager=task_manager,
-        cron_registry_path=paths.dream_dir / "cron" / "registry.json",
+        cron_registry_path=cron_registry_path,
         plans_root=paths.exec_plans_active.parent,
     )
     # Spec 07 trigger surface: ensure the four default cron kinds exist on
@@ -142,7 +144,7 @@ def build_default_harness(
     # restart.
     cron_service.bootstrap_default_manifests(working_dir)
     cron_service.ensure_registry_seeded(
-        task_context.cron_registry_path,
+        cron_registry_path,
         load_cron_manifests(Path(working_dir) / CRON_MANIFEST_DIR),
     )
     # 128K is the default we use throughout Spec 02; the watch panel /
@@ -947,10 +949,8 @@ def run_session_repl(
                     await mcp_manager.close()
                 if cron_task is not None:
                     cron_task.cancel()
-                    try:
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
                         await cron_task
-                    except (asyncio.CancelledError, Exception):
-                        pass
                 for un in unsubs:
                     un()
         return 0
