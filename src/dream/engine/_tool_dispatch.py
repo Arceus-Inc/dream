@@ -91,12 +91,20 @@ class EngineToolDispatcher:
     # Optional permission gate (Spec 13C): runs before execute. ``None`` means
     # no gating, so existing call sites are unaffected.
     permission_gate: PermissionGate | None = None
+    # Optional capability-minimisation set (Spec 10 decision #8). When set, the
+    # dispatcher hard-refuses any tool name not in the set *before* the
+    # permission gate -- a role cannot widen itself even with an allow-all gate.
+    # ``None`` means "no role constraint", so existing call sites are unaffected.
+    role_allowed_tools: frozenset[str] | None = None
     # Opaque per-session metadata merged into every ToolExecutionContext. Keeps
     # the engine skill-agnostic: the skills layer stuffs its SkillContext here
     # under its own key and the skill tool reads it back (Spec 06 slice 2).
     context_metadata: dict[str, Any] = field(default_factory=dict)
 
     async def dispatch(self, name: str, input: dict[str, Any]) -> tuple[str, bool]:
+        if self.role_allowed_tools is not None and name not in self.role_allowed_tools:
+            return self._role_refused(name)
+
         tool = self.registry.get(name)
         if tool is None:
             return self._unknown(name)
@@ -199,6 +207,19 @@ class EngineToolDispatcher:
             elapsed=0.0,
             offloaded=False,
         )
+        return content, True
+
+    def _role_refused(self, name: str) -> tuple[str, bool]:
+        allowed = self.role_allowed_tools or frozenset()
+        allowed_list = ", ".join(sorted(allowed)) or "<none>"
+        content = (
+            f"Tool {name!r} is not in this role's manifest.\n"
+            f"root_cause: tool-not-in-role-manifest\n"
+            f"safe_retry: pick one of the manifest-allowed tools: {allowed_list}\n"
+            f"stop_condition: do not request unlisted tools; emit "
+            f"request_capability if the role lacks a capability it needs"
+        )
+        self._record(name, is_read_only=True, is_error=True, elapsed=0.0, offloaded=False)
         return content, True
 
     def _denied(
