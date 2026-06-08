@@ -359,6 +359,7 @@ def test_run_session_repl_with_injected_harness_returns_zero(
     out = io.StringIO()
     rc = run_session_repl(
         events_path=tmp_path / "e.jsonl",
+        working_dir=tmp_path,  # clean worktree: skip the session-start threat scan
         harness=harness,
         input_func=_scripted_input(["/quit"]),
         output=out,
@@ -400,6 +401,7 @@ def test_run_session_repl_emits_stopped_even_on_exception(tmp_path: Path) -> Non
     with pytest.raises(RuntimeError, match="blew up"):
         run_session_repl(
             events_path=events_path,
+            working_dir=tmp_path,  # clean worktree: skip the session-start threat scan
             harness=harness,
             input_func=_scripted_input(["hi"]),
             output=out,
