@@ -9,12 +9,13 @@ stop_condition) in metadata so ``derive_observation`` lifts them into
 from __future__ import annotations
 
 import itertools
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 from dream.contracts.tool import ToolResult
-from dream.tools._base import BaseTool, ToolDeclaration
+from dream.tools._base import BaseTool, ToolDeclaration, ToolEffects
 from dream.tools._context import ToolExecutionContext
 from dream.tools._paths import PathEscapesRoot, resolve_within
 
@@ -38,6 +39,12 @@ class FileReadTool(BaseTool):
     description = "Read a text file from the local repository."
     declaration = ToolDeclaration(risk="safe", tier_required=0, timeout_seconds=10.0)
     input_model = FileReadInput
+
+    def effects_for(self, input: dict[str, Any]) -> ToolEffects:
+        # A read still reports its path so the credential guard can block
+        # reading a secret (the guard is effect-agnostic).
+        args = FileReadInput.model_validate(input)
+        return ToolEffects(target_paths=(Path(args.path),))
 
     async def execute(self, input: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
         args = FileReadInput.model_validate(input)
