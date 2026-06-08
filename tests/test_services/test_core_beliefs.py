@@ -72,6 +72,14 @@ def test_missing_file_is_empty_with_warning(tmp_path: Path) -> None:
     assert orders.warnings
 
 
+def test_non_utf8_file_does_not_crash(tmp_path: Path) -> None:
+    # A core-beliefs.md with invalid UTF-8 bytes must not crash session start.
+    p = tmp_path / "core-beliefs.md"
+    p.write_bytes(b"## Standing orders\n- always \xff run tests\n")
+    orders = extract_standing_orders(p)  # must not raise
+    assert orders.always  # decoded leniently, the bullet still extracted
+
+
 def test_non_bullet_lines_ignored(tmp_path: Path) -> None:
     orders = extract_standing_orders(_write(tmp_path, "## Standing orders\nSome prose, not a bullet.\n- a\n"))
     assert orders.always == ("a",)

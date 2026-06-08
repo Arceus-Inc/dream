@@ -32,7 +32,9 @@ class StandingOrders:
 def extract_standing_orders(path: Path) -> StandingOrders:
     """Parse ``core-beliefs.md`` into ALWAYS / NEVER bullet lists (verbatim)."""
     try:
-        text = path.read_text(encoding="utf-8")
+        # errors="replace": a core-beliefs.md with stray non-UTF-8 bytes must not
+        # crash session start — decode leniently and extract what's parseable.
+        text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return StandingOrders(warnings=("core-beliefs.md not found or unreadable",))
 
