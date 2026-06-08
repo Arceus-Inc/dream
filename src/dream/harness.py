@@ -20,6 +20,8 @@ from dream.session import Session, SessionOptions
 
 if TYPE_CHECKING:
     from dream.engine._engine import QueryEngine
+    from dream.roles import RoleManifest, RoleName
+    from dream.runner._role_session import RunRoleResult
 
 
 # Slice D: the production wiring (Provider -> TurnStreamer adapter via
@@ -103,6 +105,39 @@ class Harness:
         if self.config._engine_factory is not None:
             engine = self.config._engine_factory(session_id, opts)
         return Session(id=session_id, options=opts, _engine=engine)
+
+    async def run_role(
+        self,
+        role: RoleName | RoleManifest,
+        intent: str,
+        *,
+        options: SessionOptions | None = None,
+        harness_dir: Path | None = None,
+    ) -> RunRoleResult:
+        """Run one session as a named role; return its assistant text + cost.
+
+        Resolves the role's manifest (bundled default; overlay-merged
+        from ``{harness_dir}/roles/{role}.toml`` when given), prepends
+        the manifest's system prompt to ``options.system_prompt``, marks
+        the manifest on ``SessionOptions.metadata`` (keys
+        ``dream.role`` / ``dream.role_manifest``) so a role-aware engine
+        factory can intersect the registered tools with the role's
+        allow-list and pick its permission mode, then drains the session
+        to completion.
+
+        The primitive the production planner / generator / evaluator
+        heads compose into :func:`dream.runner.run_task` — see spec 10
+        slice G2.
+        """
+        # Local import keeps the harness <-> runner module graph
+        # one-way: ``dream.runner`` imports from ``dream.planner`` /
+        # ``dream.sprint`` / ``dream.swarm``; pulling it in at module
+        # scope here would add those to every Harness import.
+        from dream.runner._role_session import run_role as _run_role
+
+        return await _run_role(
+            self, role, intent, options=options, harness_dir=harness_dir
+        )
 
     # -- lifecycle --------------------------------------------------------
 
