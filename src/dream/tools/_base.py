@@ -22,6 +22,7 @@ from __future__ import annotations
 import inspect
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, get_args
 
 from pydantic import BaseModel
@@ -63,6 +64,22 @@ class ToolDeclaration:
             raise ToolDeclarationError(f"tier_required must be >= 0, got {self.tier_required}")
         if self.timeout_seconds <= 0:
             raise ToolDeclarationError(f"timeout_seconds must be > 0, got {self.timeout_seconds}")
+
+
+@dataclass(frozen=True)
+class ToolEffects:
+    """The side-effecting surface of one specific tool invocation.
+
+    The engine's permission gate (Spec 13C) turns this into a
+    ``PermissionRequest``. The default is *no* effects (pure / compute tools);
+    tools that touch the filesystem, shell, or network override
+    :meth:`BaseTool.effects_for`. Read tools still report their target path so
+    the credential guard can block reading a secret.
+    """
+
+    target_paths: tuple[Path, ...] = ()
+    command: str | None = None
+    network_host: str | None = None
 
 
 @dataclass(frozen=True)
@@ -241,6 +258,16 @@ class BaseTool(ABC):
         del input
         return self.is_read_only()
 
+    def effects_for(self, input: dict[str, Any]) -> ToolEffects:
+        """Per-call side-effect surface, for permission gating.
+
+        Defaults to no effects. Tools that touch the filesystem, shell, or
+        network override this to report the paths / command / host of *this*
+        invocation so the engine can gate it (Spec 13C).
+        """
+        del input
+        return ToolEffects()
+
     def to_api_schema(self) -> dict[str, Any]:
         """Return the schema in API shape (Anthropic / OpenAI tools schema)."""
         return {
@@ -257,5 +284,6 @@ __all__ = [
     "RiskClass",
     "ToolDeclaration",
     "ToolDeclarationError",
+    "ToolEffects",
     "derive_observation",
 ]

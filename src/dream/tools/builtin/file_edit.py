@@ -8,12 +8,13 @@ the first occurrence (matching OpenHarness semantics) but reports
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 from dream.contracts.tool import ToolResult
-from dream.tools._base import BaseTool, ToolDeclaration
+from dream.tools._base import BaseTool, ToolDeclaration, ToolEffects
 from dream.tools._context import ToolExecutionContext
 from dream.tools._paths import PathEscapesRoot, resolve_within
 from dream.utils.fs import atomic_write_text
@@ -35,6 +36,10 @@ class FileEditTool(BaseTool):
     description = "Edit an existing text file by replacing a substring."
     declaration = ToolDeclaration(risk="mutating", tier_required=1, timeout_seconds=10.0)
     input_model = FileEditInput
+
+    def effects_for(self, input: dict[str, Any]) -> ToolEffects:
+        args = FileEditInput.model_validate(input)
+        return ToolEffects(target_paths=(Path(args.path),))
 
     async def execute(self, input: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
         args = FileEditInput.model_validate(input)

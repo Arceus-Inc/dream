@@ -23,7 +23,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from dream.contracts.tool import ToolResult
-from dream.tools._base import BaseTool, ToolDeclaration
+from dream.tools._base import BaseTool, ToolDeclaration, ToolEffects
 from dream.tools._context import ToolExecutionContext
 
 _OUTPUT_CAP = 12_000
@@ -106,6 +106,10 @@ class BashTool(BaseTool):
     description = "Run a shell command in the local repository."
     declaration = ToolDeclaration(risk="mutating", tier_required=1, timeout_seconds=600.0)
     input_model = BashInput
+
+    def effects_for(self, input: dict[str, Any]) -> ToolEffects:
+        args = BashInput.model_validate(input)
+        return ToolEffects(command=args.command)
 
     def is_read_only_for(self, input: dict[str, Any]) -> bool:
         command = str(input.get("command", "")).strip()

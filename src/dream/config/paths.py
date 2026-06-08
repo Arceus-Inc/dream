@@ -152,6 +152,14 @@ class DreamPaths:
         """Operator-declared verification-failure → tech-debt matchers (Spec 12e)."""
         return self.repo / ".harness" / "tech-debt-matchers.toml"
 
+    def sandbox_config(self) -> Path:
+        """Operator sandbox posture: tier, extra-allowed roots, credential extras (Spec 13B)."""
+        return self.repo / ".harness" / "sandbox.toml"
+
+    def tool_tier_overrides(self) -> Path:
+        """Operator trust-ramp promotions for discovered tools/MCPs (Spec 13B)."""
+        return self.repo / ".harness" / "tool-tier-overrides.toml"
+
     def checkpoint_ref(self, task_id: str, n: int | str) -> str:
         return f"{CHECKPOINT_REF_PREFIX}/{_checked_task_id(task_id)}/{n}"
 
