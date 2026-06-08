@@ -148,6 +148,10 @@ class DreamPaths:
         """The verification report JSON for a task (Spec 12c)."""
         return self.sidecar(task_id) / "metrics" / "verification-report.json"
 
+    def tech_debt_matchers(self) -> Path:
+        """Operator-declared verification-failure → tech-debt matchers (Spec 12e)."""
+        return self.repo / ".harness" / "tech-debt-matchers.toml"
+
     def checkpoint_ref(self, task_id: str, n: int | str) -> str:
         return f"{CHECKPOINT_REF_PREFIX}/{_checked_task_id(task_id)}/{n}"
 
