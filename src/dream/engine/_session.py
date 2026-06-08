@@ -77,6 +77,7 @@ from dream.engine._reviewer import ReviewerConfig
 from dream.engine._transitions import TransitionBus, TransitionEvent
 from dream.observability._events import state_transition_attrs, validator_finding_attrs
 from dream.observability._tracer import NoopTracer, Tracer
+from dream.permissions import SessionLimiter
 from dream.services.compact import DEFAULT_KEEP_RECENT
 from dream.services.compact._orchestrator import (
     AutoCompactState,
@@ -118,6 +119,9 @@ class SessionConfig:
     compaction_capabilities: ProviderCapabilities | None = None
     tracer: Tracer = field(default_factory=NoopTracer)
     model: str = ""
+    # Spec 13D: hard per-session limits. A fresh limiter per session means
+    # counters never roll forward; ``None`` disables enforcement.
+    limiter: SessionLimiter | None = None
 
     def __post_init__(self) -> None:
         # 0/negative would satisfy ``consecutive_timeouts >= max`` immediately
@@ -448,6 +452,17 @@ async def run_session(
         )
         yield record
         total_usage = total_usage + turn_usage
+
+        # Spec 13D: count this turn's usage + tool calls and abort the session
+        # when a hard cap is breached. Enforcement is at turn granularity — the
+        # next turn never starts once a counter is tripped.
+        if config.limiter is not None:
+            config.limiter.record_tokens(turn_usage.input_tokens + turn_usage.output_tokens)
+            for _ in tools_called:
+                config.limiter.record_tool_call()
+            if (breached := config.limiter.breached()) is not None:
+                abort_reason = breached
+                break
 
         # Checkpoint only on a successful turn (spec 03 #4).
         # Best-effort: a snapshot writer crash must not break the session.
