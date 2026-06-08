@@ -350,3 +350,65 @@ Scenario: Recovery intent is auditable in git
 - Model/provider failover and cooldowns (→ `#02`/`#11`).
 - Multi-host claim distribution and cross-host clock authority (deferred — single-host v1).
 - The autopilot/swarm loops that schedule and run the work (→ `#09`, `#10`).
+
+---
+
+## Parked work tracked here (not part of 10p5)
+
+The following are un-built pieces parked in this doc for visibility. They are
+**unrelated to recovery/liveness** and will graduate to their own specs/slices
+when built — they're recorded here so the remaining-work surface isn't lost.
+
+### `#12d` — Evaluator (rubric-based sprint verdict)
+
+The separate-context **evaluator** that grades a generator's sprint against a
+negotiated rubric and renders `pass | needs-changes | fail`, mapped to the
+ledger by `#10` (`pass` → `done`, `needs-changes` → `in_progress`, `fail` →
+`blocked` + tech-debt entry). Writes one **evaluation record** per sprint
+(`docs/evals/{task-id}/sprint-{n}.json`) — the score + rubric outcome.
+
+- **Why parked:** depends on `#10`'s sprint contract (the thing being graded) and
+  the rubric content/weights live here. The `evaluation.record` trace event
+  (`#12a`) is already shipped, and `#12c`'s verification report feeds it.
+- **Blocking for:** the rolling pass-rate (below) and `#11`'s dream-phase
+  consolidation signal — both read evaluation records.
+
+### `#12e` left-over — Rolling pass-rate metric (= left-over [#02](../left-over/02-rolling-pass-rate.md))
+
+Per-axis / per-task / per-session **pass-rate** computed over a window of
+evaluation records, surfaced to the `#11` dream phase as a quality signal.
+
+- **Why parked:** blocked on `#12d` (the producer of rubric outcomes) — there is
+  no record store to aggregate until the evaluator exists. Already captured as
+  left-over **#02**; cross-referenced here.
+- **Reuse:** likely the `#12b` `query_metrics` shape over a derived metric once
+  `evaluation.record` events carry the outcome.
+
+### `#13` — Hook bus (observer-only extension surface)
+
+A **fire-and-forget, observer-only** hook bus: handlers **never veto**, each
+bounded by a **1-second** wall-clock deadline, stable dot-separated
+`{subject}.{verb}.{tense}` names, catalogue in `docs/_schemas/hook-catalogue.md`
+(14-entry minimum). A raising handler is logged and ignored; it cannot prevent
+the lifecycle event.
+
+- **Why parked:** buildable now (no blockers) but the start of a larger
+  extension-surface arc; lower priority than the security envelope (`13A–F`).
+- **Foundational for:** plugins (below), which subscribe to hooks.
+
+### `#13` — Plugins + slash-command registry (repo-local, capability-gated)
+
+Repo-local plugins under `plugins/{name}/` with a `manifest.toml`
+(name/version/entry/hook-subscriptions/slash-commands/required-capabilities) and
+a `setup(runtime)`/`teardown()` lifecycle. **Opt-in** via
+`.harness/plugins-enabled.toml`; **in-process** for v1; **capability-gated** —
+the runner refuses to load a plugin whose declared capabilities exceed the
+session's sandbox tier (`13A`/`13B`). Plugin failure never aborts the session;
+`/reload-plugins` re-runs the load. Plus the flat slash-command registry
+(duplicate-refusal, built-ins: `/help`, `/status`, `/reset`, `/replan`,
+`/sandbox-tier`, `/reload-plugins`).
+
+- **Why parked:** depends on the hook bus (above) and the `#13` tier model
+  (shipped in `13A`/`13B`); the second half of `#13`'s extension surface.
+- **Note:** the `permissions/` tier model (`13A`/`13B`) is exactly the gate a
+  plugin's declared capabilities are checked against.
