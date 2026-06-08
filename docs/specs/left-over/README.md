@@ -14,3 +14,4 @@ These are **not** new specs; they are follow-ups to existing numbered specs in
 | [03](03-network-call-session-limit.md) | `#13d` | Network-call session limit |
 | [04](04-lurkr-mcp-and-injection-scan.md) | `#13e` | Lurkr unverified_mcp + prompt_interpolation |
 | [05](05-session-start-structural-validator-wiring.md) | `#13e` | Session-start structural validator wiring |
+| [06](06-core-beliefs-compaction-survival.md) | `#13f` | Core-beliefs digest survives compaction |

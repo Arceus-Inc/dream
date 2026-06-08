@@ -92,12 +92,14 @@ async def test_write_report_roundtrips(tmp_path: Path) -> None:
 
 
 async def test_write_report_offloads_large_output(tmp_path: Path) -> None:
-    huge = "x" * 200_000
-    report = await run_verification([_spec(f"printf '{huge}'")], cwd=tmp_path)
+    # Produce ~200 KB of output from a SHORT command: embedding the payload in
+    # the command string exceeds Linux's per-argument limit (MAX_ARG_STRLEN,
+    # 128 KB), so the subprocess fails to spawn there (it works on macOS).
+    report = await run_verification([_spec("yes x | head -n 100000")], cwd=tmp_path)
     path = tmp_path / "report.json"
     write_report(report, path, scratch_dir=tmp_path / "scratch")
     payload = json.loads(path.read_text(encoding="utf-8"))
     step = payload["steps"][0]
     # The inline stdout is truncated and an offload ref points to the full output.
-    assert len(step["stdout"]) < len(huge)
+    assert len(step["stdout"]) < 200_000
     assert step["stdout_offloaded_to"]

@@ -176,9 +176,12 @@ async def run_cron_kind(
         runs_root=_runs_root(wd),
         argv=_default_cron_argv(manifest),
     )
-    if registry_path is not None and Path(registry_path).exists():
-        if get_cron_job(registry_path, kind) is not None:
-            mark_job_run(registry_path, kind, success=True)
+    if (
+        registry_path is not None
+        and Path(registry_path).exists()
+        and get_cron_job(registry_path, kind) is not None
+    ):
+        mark_job_run(registry_path, kind, success=True)
     return record
 
 
