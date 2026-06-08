@@ -20,8 +20,9 @@ trailing ``/**`` also matches the directory itself.
 from __future__ import annotations
 
 import os
-import re
 from pathlib import Path
+
+from dream.permissions._globs import glob_to_regex
 
 #: Fixed, non-removable credential patterns.
 BUILTIN_CREDENTIAL_PATTERNS: tuple[str, ...] = (
@@ -40,36 +41,7 @@ BUILTIN_CREDENTIAL_PATTERNS: tuple[str, ...] = (
 )
 
 
-def _glob_to_regex(pattern: str) -> re.Pattern[str]:
-    """Translate a credential glob into an anchored regex (used with fullmatch)."""
-    expanded = Path(pattern).expanduser().as_posix() if pattern.startswith("~") else pattern
-    out: list[str] = []
-    i, n = 0, len(expanded)
-    while i < n:
-        if expanded.startswith("/**", i) and i + 3 == n:
-            out.append("(?:/.*)?")  # trailing /** : the directory or anything under it
-            i += 3
-        elif expanded.startswith("**/", i):
-            out.append("(?:.*/)?")  # any number of leading directories
-            i += 3
-        elif expanded.startswith("**", i):
-            out.append(".*")
-            i += 2
-        elif expanded[i] == "*":
-            out.append("[^/]*")
-            i += 1
-        elif expanded[i] == "?":
-            out.append("[^/]")
-            i += 1
-        else:
-            out.append(re.escape(expanded[i]))
-            i += 1
-    return re.compile("".join(out))
-
-
-_BUILTIN_REGEXES: tuple[re.Pattern[str], ...] = tuple(
-    _glob_to_regex(p) for p in BUILTIN_CREDENTIAL_PATTERNS
-)
+_BUILTIN_REGEXES = tuple(glob_to_regex(p) for p in BUILTIN_CREDENTIAL_PATTERNS)
 
 
 def _candidates(path: Path, cwd: Path) -> tuple[str, ...]:
@@ -99,5 +71,5 @@ def is_credential_path(path: Path, cwd: Path, extra: tuple[str, ...] = ()) -> bo
     symlinked parent nor a symlink *into* a credential dir can dodge the guard.
     """
     forms = _candidates(path, cwd)
-    regexes = _BUILTIN_REGEXES + tuple(_glob_to_regex(p) for p in extra)
+    regexes = _BUILTIN_REGEXES + tuple(glob_to_regex(p) for p in extra)
     return any(rx.fullmatch(form) is not None for rx in regexes for form in forms)
