@@ -12,3 +12,4 @@ These are **not** new specs; they are follow-ups to existing numbered specs in
 | [01](01-playwright-mcp-ui-verification.md) | `#12c` | Playwright-MCP UI verifier |
 | [02](02-rolling-pass-rate.md) | `#12e` | Rolling pass-rate metric |
 | [03](03-network-call-session-limit.md) | `#13d` | Network-call session limit |
+| [04](04-lurkr-mcp-and-injection-scan.md) | `#13e` | Lurkr unverified_mcp + prompt_interpolation |
