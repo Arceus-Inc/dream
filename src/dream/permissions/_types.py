@@ -19,13 +19,31 @@ class SandboxTier(IntEnum):
     """The four sandbox postures, ordered by capability.
 
     ``IntEnum`` makes the subset relation a plain comparison:
-    ``READ_ONLY < REPO_WRITE < REPO_WRITE_NET < UNRESTRICTED``.
+    ``READ_ONLY < REPO_WRITE < REPO_WRITE_NET < UNRESTRICTED``. Each member also
+    carries its config ``wire`` string (the form used in ``.harness/*.toml``),
+    so the string<->tier mapping lives on the member rather than a lookup table.
     """
 
-    READ_ONLY = 0
-    REPO_WRITE = 1
-    REPO_WRITE_NET = 2
-    UNRESTRICTED = 3
+    READ_ONLY = (0, "read-only")
+    REPO_WRITE = (1, "repo-write")
+    REPO_WRITE_NET = (2, "repo-write+net-allowlist")
+    UNRESTRICTED = (3, "unrestricted")
+
+    wire: str
+
+    def __new__(cls, value: int, wire: str) -> SandboxTier:
+        member = int.__new__(cls, value)
+        member._value_ = value
+        member.wire = wire
+        return member
+
+    @classmethod
+    def from_wire(cls, wire: str) -> SandboxTier:
+        """Resolve a config wire string to a tier, or raise ``ValueError``."""
+        for member in cls:
+            if member.wire == wire:
+                return member
+        raise ValueError(f"unknown sandbox tier {wire!r}")
 
 
 class Effect(Enum):

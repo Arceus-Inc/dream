@@ -137,3 +137,13 @@ def test_dreampaths_is_frozen(tmp_path: Path) -> None:
     p = DreamPaths.resolve(tmp_path, env={})
     with pytest.raises(FrozenInstanceError):
         p.repo = tmp_path  # type: ignore[misc]
+
+
+def test_sandbox_config_path(tmp_path: Path) -> None:
+    p = DreamPaths.resolve(tmp_path, env={})
+    assert p.sandbox_config() == p.repo / ".harness" / "sandbox.toml"
+
+
+def test_tool_tier_overrides_path(tmp_path: Path) -> None:
+    p = DreamPaths.resolve(tmp_path, env={})
+    assert p.tool_tier_overrides() == p.repo / ".harness" / "tool-tier-overrides.toml"
