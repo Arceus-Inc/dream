@@ -37,6 +37,7 @@ from dream.sprint import EvaluationRecord
 if TYPE_CHECKING:
     from dream.harness import Harness
     from dream.planner import LedgerStep
+    from dream.runner._observer import RunTaskObserver
     from dream.sprint import SprintContract
 
 __all__ = [
@@ -230,6 +231,7 @@ def make_evaluator_head(
     *,
     harness_dir: Path | None = None,
     evaluator_version: str = DEFAULT_EVALUATOR_VERSION,
+    observer: RunTaskObserver | None = None,
 ) -> Callable[
     [str, int, SprintContract, LedgerStep],
     Awaitable[EvaluationRecord],
@@ -262,7 +264,7 @@ def make_evaluator_head(
             step=step,
         )
         result = await harness.run_role(
-            "evaluator", prompt, harness_dir=harness_dir
+            "evaluator", prompt, harness_dir=harness_dir, observer=observer
         )
         data = _extract_verdict_json(result.final_text)
         return _coerce_record(

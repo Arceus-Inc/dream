@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from dream.harness import Harness
     from dream.planner import LedgerStep
+    from dream.runner._observer import RunTaskObserver
     from dream.sprint import SprintContract
 
 __all__ = ["make_generator_head"]
@@ -111,6 +112,7 @@ def make_generator_head(
     harness: Harness,
     *,
     harness_dir: Path | None = None,
+    observer: RunTaskObserver | None = None,
 ) -> Callable[
     [str, int, SprintContract | None, LedgerStep],
     Awaitable[None],
@@ -123,7 +125,8 @@ def make_generator_head(
     on a mid-stream engine error.
 
     ``harness_dir`` is forwarded so per-task role overlays in
-    ``{harness_dir}/roles/generator.toml`` are honoured.
+    ``{harness_dir}/roles/generator.toml`` are honoured. ``observer``
+    is forwarded so the generator's text and tool calls stream live.
     """
 
     async def generator(
@@ -139,7 +142,7 @@ def make_generator_head(
             step=step,
         )
         await harness.run_role(
-            "generator", prompt, harness_dir=harness_dir
+            "generator", prompt, harness_dir=harness_dir, observer=observer
         )
 
     return generator

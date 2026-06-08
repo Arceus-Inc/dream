@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from dream.harness import Harness
+    from dream.runner._observer import RunTaskObserver
     from dream.sprint import NegotiationEntry
 
 __all__ = [
@@ -203,7 +204,10 @@ def _coerce_response(data: Any) -> tuple[bool, list[str] | None]:
 
 
 def make_evaluator_propose_head(
-    harness: Harness, *, harness_dir: Path | None = None
+    harness: Harness,
+    *,
+    harness_dir: Path | None = None,
+    observer: RunTaskObserver | None = None,
 ) -> Callable[[int, list[NegotiationEntry]], Awaitable[list[str]]]:
     """Build an async :data:`~dream.sprint.EvaluatorPropose` over a harness.
 
@@ -222,7 +226,7 @@ def make_evaluator_propose_head(
             example=_PROPOSAL_EXAMPLE,
         )
         result = await harness.run_role(
-            "evaluator", prompt, harness_dir=harness_dir
+            "evaluator", prompt, harness_dir=harness_dir, observer=observer
         )
         data = _extract_payload(
             result.final_text,
@@ -236,7 +240,10 @@ def make_evaluator_propose_head(
 
 
 def make_generator_respond_head(
-    harness: Harness, *, harness_dir: Path | None = None
+    harness: Harness,
+    *,
+    harness_dir: Path | None = None,
+    observer: RunTaskObserver | None = None,
 ) -> Callable[
     [int, list[NegotiationEntry], list[str]],
     Awaitable[tuple[bool, list[str] | None]],
@@ -261,7 +268,7 @@ def make_generator_respond_head(
             example=_RESPONSE_EXAMPLE,
         )
         result = await harness.run_role(
-            "generator", prompt, harness_dir=harness_dir
+            "generator", prompt, harness_dir=harness_dir, observer=observer
         )
         data = _extract_payload(
             result.final_text,

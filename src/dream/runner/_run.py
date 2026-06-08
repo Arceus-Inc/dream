@@ -19,6 +19,7 @@ from dream.planner import (
     PlannerLedger,
     run_planner,
 )
+from dream.runner._observer import RunTaskObserver
 from dream.sprint import (
     EvaluationOutcome,
     EvaluatorPropose,
@@ -131,16 +132,28 @@ async def run_task(
     max_sprints: int = 10,
     verification_steps: tuple[dict[str, str], ...] = (),
     goal_for_step: SprintGoalProvider | None = None,
+    observer: RunTaskObserver | None = None,
 ) -> RunTaskResult:
     """Compose a full task: planner → bounded sprint loop → done/blocked.
 
-    See module docstring for the per-sprint algorithm.
+    See module docstring for the per-sprint algorithm. When ``observer``
+    is supplied, a progress event is dispatched at every boundary
+    (planner start/end, sprint start/end, contract written, generator /
+    evaluator start/end, negotiation cap, role-session opened/closed +
+    streamed text & tool calls). See :mod:`dream.runner._observer`.
     """
     if max_sprints < 0:
         raise ValueError(f"max_sprints must be >= 0, got {max_sprints}")
 
     root = Path(worktree_root)
     goal_provider = goal_for_step or _default_goal
+
+    def _emit(event: dict[str, Any]) -> None:
+        if observer is not None:
+            observer.on_event(event)
+
+    _emit({"kind": "task.started", "task_id": task_id, "intent": intent})
+    _emit({"kind": "planner.started", "task_id": task_id})
 
     # 1. Planner — runs once, writes both artefacts.
     planner_result = await run_planner(
@@ -155,6 +168,15 @@ async def run_task(
     spec_path = planner_result.spec_path
 
     ledger = PlannerLedger.load(ledger_path)
+    _emit(
+        {
+            "kind": "planner.completed",
+            "task_id": task_id,
+            "spec_path": str(spec_path),
+            "ledger_path": str(ledger_path),
+            "step_count": len(ledger.steps),
+        }
+    )
     sprints: list[SprintRunResult] = []
 
     # 2. Sprint loop.
@@ -169,6 +191,15 @@ async def run_task(
         contract_path: Path | None = None
         eval_path: Path | None = None
         outcome: EvaluationOutcome | None = None
+
+        _emit(
+            {
+                "kind": "sprint.started",
+                "sprint_number": sprint_number,
+                "step_id": step.id,
+                "step_description": step.description,
+            }
+        )
 
         # 2a. Generator: lock-protected (criterion #14).
         with acquire_role_lock(root, task_id=task_id, role="generator"):
@@ -187,6 +218,13 @@ async def run_task(
                 )
                 if negotiation.warning_event is not None:
                     sprint_events.append(negotiation.warning_event)
+                    _emit(
+                        {
+                            "kind": "negotiation.imposed",
+                            "sprint_number": sprint_number,
+                            "rounds": negotiation.warning_event.get("rounds"),
+                        }
+                    )
 
                 contract = build_contract_from_negotiation(
                     negotiation,
@@ -201,9 +239,31 @@ async def run_task(
                 )
                 # Criterion #7: contract committed BEFORE generator touches sources.
                 contract.save(contract_path)
+                _emit(
+                    {
+                        "kind": "contract.written",
+                        "sprint_number": sprint_number,
+                        "path": str(contract_path),
+                    }
+                )
 
             # 2b. Generator execute (caller-supplied seam).
+            _emit(
+                {
+                    "kind": "generator.started",
+                    "sprint_number": sprint_number,
+                    "step_id": step.id,
+                    "has_contract": contract is not None,
+                }
+            )
             await generator_execute(task_id, sprint_number, contract, step)
+            _emit(
+                {
+                    "kind": "generator.completed",
+                    "sprint_number": sprint_number,
+                    "step_id": step.id,
+                }
+            )
 
             if enabled and contract_path is not None:
                 handoff_g2e = handoff_event(
@@ -221,6 +281,13 @@ async def run_task(
         # 2c. Evaluator branch (lock-protected, independent of generator lock).
         if enabled:
             assert contract is not None
+            _emit(
+                {
+                    "kind": "evaluator.started",
+                    "sprint_number": sprint_number,
+                    "step_id": step.id,
+                }
+            )
             with acquire_role_lock(root, task_id=task_id, role="evaluator"):
                 record = await evaluator_run(task_id, sprint_number, contract, step)
                 eval_path = record_evaluation(root, record)
@@ -230,6 +297,15 @@ async def run_task(
                 ledger.save(ledger_path)
                 outcome = record.outcome
 
+            _emit(
+                {
+                    "kind": "evaluator.completed",
+                    "sprint_number": sprint_number,
+                    "outcome": record.outcome,
+                    "score": record.score,
+                    "notes": record.notes,
+                }
+            )
             sprint_events.append(
                 handoff_event(
                     from_role="evaluator",
@@ -258,7 +334,22 @@ async def run_task(
             )
         )
         events.extend(sprint_events)
+        _emit(
+            {
+                "kind": "sprint.completed",
+                "sprint_number": sprint_number,
+                "step_id": step.id,
+                "outcome": outcome,
+            }
+        )
 
+    _emit(
+        {
+            "kind": "task.completed",
+            "task_id": task_id,
+            "sprint_count": len(sprints),
+        }
+    )
     return RunTaskResult(
         task_id=task_id,
         spec_path=spec_path,
