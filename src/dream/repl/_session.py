@@ -43,6 +43,7 @@ from dream.permissions import SessionLimits
 from dream.repl._events import EventSink
 from dream.repl._mcp import mcp_paths, setup_mcp_session
 from dream.repl._runtime_info import render_runtime_info
+from dream.services import cron as cron_service
 from dream.services.compact._orchestrator import (
     AutoCompactState,
     auto_compact_if_needed,
@@ -69,6 +70,7 @@ from dream.tasks import (
     TaskRecord,
     TaskSessionContext,
 )
+from dream.tasks._cron import CRON_MANIFEST_DIR, load_cron_manifests
 from dream.tools._registry import ToolRegistry
 from dream.tools.builtin import default_registry
 
@@ -131,6 +133,16 @@ def build_default_harness(
         manager=task_manager,
         cron_registry_path=paths.dream_dir / "cron" / "registry.json",
         plans_root=paths.exec_plans_active.parent,
+    )
+    # Spec 07 trigger surface: ensure the four default cron kinds exist on
+    # disk (``.harness/cron/*.toml``) and that any present manifest is
+    # registered in the durable registry. Both calls are idempotent so
+    # operator edits to either the manifest or the registry survive
+    # restart.
+    cron_service.bootstrap_default_manifests(working_dir)
+    cron_service.ensure_registry_seeded(
+        task_context.cron_registry_path,
+        load_cron_manifests(Path(working_dir) / CRON_MANIFEST_DIR),
     )
     # 128K is the default we use throughout Spec 02; the watch panel /
     # /util command surface utilisation against this number.
@@ -232,8 +244,11 @@ def build_default_harness(
     # lifecycle listeners and surface cron-spawned task starts/completions
     # alongside ordinary tool calls. ``extra`` is the documented escape hatch
     # for harness-bound subsystems the SDK Harness API doesn't model yet.
+    # The cron registry path rides alongside so the in-process scheduler
+    # tick loop (started by ``run_session_repl``) knows where to poll.
     config = HarnessConfig(working_dir=working_dir, _engine_factory=_factory)
     config.extra["task_manager"] = task_manager
+    config.extra["cron_registry_path"] = task_context.cron_registry_path
     return Harness(config)
 
 
@@ -870,6 +885,7 @@ def run_session_repl(
         # The harness stashes its task_manager on ``config.extra`` so the REPL
         # can subscribe without the SDK Harness API exposing every subsystem.
         unsubs: list[Callable[[], None]] = []
+        cron_task: asyncio.Task[None] | None = None
         task_manager = harness.config.extra.get("task_manager")
         if isinstance(task_manager, BackgroundTaskManager):
             unsubs.append(
@@ -882,6 +898,21 @@ def run_session_repl(
                     lambda t: render_task_finished(t, sink=sink, output=out)
                 )
             )
+            # Spec 07 in-process scheduler tick — polls the registry every
+            # ``DEFAULT_POLL_SECONDS`` and fires any due cron job. Lives only
+            # for the duration of this REPL session; an OS-level trigger
+            # (``python -m dream.repl cron run <kind>``) covers the
+            # cron-without-an-open-REPL case.
+            cron_registry = harness.config.extra.get("cron_registry_path")
+            if isinstance(cron_registry, Path):
+                cron_task = asyncio.create_task(
+                    cron_service.cron_tick_loop(
+                        manager=task_manager,
+                        working_dir=harness.config.working_dir,
+                        registry_path=cron_registry,
+                    ),
+                    name="cron-tick-loop",
+                )
         async with harness:
             if tool_registry is not None:
                 setup = await setup_mcp_session(
@@ -908,6 +939,12 @@ def run_session_repl(
             finally:
                 if mcp_manager is not None:
                     await mcp_manager.close()
+                if cron_task is not None:
+                    cron_task.cancel()
+                    try:
+                        await cron_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
                 for un in unsubs:
                     un()
         return 0

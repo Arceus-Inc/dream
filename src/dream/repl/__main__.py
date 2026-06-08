@@ -140,6 +140,31 @@ def _build_parser() -> argparse.ArgumentParser:
         help="hard cap on assistant turns per send; must be >= 1 (default: 8)",
     )
 
+    cron = sub.add_parser(
+        "cron",
+        help="Spec 07 cron triggers (operator entrypoint)",
+    )
+    cron_sub = cron.add_subparsers(dest="cron_command", required=True)
+    cron_run = cron_sub.add_parser(
+        "run", help="fire a single cron kind now and wait for it to finish"
+    )
+    cron_run.add_argument(
+        "kind",
+        help="cron kind name (matches ``.harness/cron/{kind}.toml``)",
+    )
+    cron_run.add_argument(
+        "--working-dir",
+        type=Path,
+        default=Path.cwd(),
+        help="repo working directory (default: cwd)",
+    )
+    cron_run.add_argument(
+        "--timeout",
+        type=_positive_int,
+        default=300,
+        help="seconds to wait for the cron session to complete (default: 300)",
+    )
+
     return parser
 
 
@@ -170,6 +195,15 @@ def main(argv: list[str] | None = None) -> int:
             system=args.system,
             max_turns=args.max_turns,
         )
+    if args.command == "cron":
+        if args.cron_command == "run":
+            from dream.repl._cron_cli import run_cron_cli
+
+            return run_cron_cli(
+                kind=args.kind,
+                working_dir=args.working_dir,
+                timeout=args.timeout,
+            )
     return 2
 
 
