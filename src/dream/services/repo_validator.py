@@ -3,9 +3,12 @@
 Runs blocking/warning/info checks before a session starts: the ``AGENTS.md``
 contract (presence, line caps, resolvable links), the required ``docs/`` tree
 (present and not git-ignored — the repo, not the working tree, is the source of
-truth), JSON well-formedness + ``$schema`` validation, secret-shaped strings
-(reported redacted), and stale exec-plans. A blocking finding means "do not
-start"; ``has_blocking`` is the gate.
+truth), JSON well-formedness + ``$schema`` validation, and stale exec-plans. A
+blocking finding means "do not start"; ``has_blocking`` is the gate.
+
+Secret scanning lives in :mod:`dream.services.threat_scan` (Spec 13E), which
+scans the whole worktree, not just ``docs/``; :mod:`dream.services.session_guard`
+combines both into one session-start gate.
 """
 
 from __future__ import annotations
@@ -41,16 +44,6 @@ _REQUIRED_PATHS = (
 )
 
 _MARKDOWN_LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
-_TEXT_SUFFIXES = {".md", ".json", ".txt", ".toml", ".yaml", ".yml", ".cfg", ".ini"}
-
-# Secret-shaped patterns. The matched value is NEVER placed in a finding.
-_SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("aws_access_key", re.compile(r"AKIA[0-9A-Z]{16}")),
-    ("private_key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
-    ("jwt", re.compile(r"eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")),
-    ("openai_key", re.compile(r"sk-[A-Za-z0-9]{20,}")),
-    ("github_token", re.compile(r"gh[pous]_[A-Za-z0-9]{36}")),
-)
 
 
 @dataclass(frozen=True)
@@ -74,7 +67,6 @@ def validate_repo(paths: DreamPaths) -> list[Finding]:
     findings += _check_agents_md(paths)
     findings += _check_required_tree(paths)
     findings += _check_docs_json(paths)
-    findings += _check_secrets(paths)
     findings += _check_stale_exec_plans(paths)
     return findings
 
@@ -224,33 +216,6 @@ def _validate_against_schema(paths: DreamPaths, jf: Path, rel: str, data: object
             )
         ]
     return []
-
-
-def _check_secrets(paths: DreamPaths) -> list[Finding]:
-    findings: list[Finding] = []
-    if not paths.docs_dir.is_dir():
-        return findings
-    for f in sorted(paths.docs_dir.rglob("*")):
-        if not f.is_file() or f.suffix.lower() not in _TEXT_SUFFIXES:
-            continue
-        rel = str(f.relative_to(paths.repo))
-        try:
-            content = f.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            # A permission error / broken symlink must not abort the whole scan.
-            findings.append(Finding("info", "unreadable_file", "could not read file", rel))
-            continue
-        for name, pattern in _SECRET_PATTERNS:
-            if pattern.search(content):
-                findings.append(
-                    Finding(
-                        "blocking",
-                        "secret_detected",
-                        f"possible {name} found (value redacted)",
-                        rel,
-                    )
-                )
-    return findings
 
 
 def _check_stale_exec_plans(paths: DreamPaths) -> list[Finding]:

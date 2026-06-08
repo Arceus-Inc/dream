@@ -49,6 +49,7 @@ from dream.services.compact._orchestrator import (
 )
 from dream.services.context_log import ContextEvent
 from dream.services.repo_validator import has_blocking
+from dream.services.threat_scan import threat_scan
 from dream.services.token_estimation import (
     estimate_conversation_tokens,
     utilisation,
@@ -809,6 +810,16 @@ def run_session_repl(
     skill_findings = validate_skills(work_dir)
     if has_blocking(skill_findings):
         for finding in skill_findings:
+            out.write(f"blocked: {finding.message} ({finding.path})\n")
+        return 3
+
+    # Session-start threat scan (Spec 13E): a worktree secret / world-writable
+    # file under docs/ / eval-in-tool in .harness/tools/ blocks the session
+    # before the agent runs. (The spec-01 structural validator is not wired
+    # here yet; this gates the security findings only.)
+    threat_findings = threat_scan(DreamPaths(repo=work_dir, home=Path.home()))
+    if has_blocking(threat_findings):
+        for finding in threat_findings:
             out.write(f"blocked: {finding.message} ({finding.path})\n")
         return 3
 

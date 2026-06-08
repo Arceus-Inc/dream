@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -18,8 +17,6 @@ import pytest
 
 from dream.config.paths import DreamPaths
 from dream.services.repo_validator import Finding, has_blocking, validate_repo
-
-AWS_KEY = "AKIAIOSFODNN7EXAMPLE"  # canonical example AWS key shape
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -181,37 +178,7 @@ def test_malformed_schema_blocks_not_crashes(repo: Path, paths: DreamPaths) -> N
     assert "invalid_schema" in _codes(validate_repo(paths), "blocking")
 
 
-def test_unreadable_docs_file_does_not_crash(repo: Path, paths: DreamPaths) -> None:
-    import os
-
-    # POSIX-only: NTFS owner-chmod doesn't make files unreadable for the owner,
-    # and `os.geteuid` does not exist on Windows. The validator's
-    # ``except OSError`` path is exercised on POSIX runners.
-    if sys.platform == "win32":
-        pytest.skip("POSIX file permissions semantics required")
-    if os.geteuid() == 0:  # root bypasses file permissions
-        pytest.skip("permission checks are bypassed as root")
-    locked = repo / "docs" / "locked.md"
-    locked.write_text("data")
-    locked.chmod(0o000)
-    try:
-        findings = validate_repo(paths)  # must not raise
-    finally:
-        locked.chmod(0o644)
-    assert "unreadable_file" in _codes(findings, "info")
-
-
-def test_secret_in_docs_blocks(repo: Path, paths: DreamPaths) -> None:
-    (repo / "docs" / "leak.md").write_text(f"key: {AWS_KEY}\n")
-    assert "secret_detected" in _codes(validate_repo(paths), "blocking")
-
-
-def test_secret_finding_redacts_value(repo: Path, paths: DreamPaths) -> None:
-    (repo / "docs" / "leak.md").write_text(f"key: {AWS_KEY}\n")
-    findings = validate_repo(paths)
-    for f in findings:
-        assert AWS_KEY not in f.message
-        assert AWS_KEY not in (f.path or "")
+# Secret scanning moved to threat_scan (Spec 13E); see test_threat_scan.py.
 
 
 def test_stale_exec_plan_warns(repo: Path, paths: DreamPaths) -> None:
