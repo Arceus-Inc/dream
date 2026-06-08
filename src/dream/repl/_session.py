@@ -48,6 +48,7 @@ from dream.services.compact._orchestrator import (
     auto_compact_if_needed,
 )
 from dream.services.context_log import ContextEvent
+from dream.services.core_beliefs import extract_standing_orders, render_standing_orders
 from dream.services.repo_validator import has_blocking
 from dream.services.threat_scan import threat_scan
 from dream.services.token_estimation import (
@@ -177,11 +178,16 @@ def build_default_harness(
             if skill_registry is not None
             else None
         )
-        # System prompt assembly order: runtime info first (host facts the
-        # model must trust), then the skill catalogue (capabilities), then the
-        # caller-supplied prompt (task framing). Each block survives if the
-        # next is empty.
-        parts = [runtime_info]
+        # System prompt assembly order: the governance standing orders FIRST
+        # (the constitution outranks everything; Spec 13F AC #21-22, re-extracted
+        # every session start), then runtime info (host facts the model must
+        # trust), the skill catalogue (capabilities), and the caller-supplied
+        # prompt (task framing). Each block survives if the next is empty.
+        standing_orders = render_standing_orders(
+            extract_standing_orders(paths.repo / "docs" / "design-docs" / "core-beliefs.md")
+        )
+        parts = [standing_orders] if standing_orders else []
+        parts.append(runtime_info)
         if catalogue:
             parts.append(catalogue)
         if options.system_prompt:
