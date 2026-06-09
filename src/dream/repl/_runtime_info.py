@@ -21,13 +21,17 @@ from pathlib import Path
 def detect_shell(env: Mapping[str, str]) -> str:
     """Return the shell ``create_subprocess_shell`` will invoke a ``command`` with.
 
-    Mirrors the rule asyncio uses on each platform: on POSIX it hands the
-    string to ``/bin/sh`` (or ``$SHELL`` if set), on Windows it goes
-    through ``%COMSPEC%`` (cmd.exe by default).
+    Mirrors the rule asyncio uses on each platform. On POSIX this is **always**
+    ``/bin/sh``: ``create_subprocess_shell`` is called without an ``executable``
+    in :meth:`dream.tasks.BackgroundTaskManager.create_shell_task`, so Python
+    runs the command as ``/bin/sh -c`` and ignores ``$SHELL`` entirely.
+    Advertising ``$SHELL`` (e.g. zsh/bash) would mislead the model into emitting
+    shell-specific syntax that fails under ``sh``. On Windows the subprocess
+    goes through ``%COMSPEC%`` (cmd.exe by default), which we do honour.
     """
     if sys.platform == "win32":
         return env.get("COMSPEC") or "cmd.exe"
-    return env.get("SHELL") or "/bin/sh"
+    return "/bin/sh"
 
 
 def render_runtime_info(

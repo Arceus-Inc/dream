@@ -49,4 +49,7 @@ def test_clean_worktree_not_blocked_by_threat_scan(
         env={},  # clean scan → not blocked; fails later on missing env (code 2)
         output=out,
     )
-    assert code != 3
+    # Exact code: a clean worktree passes the threat gate (not 3) and then fails
+    # specifically at the missing-env check (2). Asserting != 3 would also pass
+    # for an accidental success (0) or an unexpected failure, masking regressions.
+    assert code == 2

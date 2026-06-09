@@ -53,7 +53,17 @@ class CronShowTool(BaseTool):
                 stop_condition="do not retry until cron is enabled in this session",
             )
 
-        job = get_cron_job(registry, args.name)
+        try:
+            job = get_cron_job(registry, args.name)
+        except OSError as exc:
+            # Permission denied, path-is-a-directory, transient IO — keep the
+            # tool contract recoverable instead of leaking an engine failure.
+            return _err(
+                f"Failed to read the cron registry: {exc}",
+                root_cause=str(exc),
+                safe_retry="verify the cron registry path is a readable file, then retry",
+                stop_condition="do not retry until the registry path is corrected",
+            )
         if job is None:
             return _err(
                 f"No cron job named {args.name!r} is registered.",

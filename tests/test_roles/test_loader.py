@@ -12,7 +12,6 @@ import pytest
 
 from dream.roles import load_role_manifest
 
-
 # --- defaults flow through when no overlay exists ---------------------------
 
 

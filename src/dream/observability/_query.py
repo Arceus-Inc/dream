@@ -47,8 +47,10 @@ def read_events(path: Path) -> list[TraceEvent]:
             continue
         try:
             events.append(from_jsonl_line(stripped))
-        except (ValueError, KeyError):
-            continue  # malformed or partially-flushed tail line — skip, never crash
+        except (ValueError, KeyError, TypeError):
+            # malformed or partially-flushed tail line — skip, never crash.
+            # TypeError covers valid JSON with the wrong top-level type (``[]``/``"x"``).
+            continue
     return events
 
 
@@ -126,11 +128,13 @@ def query_metrics(
 def _parse_duration_ms(body: str) -> int:
     if not body or body[-1] not in _DURATION_UNITS_MS:
         raise QueryError(f"invalid duration: -{body!r}; expected a number + s/m/h/d")
-    try:
-        value = int(body[:-1])
-    except ValueError as exc:
-        raise QueryError(f"invalid duration: -{body!r}") from exc
-    return value * _DURATION_UNITS_MS[body[-1]]
+    digits = body[:-1]
+    # Require an unsigned positive integer: the single leading ``-`` of the
+    # relative spec is the offset sign, so a signed body like ``--1h`` (which
+    # ``int`` would parse as ``-1``) must be rejected, not flipped to a future time.
+    if not digits.isdigit():
+        raise QueryError(f"invalid duration: -{body!r}; expected an unsigned integer + s/m/h/d")
+    return int(digits) * _DURATION_UNITS_MS[body[-1]]
 
 
 def _event_ms(event: TraceEvent) -> int:

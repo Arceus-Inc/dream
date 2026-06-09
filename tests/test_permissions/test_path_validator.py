@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from dream.permissions._path_validator import validate_repo_write
 
 
@@ -63,7 +65,10 @@ def test_symlink_escape_is_denied(tmp_path: Path) -> None:
     cwd.mkdir()
     outside = tmp_path / "outside"
     outside.mkdir()
-    (cwd / "escape").symlink_to(outside, target_is_directory=True)
+    try:
+        (cwd / "escape").symlink_to(outside, target_is_directory=True)
+    except OSError as exc:  # restricted runners can't create symlinks
+        pytest.skip(f"symlink creation unsupported here: {exc}")
     ok, _ = validate_repo_write(cwd / "escape" / "f.txt", cwd)
     assert not ok
 

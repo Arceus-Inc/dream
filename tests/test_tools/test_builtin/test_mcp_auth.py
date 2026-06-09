@@ -10,7 +10,8 @@ from pathlib import Path
 
 from dream.mcp._client import McpClientManager
 from dream.mcp._credentials import read_credentials
-from dream.mcp._types import AllowlistEntry, McpTransport
+from dream.mcp._types import AllowlistEntry, McpConnectionStatus, McpTransport
+from dream.services.repo_validator import Finding
 from dream.tools._context import ToolExecutionContext
 from dream.tools.builtin.mcp_auth import McpAuthTool
 from tests.test_mcp._fakes import build_server, opener_for
@@ -93,6 +94,70 @@ async def test_malformed_existing_creds_file_is_tool_error(tmp_path: Path) -> No
     assert result.is_error is True
     assert "root_cause" in result.metadata
     await mgr.close()
+
+
+async def test_blocking_reconnect_finding_fails_the_tool(tmp_path: Path) -> None:
+    """A blocking finding from reconnect_all (e.g. a version-pin mismatch on a
+    *different* allowlisted server) must fail mcp_auth — it cannot report
+    success and silently drop a security-relevant reconnect failure."""
+    creds = tmp_path / "creds.toml"
+    mgr = _ReconnectFindingManager(
+        entry=_entry("pw"),
+        findings=[
+            Finding(
+                severity="blocking",
+                code="mcp_version_mismatch",
+                message="MCP version mismatch for 'other'",
+            )
+        ],
+    )
+    tool = McpAuthTool(mgr, creds)  # type: ignore[arg-type]
+    result = await tool.execute(
+        {"server_name": "pw", "mode": "bearer", "value": "s3cret"},
+        _ctx(tmp_path),
+    )
+    assert result.is_error is True
+    assert "root_cause" in result.metadata
+    assert "mcp_version_mismatch" in result.metadata["root_cause"]
+    # The credential is still persisted (the write precedes reconnect); the
+    # failure is about the reconnect, not the write.
+    assert read_credentials(creds)["pw"].value == "s3cret"
+    assert mgr.reconnect_calls == 1
+
+
+async def test_non_blocking_reconnect_finding_does_not_fail(tmp_path: Path) -> None:
+    """Advisory (warning/info) reconnect findings must not fail an otherwise
+    successful auth — only blocking findings gate the tool."""
+    creds = tmp_path / "creds.toml"
+    mgr = _ReconnectFindingManager(
+        entry=_entry("pw"),
+        findings=[Finding(severity="warning", code="slow", message="slow handshake")],
+    )
+    tool = McpAuthTool(mgr, creds)  # type: ignore[arg-type]
+    result = await tool.execute(
+        {"server_name": "pw", "mode": "bearer", "value": "s3cret"},
+        _ctx(tmp_path),
+    )
+    assert result.is_error is False
+
+
+class _ReconnectFindingManager:
+    """Manager stub: persists nothing, returns canned findings from reconnect."""
+
+    def __init__(self, *, entry: AllowlistEntry, findings: list[Finding]) -> None:
+        self._entry = entry
+        self._findings = findings
+        self.reconnect_calls = 0
+
+    def entry_for(self, name: str) -> AllowlistEntry | None:
+        return self._entry if name == self._entry.name else None
+
+    async def reconnect_all(self) -> list[Finding]:
+        self.reconnect_calls += 1
+        return list(self._findings)
+
+    def status(self, name: str) -> McpConnectionStatus | None:
+        return McpConnectionStatus(name=name, state="connected", transport="stdio")
 
 
 async def test_success_persists_and_reconnects(tmp_path: Path) -> None:

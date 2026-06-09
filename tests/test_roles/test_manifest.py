@@ -13,7 +13,6 @@ from pydantic import ValidationError
 
 from dream.roles import RoleManifest
 
-
 # --- fields + defaults -------------------------------------------------------
 
 

@@ -58,6 +58,28 @@ def test_register_returns_shadow_on_cross_source_collision() -> None:
     assert reg.resolve("deploy").source == "project"  # type: ignore[union-attr]
 
 
+def test_case_variant_names_collide_and_record_shadow() -> None:
+    # "Deploy" then "deploy" must shadow (not silently create two entries) since
+    # resolution is case-insensitive.
+    reg = SkillRegistry()
+    assert reg.register(_meta("Deploy", source="bundled")) is None
+    shadow = reg.register(_meta("deploy", source="project"))
+    assert shadow is not None
+    assert reg.resolve("DEPLOY").source == "project"  # type: ignore[union-attr]
+    assert len(reg.list_meta()) == 1  # one canonical entry, not two
+
+
+def test_reregister_clears_stale_lookup_keys() -> None:
+    # Re-registering a canonical name with different aliases must not leave the
+    # old aliases/command name resolving to the replacement.
+    reg = SkillRegistry()
+    reg.register(_meta("deploy", command_name="ship", aliases=("release",)))
+    reg.register(_meta("deploy", command_name="deploy", aliases=("rollout",)))
+    assert reg.resolve("rollout") is not None
+    assert reg.resolve("release") is None  # stale alias dropped
+    assert reg.resolve("ship") is None  # stale command name dropped
+
+
 def test_list_meta_is_name_sorted() -> None:
     reg = SkillRegistry()
     for n in ("zebra", "alpha", "mango"):

@@ -26,15 +26,31 @@ from dream.utils.fs import atomic_write_text
 from ._checks import checked_sprint_number, checked_task_id
 
 __all__ = [
+    "VALID_VERIFICATION_KINDS",
     "NegotiationEntry",
     "SprintContract",
-    "VALID_VERIFICATION_KINDS",
     "sprint_contract_path",
     "tech_debt_path",
 ]
 
 
 VALID_VERIFICATION_KINDS: frozenset[str] = frozenset({"test", "lint", "eval"})
+
+
+def _strict_bool(value: Any, *, field: str, default: bool) -> bool:
+    """Parse a JSON value as a boolean without truthiness coercion.
+
+    ``bool("false")`` is ``True``, so coercing externally-produced JSON would
+    silently flip the flag. Accept only real booleans (and a missing key,
+    which falls back to ``default``); reject everything else.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    raise TypeError(
+        f"contract field {field!r} must be a boolean, got {type(value).__name__}"
+    )
 
 
 @dataclass(frozen=True)
@@ -117,8 +133,12 @@ class SprintContract:
             scope_excludes=tuple(data.get("scope_excludes", ())),
             acceptance_criteria=tuple(data["acceptance_criteria"]),
             verification_steps=tuple(dict(s) for s in data.get("verification_steps", ())),
-            evaluator_enabled=bool(data.get("evaluator_enabled", True)),
-            imposed=bool(data.get("imposed", False)),
+            evaluator_enabled=_strict_bool(
+                data.get("evaluator_enabled"), field="evaluator_enabled", default=True
+            ),
+            imposed=_strict_bool(
+                data.get("imposed"), field="imposed", default=False
+            ),
             negotiation_log=tuple(
                 NegotiationEntry.from_dict(e) for e in data.get("negotiation_log", ())
             ),

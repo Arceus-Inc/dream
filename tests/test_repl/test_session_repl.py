@@ -55,6 +55,7 @@ from dream.repl._watch import _colour_for
 from dream.services.compact._orchestrator import AutoCompactState
 from dream.session import SessionOptions
 from tests.test_engine._fakes import FakeDispatcher, FakeStreamer, FakeTurn
+from tests.test_skills._helpers import write_skill
 
 # ---------------------------------------------------------------------------
 # Parser wiring
@@ -139,6 +140,51 @@ def test_build_default_harness_returns_harness_with_engine_factory(
     assert engine.session_id == "sid"
     # The compactor is wired so Slice E auto-compaction is active.
     assert engine.compactor is not None
+
+
+def test_build_default_harness_honours_dream_home_for_task_storage(
+    tmp_path: Path,
+) -> None:
+    """``DREAM_HOME`` in env must redirect task storage, not ``~/.dream`` (#43).
+
+    The harness builds its ``BackgroundTaskManager`` from ``DreamPaths``; if it
+    hardcodes ``Path.home()`` instead of resolving the home root from env, task
+    artifacts land under the wrong root in environments that set ``DREAM_HOME``.
+    """
+    home = tmp_path / "dream-home"
+    env = {
+        "DREAM_SMOKE_API_KEY": "sk-test",
+        "DREAM_SMOKE_MODEL": "gpt-test",
+        "DREAM_HOME": str(home),
+    }
+    harness = build_default_harness(env=env, working_dir=tmp_path / "repo")
+    task_manager = harness.config.extra["task_manager"]
+    # tasks_dir == <home>/data/tasks per DreamPaths; must be under DREAM_HOME.
+    assert home in task_manager._tasks_dir.parents
+
+
+def test_build_default_harness_surfaces_stale_promotion_warnings(
+    tmp_path: Path,
+) -> None:
+    """Policy-assembly warnings (e.g. a stale tier promotion) must reach the
+    operator via the warning sink, not be silently discarded (#47)."""
+    overrides = tmp_path / ".harness" / "tool-tier-overrides.toml"
+    overrides.parent.mkdir(parents=True, exist_ok=True)
+    overrides.write_text(
+        '[bash]\n'
+        'tier_required = "repo-write"\n'
+        'promoted_at = "2000-01-01T00:00:00+00:00"\n',  # > 365 days old → stale
+        encoding="utf-8",
+    )
+    env = {"DREAM_SMOKE_API_KEY": "sk-test", "DREAM_SMOKE_MODEL": "gpt-test"}
+    warnings: list[str] = []
+    build_default_harness(
+        env=env,
+        working_dir=tmp_path,
+        policy_warning_sink=warnings.append,
+    )
+    assert any("stale" in w for w in warnings)
+    assert any("bash" in w for w in warnings)
 
 
 # ---------------------------------------------------------------------------
@@ -384,6 +430,83 @@ def test_run_session_repl_without_env_or_harness_returns_nonzero(
         output=out,
     )
     assert rc != 0
+
+
+def test_injected_harness_validates_against_its_working_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When ``working_dir`` is omitted, an injected harness's configured repo
+    root — not the process cwd — must drive skill validation/registry (#36).
+
+    Proof: a malformed skill under the harness's working_dir blocks the session
+    (code 3). If validation read ``Path.cwd()`` instead, the session would not
+    see this skill and would not block here.
+    """
+    monkeypatch.setenv("DREAM_HOME", str(tmp_path / "home"))  # isolate user skills
+    # Chdir to a *clean* dir so any cwd-based validation finds nothing — the only
+    # malformed skill lives under the harness's configured working_dir.
+    clean_cwd = tmp_path / "clean-cwd"
+    clean_cwd.mkdir()
+    monkeypatch.chdir(clean_cwd)
+    repo = tmp_path / "configured-repo"
+    repo.mkdir()
+    write_skill(repo / "docs" / "skills", "bad", raw="not valid frontmatter")
+    streamer = FakeStreamer(turns=[])
+    harness = Harness(
+        HarnessConfig(working_dir=repo, _engine_factory=_engine_factory(streamer))  # type: ignore[call-arg]
+    )
+    out = io.StringIO()
+    rc = run_session_repl(
+        events_path=tmp_path / "e.jsonl",
+        harness=harness,  # no working_dir passed -> must fall back to repo, not cwd
+        input_func=_scripted_input(["/quit"]),
+        output=out,
+    )
+    assert rc == 3
+    assert "blocked" in out.getvalue().lower()
+
+
+def test_blocking_mcp_finding_still_unsubscribes_listeners(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A blocking MCP finding makes the run return early (code 3); the task
+    lifecycle listeners registered beforehand must still be unsubscribed so
+    they don't leak / double-render on a later run (#44)."""
+    monkeypatch.setenv("DREAM_HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)  # clean cwd so only the MCP gate blocks
+    # Malformed allowlist → setup_mcp_session returns a blocking finding.
+    allow = tmp_path / ".harness" / "mcp-allowlist.toml"
+    allow.parent.mkdir(parents=True, exist_ok=True)
+    allow.write_text("this = = not toml", encoding="utf-8")
+
+    import dream.repl._session as session_mod
+
+    captured: list[Any] = []
+    real_build = session_mod.build_default_harness
+
+    def _capturing_build(**kwargs: Any) -> Any:
+        harness = real_build(**kwargs)
+        captured.append(harness)
+        return harness
+
+    monkeypatch.setattr(session_mod, "build_default_harness", _capturing_build)
+
+    out = io.StringIO()
+    rc = run_session_repl(
+        events_path=tmp_path / "e.jsonl",
+        env={"DREAM_SMOKE_API_KEY": "sk-test", "DREAM_SMOKE_MODEL": "gpt-test"},
+        working_dir=tmp_path,
+        input_func=_scripted_input([]),
+        output=out,
+    )
+
+    assert rc == 3
+    assert captured, "harness should have been built via the self-built path"
+    task_manager = captured[0].config.extra["task_manager"]
+    # Both listener registries must be empty — the outer finally ran the unsubs
+    # despite the early return at the MCP gate.
+    assert task_manager._start_listeners == {}
+    assert task_manager._listeners == {}
 
 
 def test_run_session_repl_emits_stopped_even_on_exception(tmp_path: Path) -> None:

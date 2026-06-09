@@ -217,6 +217,78 @@ async def test_run_cron_kind_disabled_writes_skipped_record(
 
 
 @pytest.mark.asyncio
+async def test_run_cron_kind_records_failure_from_completion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The registry's last_status must reflect the actual exit, not optimistic
+    # post-spawn success: a session that exits non-zero is recorded failed.
+    import sys
+
+    manifest_dir = tmp_path / CRON_MANIFEST_DIR
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / "ad-hoc.toml").write_text(
+        'name = "ad-hoc"\nschedule = "* * * * *"\nenabled = true\n'
+    )
+    registry = _registry_path(tmp_path)
+    cron_service.ensure_registry_seeded(registry, load_cron_manifests(manifest_dir))
+
+    monkeypatch.setattr(
+        cron_service,
+        "_default_cron_argv",
+        lambda manifest: [sys.executable, "-c", "import sys; sys.exit(7)"],
+    )
+
+    manager = BackgroundTaskManager(tasks_dir=tmp_path / ".dream" / "tasks")
+    record = await cron_service.run_cron_kind(
+        kind="ad-hoc",
+        working_dir=tmp_path,
+        manager=manager,
+        registry_path=registry,
+    )
+    assert record is not None
+    await _wait_until_done(manager, record.id)
+    # Give the completion listener a turn to update the registry.
+    for _ in range(50):
+        await asyncio.sleep(0.02)
+        job = get_cron_job(registry, "ad-hoc")
+        if job is not None and job.last_status == "failed":
+            break
+
+    job = get_cron_job(registry, "ad-hoc")
+    assert job is not None
+    assert job.last_status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_run_cron_kind_respects_registry_disable(tmp_path: Path) -> None:
+    # Manifest enabled, but the registry row was toggled off (cron_toggle).
+    # The run must be skipped even though the manifest itself is enabled.
+    manifest_dir = tmp_path / CRON_MANIFEST_DIR
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / "ad-hoc.toml").write_text(
+        'name = "ad-hoc"\nschedule = "* * * * *"\nenabled = true\n'
+    )
+    registry = _registry_path(tmp_path)
+    upsert_cron_job(
+        registry,
+        CronManifest(name="ad-hoc", enabled=False, schedule="* * * * *").to_job(),
+    )
+
+    manager = BackgroundTaskManager(tasks_dir=tmp_path / ".dream" / "tasks")
+    record = await cron_service.run_cron_kind(
+        kind="ad-hoc",
+        working_dir=tmp_path,
+        manager=manager,
+        registry_path=registry,
+    )
+
+    assert record is None
+    runs = read_cron_run_records(tmp_path / CRON_RUNS_ROOT, "ad-hoc")
+    assert len(runs) == 1
+    assert runs[0].outcome == "skipped"
+
+
+@pytest.mark.asyncio
 async def test_run_cron_kind_missing_manifest_raises(tmp_path: Path) -> None:
     manager = BackgroundTaskManager(tasks_dir=tmp_path / ".dream" / "tasks")
     with pytest.raises(FileNotFoundError):
@@ -225,6 +297,28 @@ async def test_run_cron_kind_missing_manifest_raises(tmp_path: Path) -> None:
             working_dir=tmp_path,
             manager=manager,
         )
+
+
+# ---------------------------------------------------------------------------
+# run_cron_cli — registry seeding on the CLI code path
+# ---------------------------------------------------------------------------
+
+
+def test_cron_cli_seeds_registry_from_manifests(tmp_path: Path) -> None:
+    # A brand-new CLI-only setup must populate the registry (so /cron list and
+    # last_run/last_status are tracked), not just bootstrap manifest files.
+    from dream.repl._cron_cli import run_cron_cli
+
+    exit_code = run_cron_cli(kind="doc-garden", working_dir=tmp_path, timeout=10)
+
+    assert exit_code == 0
+    registry = _registry_path(tmp_path)
+    seeded = {j.name for j in load_cron_jobs(registry)}
+    assert seeded == {m.name for m in default_cron_manifests()}
+    job = get_cron_job(registry, "doc-garden")
+    assert job is not None
+    assert job.last_run is not None
+    assert job.last_status == "success"
 
 
 # ---------------------------------------------------------------------------

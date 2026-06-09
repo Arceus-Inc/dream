@@ -6,7 +6,11 @@ Driven against a real ``ClientSession`` over the SDK's in-memory transport
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 import pytest
+from mcp import ClientSession
 
 from dream.mcp._client import McpClientManager, McpServerNotConnectedError
 from dream.mcp._types import AllowlistEntry
@@ -75,12 +79,24 @@ async def test_empty_tools_list_admits_all() -> None:
     await mgr.close()
 
 
-async def test_unsupported_transport_marks_failed_not_crash() -> None:
-    entry = _entry("ws_server")
-    mgr = McpClientManager([entry], session_opener=opener_for({}))  # no server -> raises
+async def test_opener_error_marks_failed_not_crash() -> None:
+    # An opener that raises (here: an unsupported transport the build can't
+    # connect) must mark the server failed and never crash the connect loop.
+    from dream.mcp._openers import UnsupportedTransportError
+
+    @asynccontextmanager
+    async def _raising_opener(entry: AllowlistEntry) -> AsyncIterator[ClientSession]:
+        raise UnsupportedTransportError(f"unsupported transport for {entry.name!r}")
+        yield  # pragma: no cover - unreachable, makes this a generator
+
+    entry = AllowlistEntry(name="rt", endpoint="wss://example/mcp", transport="ws")
+    mgr = McpClientManager([entry], session_opener=_raising_opener)
     findings = await mgr.connect_all()
     assert findings == []  # non-fatal
-    assert mgr.status("ws_server").state == "failed"  # type: ignore[union-attr]
+    status = mgr.status("rt")
+    assert status is not None
+    assert status.state == "failed"
+    assert "unsupported transport" in status.detail
 
 
 async def test_call_tool_routes_to_session() -> None:
@@ -114,6 +130,37 @@ async def test_close_clears_sessions() -> None:
     await mgr.close()
     with pytest.raises(McpServerNotConnectedError):
         await mgr.call_tool("pw", "navigate", {})
+
+
+async def test_duplicate_server_names_rejected() -> None:
+    with pytest.raises(ValueError, match="duplicate MCP server name"):
+        McpClientManager([_entry("pw"), _entry("pw")], session_opener=opener_for({}))
+
+
+async def test_close_resets_status_to_pending() -> None:
+    server = build_server("pw", tool_names=("navigate",))
+    mgr = McpClientManager([_entry("pw")], session_opener=opener_for({"pw": server}))
+    await mgr.connect_all()
+    assert mgr.status("pw").state == "connected"  # type: ignore[union-attr]
+    await mgr.close()
+    status = mgr.status("pw")
+    assert status is not None
+    assert status.state == "pending"
+    assert status.tools == []  # stale inventory cleared
+    assert mgr.list_tools() == []
+
+
+async def test_repeated_connect_does_not_leak_stacks() -> None:
+    server = build_server("pw", tool_names=("navigate",))
+    mgr = McpClientManager([_entry("pw")], session_opener=opener_for({"pw": server}))
+    await mgr.connect_all()
+    first = mgr._sessions["pw"]
+    await mgr.connect_all()  # no close() in between — must not orphan the old stack
+    # Exactly one live stack/session per server (the prior one was closed).
+    assert list(mgr._stacks) == ["pw"]
+    assert list(mgr._sessions) == ["pw"]
+    assert mgr._sessions["pw"] is not first
+    await mgr.close()
 
 
 async def test_list_statuses_is_name_sorted() -> None:

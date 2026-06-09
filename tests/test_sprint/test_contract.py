@@ -42,7 +42,7 @@ def test_sprint_contract_round_trips_via_to_dict_from_dict() -> None:
 def test_sprint_contract_rejects_unknown_verification_kind() -> None:
     from dream.sprint import SprintContract
 
-    with pytest.raises(ValueError, match="verification|kind"):
+    with pytest.raises(ValueError, match=r"verification|kind"):
         SprintContract(
             task_id="t1",
             sprint_number=1,
@@ -110,7 +110,7 @@ def test_sprint_contract_path_under_exec_plans_active(tmp_path: Path) -> None:
 def test_sprint_contract_path_rejects_unsafe_task_id(tmp_path: Path, bad: str) -> None:
     from dream.sprint import sprint_contract_path
 
-    with pytest.raises(ValueError, match="task_id|unsafe"):
+    with pytest.raises(ValueError, match=r"task_id|unsafe"):
         sprint_contract_path(tmp_path, task_id=bad, sprint_number=1)
 
 
@@ -126,3 +126,35 @@ def test_tech_debt_path_under_exec_plans(tmp_path: Path) -> None:
     from dream.sprint import tech_debt_path
 
     assert tech_debt_path(tmp_path) == tmp_path / "docs" / "exec-plans" / "tech-debt-tracker.md"
+
+
+def _minimal_contract_dict() -> dict:
+    return {
+        "task_id": "t1",
+        "sprint_number": 1,
+        "goal": "g",
+        "acceptance_criteria": ["MUST x"],
+        "verification_steps": [{"kind": "test", "ref": "x"}],
+    }
+
+
+@pytest.mark.parametrize("field", ["evaluator_enabled", "imposed"])
+def test_from_dict_parses_real_booleans(field: str) -> None:
+    from dream.sprint import SprintContract
+
+    data = _minimal_contract_dict()
+    data[field] = False
+    contract = SprintContract.from_dict(data)
+    assert getattr(contract, field) is False
+
+
+@pytest.mark.parametrize("field", ["evaluator_enabled", "imposed"])
+def test_from_dict_does_not_coerce_string_false_to_true(field: str) -> None:
+    """``bool("false")`` is ``True`` — a malformed contract must not silently
+    flip the flag. Strict parsing rejects non-bool values instead."""
+    from dream.sprint import SprintContract
+
+    data = _minimal_contract_dict()
+    data[field] = "false"
+    with pytest.raises((TypeError, ValueError)):
+        SprintContract.from_dict(data)

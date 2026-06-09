@@ -18,9 +18,11 @@ import inspect
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, TypeVar
 
 from ._contract import NegotiationEntry, SprintContract
+
+_T = TypeVar("_T")
 
 __all__ = [
     "EvaluatorPropose",
@@ -60,6 +62,37 @@ class NegotiationResult:
     imposed: bool
     rounds: int
     warning_event: dict[str, Any] | None = field(default=None)
+
+
+MAX_NEGOTIATION_ROUNDS = 3
+"""Spec criterion #9 — contract negotiation is bounded to ≤ 3 rounds."""
+
+
+def _validate_max_rounds(max_rounds: int) -> None:
+    if max_rounds < 1:
+        raise ValueError(f"max_rounds must be >= 1, got {max_rounds}")
+    if max_rounds > MAX_NEGOTIATION_ROUNDS:
+        raise ValueError(
+            f"max_rounds must be <= {MAX_NEGOTIATION_ROUNDS} (spec cap), "
+            f"got {max_rounds}"
+        )
+
+
+def _require_sync(raw: _T | Awaitable[_T], *, source: str) -> _T:
+    """Return ``raw`` when synchronous; close + reject when it's an awaitable.
+
+    Closing the awaitable first prevents a returned coroutine/task from leaking
+    and emitting ``RuntimeWarning: coroutine was never awaited`` after we bail.
+    """
+    if not inspect.isawaitable(raw):
+        return raw
+    close = getattr(raw, "close", None)
+    if callable(close):
+        close()
+    raise TypeError(
+        f"{source} returned an awaitable; use "
+        "negotiate_contract_async for LLM-backed heads"
+    )
 
 
 def _now_iso() -> str:
@@ -143,8 +176,7 @@ def _run_negotiation(
     :func:`_run_negotiation_async` to keep the await keyword out of the
     sync function body.
     """
-    if max_rounds < 1:
-        raise ValueError(f"max_rounds must be >= 1, got {max_rounds}")
+    _validate_max_rounds(max_rounds)
 
     log: list[NegotiationEntry] = list(_seed_carry_log(carry_items))
     last_proposal: list[str] = []
@@ -153,12 +185,7 @@ def _run_negotiation(
     for round_num in range(1, max_rounds + 1):
         rounds = round_num
         raw = evaluator_propose(round_num, list(log))
-        if inspect.isawaitable(raw):
-            raise TypeError(
-                "evaluator_propose returned an awaitable; use "
-                "negotiate_contract_async for LLM-backed heads"
-            )
-        proposal = list(raw)
+        proposal = list(_require_sync(raw, source="evaluator_propose"))
         last_proposal = proposal
         log.append(
             NegotiationEntry(
@@ -169,12 +196,7 @@ def _run_negotiation(
             )
         )
         raw_resp = generator_respond(round_num, list(log), list(proposal))
-        if inspect.isawaitable(raw_resp):
-            raise TypeError(
-                "generator_respond returned an awaitable; use "
-                "negotiate_contract_async for LLM-backed heads"
-            )
-        accept, counter = raw_resp
+        accept, counter = _require_sync(raw_resp, source="generator_respond")
         log.append(
             NegotiationEntry(
                 ts=_now_iso(),
@@ -206,8 +228,7 @@ async def _run_negotiation_async(
     max_rounds: int,
     carry_items: tuple[str, ...],
 ) -> NegotiationResult:
-    if max_rounds < 1:
-        raise ValueError(f"max_rounds must be >= 1, got {max_rounds}")
+    _validate_max_rounds(max_rounds)
 
     log: list[NegotiationEntry] = list(_seed_carry_log(carry_items))
     last_proposal: list[str] = []

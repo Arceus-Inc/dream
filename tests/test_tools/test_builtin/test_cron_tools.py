@@ -130,6 +130,20 @@ async def test_cron_show_unknown_job_is_structured_error(tmp_path: Path) -> None
     assert "root_cause" in result.metadata
 
 
+async def test_cron_show_registry_io_error_is_structured_error(tmp_path: Path) -> None:
+    """A filesystem error reading the registry (here: the path is a directory)
+    must surface as a recoverable tool error, not an uncaught OSError."""
+    registry = tmp_path / "cron.json"
+    registry.mkdir()  # reading a directory raises IsADirectoryError (an OSError)
+    sc = _session(tmp_path, registry_path=registry)
+    result = await CronShowTool().execute(
+        {"name": "doc-garden"}, _ctx(tmp_path, sc)
+    )
+    assert result.is_error is True
+    assert "root_cause" in result.metadata
+    assert "safe_retry" in result.metadata
+
+
 async def test_cron_show_missing_registry_path_is_error(tmp_path: Path) -> None:
     sc = _session(tmp_path, registry_path=None)
     result = await CronShowTool().execute(

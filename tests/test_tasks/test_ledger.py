@@ -21,9 +21,12 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+import jsonschema
 import pytest
 
 from dream.tasks._ledger import (
+    LEDGER_SCHEMA_PATH,
+    ClaimRecord,
     Ledger,
     LedgerEntry,
     LedgerSchemaError,
@@ -31,6 +34,8 @@ from dream.tasks._ledger import (
     read_ledger,
     write_ledger,
 )
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _t() -> datetime:
@@ -299,6 +304,36 @@ def test_ledger_json_schema_emits_required_fields() -> None:
         "updated_at",
         "entries",
     }
+
+
+def test_checked_in_schema_matches_model() -> None:
+    """The hand-checked-in ``docs/_schemas`` file must stay in lockstep with
+    ``Ledger.json_schema()`` so the #01 session-start validator and the model
+    never disagree (e.g. the #08 ``claim`` field)."""
+    on_disk = json.loads(
+        (_REPO_ROOT / LEDGER_SCHEMA_PATH).read_text(encoding="utf-8")
+    )
+    assert on_disk == Ledger.json_schema()
+
+
+def test_ledger_with_claim_passes_checked_in_schema() -> None:
+    """A ledger carrying a ``claim`` (added in #08) must validate against the
+    checked-in JSON Schema — otherwise every written ledger fails the
+    ``$schema`` check and blocks session start."""
+    schema = json.loads(
+        (_REPO_ROOT / LEDGER_SCHEMA_PATH).read_text(encoding="utf-8")
+    )
+    led = _ledger(entries=(_entry(id="a"),)).model_copy(
+        update={
+            "claim": ClaimRecord(
+                checkout_run_id="run-1",
+                claimed_by="agent-7",
+                claimed_at=_t(),
+            )
+        }
+    )
+    # Serialise exactly as ``write_ledger`` would (mode="json").
+    jsonschema.validate(instance=led.model_dump(mode="json"), schema=schema)
 
 
 def test_write_then_read_ledger(tmp_path: Path) -> None:

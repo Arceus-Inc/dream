@@ -30,7 +30,6 @@ from dream.swarm._permissions import (
     PermissionResponse,
 )
 
-
 # --- shape ----------------------------------------------------------------
 
 
@@ -251,9 +250,10 @@ async def test_wait_for_response_returns_when_resolved(tmp_path: Path) -> None:
     waiter = asyncio.create_task(
         pm.wait_for_response("perm-1", timeout=2.0, poll_interval=0.01)
     )
-    asyncio.create_task(_resolver_later())
+    resolver_task = asyncio.create_task(_resolver_later())
     resp = await waiter
     assert resp.allowed is True
+    await resolver_task
 
 
 async def test_wait_for_response_times_out_cleanly(tmp_path: Path) -> None:
@@ -290,10 +290,11 @@ async def test_wait_for_response_only_returns_matching_id(tmp_path: Path) -> Non
         await asyncio.sleep(0.05)
         pm.resolve(request_id="perm-2", allowed=False, reason="no")
 
-    asyncio.create_task(_resolve_other())
+    other_task = asyncio.create_task(_resolve_other())
     # Waiter for perm-1 must NOT return when perm-2 is resolved.
     with pytest.raises(TimeoutError):
         await pm.wait_for_response("perm-1", timeout=0.2, poll_interval=0.01)
+    await other_task
 
 
 # --- on-disk shape (inspectable by operator) ----------------------------

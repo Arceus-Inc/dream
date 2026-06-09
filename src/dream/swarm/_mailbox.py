@@ -11,11 +11,12 @@ is a spec change, not a library detail.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import json
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -265,11 +266,9 @@ class Mailbox:
             to_remove.append(path)  # remove corrupted files too, so they don't pile up
         messages.sort(key=lambda m: m.timestamp)
         for path in to_remove:
-            try:
+            # Best-effort: a peer that already removed it is fine.
+            with contextlib.suppress(OSError):
                 path.unlink()
-            except OSError:
-                # Best-effort: a peer that already removed it is fine.
-                pass
         return messages
 
 
@@ -285,9 +284,7 @@ def _is_message_file(path: Path) -> bool:
     if path.suffix != ".json":
         return False
     # Belt and braces: skip ``foo.json.tmp.<hex>`` orphans from atomic_write.
-    if ".tmp." in name:
-        return False
-    return True
+    return ".tmp." not in name
 
 
 def _try_load(path: Path) -> MailboxMessage | None:

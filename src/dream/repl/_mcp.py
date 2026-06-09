@@ -28,7 +28,7 @@ from dream.mcp import (
     read_allowlist,
 )
 from dream.services.repo_validator import Finding, has_blocking
-from dream.tools._registry import ToolRegistry
+from dream.tools._registry import ToolCollisionError, ToolRegistry
 from dream.tools.builtin.mcp_tool import register_mcp_management_tools, register_mcp_tools
 
 ALLOWLIST_RELPATH = Path(".harness") / "mcp-allowlist.toml"
@@ -84,10 +84,19 @@ async def setup_mcp_session(
         await manager.close()
         return McpSetup(None, findings, ())
 
-    registered = (
-        *register_mcp_tools(registry, manager),
-        *register_mcp_management_tools(registry, manager, credentials_path),
-    )
+    # Registration can fail mid-stream: a sanitised MCP tool name may collide
+    # with a tool already in the registry (``ToolCollisionError``). The function
+    # contract is "never raises on bad input", so convert that into a blocking
+    # finding and close the manager — otherwise the connected MCP sessions opened
+    # by ``connect_all`` would leak and the exception would abort the REPL.
+    try:
+        registered = (
+            *register_mcp_tools(registry, manager),
+            *register_mcp_management_tools(registry, manager, credentials_path),
+        )
+    except ToolCollisionError as exc:
+        await manager.close()
+        return McpSetup(None, [*findings, _collision_finding(exc)], ())
     return McpSetup(manager, findings, registered)
 
 
@@ -97,6 +106,15 @@ def _malformed_finding(exc: AllowlistError, path: Path) -> Finding:
         code="mcp_allowlist_malformed",
         message=f"MCP allowlist is malformed: {exc}",
         path=str(path),
+    )
+
+
+def _collision_finding(exc: ToolCollisionError) -> Finding:
+    return Finding(
+        severity="blocking",
+        code="mcp_tool_name_collision",
+        message=f"MCP tool registration collided with an existing tool: {exc}",
+        path=None,
     )
 
 

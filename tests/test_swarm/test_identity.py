@@ -10,7 +10,6 @@ from dream.swarm._identity import (
     sanitize_team_name,
 )
 
-
 # --- sanitisers ----------------------------------------------------------
 
 

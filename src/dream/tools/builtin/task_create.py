@@ -20,13 +20,14 @@ Scope is intentionally narrow this slice:
 
 from __future__ import annotations
 
+import shlex
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 from dream.contracts.tool import ToolResult
 from dream.tasks._session import read_task_context
-from dream.tools._base import BaseTool, ToolDeclaration
+from dream.tools._base import BaseTool, ToolDeclaration, ToolEffects
 from dream.tools._context import ToolExecutionContext
 
 
@@ -66,6 +67,20 @@ class TaskCreateTool(BaseTool):
     declaration = ToolDeclaration(risk="mutating", tier_required=1, timeout_seconds=15.0)
     input_model = TaskCreateInput
 
+    def effects_for(self, input: dict[str, Any]) -> ToolEffects:
+        """Surface the spawned command so the gate's command-deny can screen it.
+
+        The subprocess this tool launches is exactly as effectful as ``bash``;
+        reporting the command (or an argv joined into a shell-equivalent string)
+        lets the permission pipeline block, e.g. a destructive ``rm -rf``.
+        """
+        args = TaskCreateInput.model_validate(input)
+        if args.command is not None:
+            return ToolEffects(command=args.command)
+        if args.argv:
+            return ToolEffects(command=shlex.join(args.argv))
+        return ToolEffects()
+
     async def execute(self, input: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
         args = TaskCreateInput.model_validate(input)
 
@@ -91,6 +106,18 @@ class TaskCreateTool(BaseTool):
                 root_cause="both command and argv were supplied",
                 safe_retry="drop whichever is incorrect and call again",
                 stop_condition="do not retry with both fields set",
+            )
+        # An empty argv reaches ``create_subprocess_exec()`` with no program and
+        # raises a runtime TypeError; reject it as a normal tool error. (An empty
+        # ``argv=[]`` is "supplied", so the None-check above does not catch it.)
+        if args.argv is not None and (
+            not args.argv or any(not part for part in args.argv)
+        ):
+            return _err(
+                "task_create 'argv' must be a non-empty list of non-empty strings.",
+                root_cause="argv was empty or contained an empty string",
+                safe_retry="pass argv=[program, ...] with a real program name",
+                stop_condition="do not retry with an empty argv",
             )
 
         # The harness only spawns local_bash today. Keeping the input field
@@ -127,6 +154,15 @@ class TaskCreateTool(BaseTool):
                 root_cause=f"argv[0] not found: {exc}",
                 safe_retry="verify the executable is on PATH or use an absolute path",
                 stop_condition="do not retry with the same argv",
+            )
+        except OSError as exc:
+            # PermissionError / NotADirectoryError and other spawn-time OS errors
+            # (the manager rolls back its own ghost state before re-raising).
+            return _err(
+                f"Failed to spawn task: {exc}",
+                root_cause=str(exc),
+                safe_retry="check the executable permissions and the cwd, then retry",
+                stop_condition="do not retry until the OS-level cause is fixed",
             )
 
         return ToolResult(

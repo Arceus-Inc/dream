@@ -2,25 +2,29 @@
 
 from __future__ import annotations
 
-import time
-
 import pytest
 
 from dream.utils.clock import Clock, FakeClock, SystemClock
 
 
-def test_system_clock_returns_epoch_millis() -> None:
-    before = int(time.time() * 1000)
-    now = SystemClock().now_ms()
-    after = int(time.time() * 1000)
-    assert before <= now <= after
+def test_system_clock_returns_epoch_millis(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Freeze the wall clock so the assertion can't flake on NTP/VM clock jumps.
+    monkeypatch.setattr("dream.utils.clock.time.time", lambda: 1234.567)
+    assert SystemClock().now_ms() == 1_234_567
 
 
-def test_system_clock_is_non_decreasing() -> None:
+def test_system_clock_reads_time_time(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A controlled, non-decreasing sequence proves now_ms reflects time.time
+    # without relying on the host clock being monotonic.
+    ticks = iter([100.0, 100.0, 101.0])
+    monkeypatch.setattr("dream.utils.clock.time.time", lambda: next(ticks))
     clock = SystemClock()
     first = clock.now_ms()
     second = clock.now_ms()
-    assert second >= first
+    third = clock.now_ms()
+    assert first == 100_000
+    assert second == first
+    assert third == 101_000
 
 
 def test_fake_clock_starts_at_given_instant() -> None:

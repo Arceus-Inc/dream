@@ -21,16 +21,18 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from dream.planner._artefacts import (
     PlannerLedger,
+    _checked_task_id,
     planner_ledger_path,
     planner_spec_path,
 )
 from dream.swarm._handoff import HandoffArtefact, handoff_event
+from dream.utils.file_lock import exclusive_file_lock
 from dream.utils.fs import atomic_write_text
 
 __all__ = [
@@ -79,7 +81,7 @@ class PlannerAlreadyRan(RuntimeError):
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+    return datetime.now(UTC).isoformat(timespec="microseconds")
 
 
 async def run_planner(
@@ -92,18 +94,28 @@ async def run_planner(
     spec_path = planner_spec_path(worktree_root, task_id)
     ledger_path = planner_ledger_path(worktree_root, task_id)
 
-    if spec_path.exists() or ledger_path.exists():
-        # Don't even invoke the LLM — the runs-once guard is a hard refusal.
-        raise PlannerAlreadyRan(
-            f"planner has already produced artefacts for task {task_id!r}: "
-            f"spec={spec_path.exists()} ledger={ledger_path.exists()}"
-        )
+    # Serialize the runs-once guard with the artefact writes: a plain
+    # exists()-then-write leaves a TOCTOU window where two concurrent
+    # run_planner calls both pass the check and both overwrite the
+    # artefacts. The per-task lock makes "check + claim + write" atomic, so
+    # the second caller observes the artefacts and is refused. The lockfile
+    # lives under ``.dream`` (not ``exec-plans/active``) so it never pollutes
+    # the artefact folder (criterion #3).
+    safe_id = _checked_task_id(task_id)
+    lock_path = Path(worktree_root) / ".dream" / "planner" / f"{safe_id}.run.lock"
+    with exclusive_file_lock(lock_path):
+        if spec_path.exists() or ledger_path.exists():
+            # Don't even invoke the LLM — the runs-once guard is a hard refusal.
+            raise PlannerAlreadyRan(
+                f"planner has already produced artefacts for task {task_id!r}: "
+                f"spec={spec_path.exists()} ledger={ledger_path.exists()}"
+            )
 
-    output = await planner(task_id, intent)
-    ledger = output.ledger.with_task_id(task_id)
+        output = await planner(task_id, intent)
+        ledger = output.ledger.with_task_id(task_id)
 
-    atomic_write_text(spec_path, output.spec_markdown)
-    ledger.save(ledger_path)
+        atomic_write_text(spec_path, output.spec_markdown)
+        ledger.save(ledger_path)
 
     root = Path(worktree_root)
     spec_rel = spec_path.relative_to(root).as_posix()

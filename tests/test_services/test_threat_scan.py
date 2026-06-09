@@ -7,7 +7,10 @@ Three session-start blocking categories over the worktree, plus a
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+
+import pytest
 
 from dream.config.paths import DreamPaths
 from dream.services.threat_scan import LurkrIgnore, load_lurkr_ignore, threat_scan
@@ -58,15 +61,33 @@ def test_clean_repo_has_no_secret(tmp_path: Path) -> None:
     assert "secret" not in _codes(threat_scan(_paths(tmp_path)))
 
 
+def test_secret_detected_in_pem_file(tmp_path: Path) -> None:
+    _write(tmp_path, "deploy/server.pem", f"{FAKE_AWS}\n")
+    assert "secret" in _codes(threat_scan(_paths(tmp_path)))
+
+
+def test_secret_detected_in_extensionless_credentials_file(tmp_path: Path) -> None:
+    _write(tmp_path, "credentials", f"aws_key={FAKE_AWS}\n")
+    assert "secret" in _codes(threat_scan(_paths(tmp_path)))
+
+
 # --- world_writable -------------------------------------------------------
 
+# ``chmod(0o666)`` does not reliably set the world-writable bit on non-POSIX
+# platforms (notably Windows), so the permission-bit assertions are gated.
+_posix_only = pytest.mark.skipif(
+    os.name != "posix", reason="world-writable bit requires POSIX chmod semantics"
+)
 
+
+@_posix_only
 def test_world_writable_under_docs_flagged(tmp_path: Path) -> None:
     p = _write(tmp_path, "docs/note.md", "hi\n")
     p.chmod(0o666)
     assert "world_writable" in _codes(threat_scan(_paths(tmp_path)))
 
 
+@_posix_only
 def test_normal_docs_file_not_flagged(tmp_path: Path) -> None:
     p = _write(tmp_path, "docs/note.md", "hi\n")
     p.chmod(0o644)
@@ -120,6 +141,22 @@ def test_ignore_code_suppresses_whole_category(tmp_path: Path) -> None:
 
 def test_load_ignore_missing_file_is_empty(tmp_path: Path) -> None:
     assert load_lurkr_ignore(_paths(tmp_path)) == LurkrIgnore()
+
+
+def test_ignore_glob_matches_backslash_path() -> None:
+    # A finding path built from a Windows-style ``str(Path)`` is backslash-
+    # separated; a POSIX-style ignore glob must still suppress it.
+    ignore = LurkrIgnore(paths=("tests/fixtures/**",))
+    assert ignore.suppresses("secret", "tests\\fixtures\\sample.txt")
+
+
+def test_malformed_ignore_file_becomes_blocking_finding(tmp_path: Path) -> None:
+    # A broken lurkr-ignore.toml must not crash session start; it surfaces as a
+    # blocking finding instead of bubbling LurkrIgnoreError.
+    _write(tmp_path, ".harness/lurkr-ignore.toml", "paths = [unclosed\n")
+    findings = threat_scan(_paths(tmp_path))
+    assert any(f.code == "lurkr_ignore_invalid" for f in findings)
+    assert all(f.severity == "blocking" for f in findings)
 
 
 def test_all_findings_are_blocking(tmp_path: Path) -> None:

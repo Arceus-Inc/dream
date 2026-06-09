@@ -65,6 +65,21 @@ def test_cmd_skill_unknown(tmp_path: Path) -> None:
     assert "unknown" in out.getvalue()
 
 
+def test_cmd_skill_load_failure_does_not_crash(tmp_path: Path) -> None:
+    """If the body can't be loaded (file removed/corrupted after startup),
+    ``/skill`` must surface an error and keep the session alive, not raise."""
+    path = write_skill(tmp_path, "vanish", body="ORIGINAL BODY")
+    reg = _registry_with(path)
+    # The skill resolves (registered at startup) but its body is now unreadable.
+    path.unlink()
+    out = io.StringIO()
+    # Must not raise — the REPL command path has to stay alive.
+    _cmd_skill("vanish", reg, sink=EventSink(tmp_path / "ev.jsonl"), output=out, use=False)
+    text = out.getvalue().lower()
+    assert "vanish" in text
+    assert "could not load" in text or "error" in text or "failed" in text
+
+
 # --- session-start validation gate (MUST #3) --------------------------------
 
 

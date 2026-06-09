@@ -62,6 +62,17 @@ def test_read_events_parses_lines_and_skips_malformed(tmp_path: Path) -> None:
     assert len(events) == 2  # two good lines; malformed + blank skipped
 
 
+def test_read_events_skips_wrong_top_level_json_type(tmp_path: Path) -> None:
+    # Valid JSON with the wrong top-level type (list/string) raises TypeError
+    # inside from_jsonl_line; it must be skipped as malformed, not crash.
+    path = tmp_path / "trace.jsonl"
+    from dream.observability._events import to_jsonl_line
+
+    good = to_jsonl_line(_ev(1000))
+    path.write_text(good + "\n" + "[]\n" + '"x"\n' + good + "\n", encoding="utf-8")
+    assert len(read_events(path)) == 2
+
+
 # --- parse_window -----------------------------------------------------------
 
 
@@ -86,6 +97,15 @@ def test_parse_window_rejects_garbage() -> None:
         parse_window("-1y", now_ms=0)
     with pytest.raises(QueryError):
         parse_window("not-a-time", now_ms=0)
+
+
+def test_parse_window_rejects_signed_relative_body() -> None:
+    # ``--1h`` must NOT be read as -1 hours (a future timestamp); a signed body
+    # after the leading ``-`` is invalid.
+    with pytest.raises(QueryError):
+        parse_window("--1h", now_ms=10 * HOUR_MS)
+    with pytest.raises(QueryError):
+        parse_window("-+1h", now_ms=10 * HOUR_MS)
 
 
 # --- query_logs -------------------------------------------------------------

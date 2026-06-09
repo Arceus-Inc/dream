@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 from dream.config.paths import DreamPaths
@@ -10,6 +11,10 @@ from dream.observability._writer import TraceWriter
 from dream.tools._context import ToolExecutionContext
 from dream.tools.builtin import default_registry
 from dream.tools.builtin.observability_query import QueryLogsTool, QueryMetricsTool
+from dream.utils.clock import FakeClock
+
+_EVENT_TS = "2026-06-07T00:00:00+00:00"
+_EVENT_MS = int(datetime.fromisoformat(_EVENT_TS).timestamp() * 1000)
 
 
 def _ctx(tmp_path: Path) -> ToolExecutionContext:
@@ -26,7 +31,7 @@ def _seed(tmp_path: Path) -> None:
 
 def _ev(event_type: str, attributes: dict[str, object]) -> TraceEvent:
     return TraceEvent(
-        ts="2026-06-07T00:00:00+00:00",
+        ts=_EVENT_TS,
         session_id="s1",
         task_id="T1",
         event_type=event_type,  # type: ignore[arg-type]
@@ -64,6 +69,17 @@ async def test_query_logs_bad_time_spec_is_tool_error(tmp_path: Path) -> None:
     assert "root_cause" in result.metadata
 
 
+async def test_query_logs_defaults_until_to_now(tmp_path: Path) -> None:
+    """Omitting ``until`` must bound the window at *now*, not leave it open —
+    so future-dated events (clock skew, replayed traces) are excluded."""
+    _seed(tmp_path)
+    # ``now`` is one hour *before* the seeded events, which are therefore future.
+    clock = FakeClock(start_ms=_EVENT_MS - 3_600_000)
+    result = await QueryLogsTool(clock=clock).execute({}, _ctx(tmp_path))
+    assert result.is_error is False
+    assert "no matching events" in result.content
+
+
 # --- query_metrics ----------------------------------------------------------
 
 
@@ -92,6 +108,18 @@ async def test_query_metrics_no_samples(tmp_path: Path) -> None:
     _seed(tmp_path)
     result = await QueryMetricsTool().execute(
         {"metric": "nope.attr", "agg": "sum"}, _ctx(tmp_path)
+    )
+    assert result.is_error is False
+    assert "no samples" in result.content
+
+
+async def test_query_metrics_defaults_until_to_now(tmp_path: Path) -> None:
+    """Same default-window contract for metrics: future-dated samples must not
+    leak into an aggregation when ``until`` is omitted."""
+    _seed(tmp_path)
+    clock = FakeClock(start_ms=_EVENT_MS - 3_600_000)
+    result = await QueryMetricsTool(clock=clock).execute(
+        {"metric": "gen_ai.usage.prompt_tokens", "agg": "sum"}, _ctx(tmp_path)
     )
     assert result.is_error is False
     assert "no samples" in result.content

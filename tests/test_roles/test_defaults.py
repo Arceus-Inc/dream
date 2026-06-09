@@ -12,7 +12,6 @@ import pytest
 
 from dream.roles import default_role_manifest
 
-
 # --- the names ---------------------------------------------------------------
 
 

@@ -130,6 +130,25 @@ async def test_task_output_max_bytes_truncates(tmp_path: Path) -> None:
     await sc.manager.stop_task(task.id)
 
 
+async def test_task_output_tail_is_byte_exact_on_large_log(tmp_path: Path) -> None:
+    """The tail window is a true byte-bounded read from the end: the returned
+    text is exactly the last ``max_bytes`` bytes, even for a large log."""
+    sc = _session(tmp_path)
+    task = await sc.manager.create_shell_task(
+        description="seed", cwd=str(tmp_path), command="echo seed"
+    )
+    body = "".join(f"line-{i:05d}\n" for i in range(20000))  # ~220 KB
+    task.output_file.write_text(body, encoding="utf-8")
+    result = await TaskOutputTool().execute(
+        {"task_id": task.id, "max_bytes": 200}, _ctx(tmp_path, sc)
+    )
+    assert result.is_error is False
+    expected = body.encode("utf-8")[-200:].decode("utf-8", errors="replace")
+    assert result.content == expected
+    assert result.metadata["bytes_returned"] == len(expected)
+    await sc.manager.stop_task(task.id)
+
+
 async def test_task_output_empty_log_renders_placeholder(tmp_path: Path) -> None:
     sc = _session(tmp_path)
     task = await sc.manager.create_shell_task(

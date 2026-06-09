@@ -42,11 +42,46 @@ def test_tool_deny(tmp_path: Path) -> None:
     assert d.rule == "tool_deny"
 
 
-def test_tool_allow(tmp_path: Path) -> None:
+def test_tool_allow_overrides_tool_deny_only(tmp_path: Path) -> None:
+    # Allow-listing a deny-listed tool clears the tool-deny gate, but the rest of
+    # the pipeline still runs: a read-only action then succeeds on its own merits.
+    pol = Policy(
+        tier=SandboxTier.REPO_WRITE,
+        cwd=tmp_path,
+        tool_deny=frozenset({"t"}),
+        tool_allow=frozenset({"t"}),
+    )
+    d = evaluate(_req(is_read_only=True), pol)
+    assert d.outcome is Outcome.ALLOW
+    assert d.rule == "read_only"
+
+
+def test_tool_allow_does_not_bypass_command_deny(tmp_path: Path) -> None:
+    # An allow-listed tool running a deny-pattern command is still denied.
+    pol = Policy(tier=SandboxTier.UNRESTRICTED, cwd=tmp_path, tool_allow=frozenset({"t"}))
+    d = evaluate(_req(is_read_only=True, command="rm -rf /"), pol)
+    assert d.outcome is Outcome.DENY
+    assert d.rule == "command_deny"
+
+
+def test_tool_allow_does_not_bypass_path_deny(tmp_path: Path) -> None:
+    pol = Policy(
+        tier=SandboxTier.UNRESTRICTED,
+        cwd=tmp_path,
+        tool_allow=frozenset({"t"}),
+        path_deny=(PathRule(pattern="**/secret/**", allow=False),),
+    )
+    d = evaluate(_req(is_read_only=True, target_paths=(tmp_path / "secret" / "k.txt",)), pol)
+    assert d.outcome is Outcome.DENY
+    assert d.rule == "path_deny"
+
+
+def test_tool_allow_effectful_still_gated_by_trust(tmp_path: Path) -> None:
+    # An untrusted but allow-listed tool doing a write is gated (ASK), not allowed.
     pol = Policy(tier=SandboxTier.REPO_WRITE, cwd=tmp_path, tool_allow=frozenset({"t"}))
     d = evaluate(_req(target_paths=(tmp_path / "x.txt",)), pol)
-    assert d.outcome is Outcome.ALLOW
-    assert d.rule == "tool_allow"
+    assert d.outcome is Outcome.ASK
+    assert d.rule == "tier_trust"
 
 
 def test_path_deny_rule(tmp_path: Path) -> None:
@@ -57,6 +92,24 @@ def test_path_deny_rule(tmp_path: Path) -> None:
         required_tier={"t": SandboxTier.REPO_WRITE},
     )
     d = evaluate(_req(target_paths=(tmp_path / "secret" / "k.txt",)), pol)
+    assert d.outcome is Outcome.DENY
+    assert d.rule == "path_deny"
+
+
+def test_path_deny_matches_symlink_resolved_form(tmp_path: Path) -> None:
+    # A symlink whose own path is innocuous but resolves into a denied location
+    # must still be denied (no lexical-only bypass).
+    secret_dir = tmp_path / "secret"
+    secret_dir.mkdir()
+    (secret_dir / "k.txt").write_text("x")
+    link = tmp_path / "innocent.txt"
+    link.symlink_to(secret_dir / "k.txt")
+    pol = Policy(
+        tier=SandboxTier.REPO_WRITE,
+        cwd=tmp_path,
+        path_deny=(PathRule(pattern="**/secret/**", allow=False),),
+    )
+    d = evaluate(_req(is_read_only=True, target_paths=(link,)), pol)
     assert d.outcome is Outcome.DENY
     assert d.rule == "path_deny"
 

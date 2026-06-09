@@ -74,7 +74,7 @@ class QueryLogsTool(BaseTool):
                 labels=args.labels,
                 contains=args.contains,
                 since_ms=parse_window(args.since, now_ms=now),
-                until_ms=parse_window(args.until, now_ms=now),
+                until_ms=_until_bound(args.until, now_ms=now),
             )
         except QueryError as exc:
             return _bad_query(exc)
@@ -106,7 +106,7 @@ class QueryMetricsTool(BaseTool):
                 metric=args.metric,
                 agg=args.agg,
                 since_ms=parse_window(args.since, now_ms=now),
-                until_ms=parse_window(args.until, now_ms=now),
+                until_ms=_until_bound(args.until, now_ms=now),
                 labels=args.labels,
             )
         except QueryError as exc:
@@ -119,6 +119,19 @@ class QueryMetricsTool(BaseTool):
         else:
             content = f"{args.metric} {args.agg} = {value:g}"
         return ToolResult(content=content, metadata={"metric": args.metric, "value": value})
+
+
+def _until_bound(spec: str | None, *, now_ms: int) -> int:
+    """Resolve the window's upper bound, defaulting to *now* when unset.
+
+    The ``until`` field documents "default: now"; passing ``None`` straight to
+    ``parse_window`` would instead drop the upper bound entirely and admit
+    future-dated events. An explicit spec is parsed normally.
+    """
+    if spec is None:
+        return now_ms
+    parsed = parse_window(spec, now_ms=now_ms)
+    return parsed if parsed is not None else now_ms
 
 
 def _trace_path(ctx: ToolExecutionContext) -> Path:

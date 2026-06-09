@@ -128,6 +128,22 @@ async def test_plan_show_unknown_task_id_is_structured_error(tmp_path: Path) -> 
     assert "root_cause" in result.metadata
 
 
+@pytest.mark.parametrize("bad_id", ["", "../escape", "a/b", "x\x00y"])
+async def test_plan_show_invalid_task_id_is_structured_error(
+    tmp_path: Path, bad_id: str
+) -> None:
+    """Traversal-like / empty ids raise ValueError from ``_checked_task_id``;
+    that must surface as the structured tool error, not an engine failure."""
+    plans = tmp_path / "exec-plans"
+    sc = _session(tmp_path, plans_root=plans)
+    result = await PlanShowTool().execute(
+        {"task_id": bad_id}, _ctx(tmp_path, sc)
+    )
+    assert result.is_error is True
+    assert "root_cause" in result.metadata
+    assert "safe_retry" in result.metadata
+
+
 async def test_plan_show_explicit_state_with_missing_plan_is_error(tmp_path: Path) -> None:
     plans = tmp_path / "exec-plans"
     sc = _session(tmp_path, plans_root=plans)

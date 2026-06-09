@@ -116,14 +116,7 @@ class EngineToolDispatcher:
 
         is_read_only = tool.is_read_only_for(input)
         if self.permission_gate is not None:
-            effects = tool.effects_for(input)
-            request = PermissionRequest(
-                tool_name=name,
-                is_read_only=is_read_only,
-                target_paths=effects.target_paths,
-                command=effects.command,
-                network_host=effects.network_host,
-            )
+            request = self._permission_request(name, tool, input, is_read_only)
             decision = self.permission_gate(request)
             if not decision.allowed:
                 return self._denied(name, decision, is_read_only)
@@ -175,6 +168,37 @@ class EngineToolDispatcher:
             offloaded=offloaded,
         )
         return inline, result.is_error
+
+    def _permission_request(
+        self, name: str, tool: Any, input: dict[str, Any], is_read_only: bool
+    ) -> PermissionRequest:
+        """Build the gate request from the tool's per-call effects.
+
+        Fallback (Spec 13C rollout): a *mutating* tool that reports no path,
+        command, or network effect (e.g. ``task_stop``, ``mcp_auth`` and MCP
+        adapters whose side effect is process/credential state, not a file)
+        would otherwise produce a request the checker cannot classify, fall
+        through to ``ASK``, and be denied — breaking those tools under the
+        default policy. We anchor such a request to the in-repo working dir so
+        the checker sees a WRITE effect: still tier-gated (an untrusted tool is
+        asked, a promoted one runs), never silently allowed.
+        """
+        effects = tool.effects_for(input)
+        target_paths = effects.target_paths
+        if (
+            not is_read_only
+            and not target_paths
+            and effects.command is None
+            and effects.network_host is None
+        ):
+            target_paths = (self.working_dir,)
+        return PermissionRequest(
+            tool_name=name,
+            is_read_only=is_read_only,
+            target_paths=target_paths,
+            command=effects.command,
+            network_host=effects.network_host,
+        )
 
     # --- typed-error builders ------------------------------------------------
 

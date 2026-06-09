@@ -10,12 +10,12 @@ but the live manifest is *never* mutated in place.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 
 def _now_iso() -> str:
-    return datetime.now(tz=timezone.utc).isoformat(timespec="microseconds")
+    return datetime.now(tz=UTC).isoformat(timespec="microseconds")
 
 
 @dataclass(frozen=True)

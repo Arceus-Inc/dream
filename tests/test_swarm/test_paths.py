@@ -47,7 +47,20 @@ def test_helpers_do_not_create_directories_implicitly(tmp_path: Path) -> None:
 # --- leader id validation (security boundary; same shape as worktree slug) ---
 
 
-@pytest.mark.parametrize("bad", ["", "../escape", "with/slash", "a:b", "a b"])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "",
+        "../escape",
+        "with/slash",
+        "a:b",
+        "a b",
+        "planner\n",  # trailing newline must not slip past the regex
+        "planner.",  # trailing dot normalizes away on Windows
+        ".planner",  # leading dot (hidden / traversal-adjacent)
+        "trailing.dot.",
+    ],
+)
 def test_validate_leader_id_rejects_unsafe_values(bad: str) -> None:
     with pytest.raises(ValueError):
         validate_leader_id(bad)

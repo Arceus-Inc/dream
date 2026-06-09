@@ -32,7 +32,6 @@ from dream.swarm._remote import RemoteExecutor
 from dream.swarm._spawn import (
     BackendType,
     TeammateExecutor,
-    TeammateSpawnConfig,
 )
 from dream.swarm.in_process import InProcessExecutor, InProcessFactory
 from dream.swarm.subprocess_backend import ArgvBuilder, SubprocessExecutor
@@ -92,7 +91,7 @@ class TeamMember:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "TeamMember":
+    def from_dict(cls, data: dict[str, Any]) -> TeamMember:
         return cls(
             agent_id=data["agent_id"],
             name=data["name"],
@@ -137,7 +136,7 @@ class TeamFile:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "TeamFile":
+    def from_dict(cls, data: dict[str, Any]) -> TeamFile:
         members = {
             k: TeamMember.from_dict(v) for k, v in (data.get("members") or {}).items()
         }
@@ -156,7 +155,7 @@ class TeamFile:
         atomic_write_text(path, json.dumps(self.to_dict(), indent=2) + "\n")
 
     @classmethod
-    def load(cls, path: Path) -> "TeamFile":
+    def load(cls, path: Path) -> TeamFile:
         data = json.loads(path.read_text(encoding="utf-8"))
         return cls.from_dict(data)
 

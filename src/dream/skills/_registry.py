@@ -20,14 +20,22 @@ class SkillRegistry:
     """Per-session skill catalogue: frontmatter eager, bodies lazy."""
 
     def __init__(self) -> None:
-        self._by_name: dict[str, SkillMeta] = {}
-        self._lookup: dict[str, str] = {}  # lowercased key -> canonical name
+        self._by_name: dict[str, SkillMeta] = {}  # lowercased canonical name -> meta
+        self._lookup: dict[str, str] = {}  # lowercased key -> lowercased canonical name
         self._bodies: dict[str, str] = {}
 
     def register(self, meta: SkillMeta) -> SkillShadow | None:
-        """Register ``meta``; return a :class:`SkillShadow` if it replaced a name."""
+        """Register ``meta``; return a :class:`SkillShadow` if it replaced a name.
+
+        Collisions are detected on the *normalized* (lowercased) name so two
+        names differing only by case shadow each other — matching the
+        case-insensitive resolution below. Re-registering a canonical name first
+        clears the shadowed definition's lookup keys so stale aliases/command
+        names never keep resolving to the replacement.
+        """
+        canonical = meta.name.lower()
+        existing = self._by_name.get(canonical)
         shadow: SkillShadow | None = None
-        existing = self._by_name.get(meta.name)
         if existing is not None:
             shadow = SkillShadow(
                 name=meta.name,
@@ -36,9 +44,10 @@ class SkillRegistry:
                 winner_path=meta.path,
                 shadowed_path=existing.path,
             )
-        self._by_name[meta.name] = meta
+            self._drop_lookup_keys(canonical)
+        self._by_name[canonical] = meta
         for key in self._lookup_keys(meta):
-            self._lookup[key] = meta.name
+            self._lookup[key] = canonical
         return shadow
 
     def resolve(self, name: str) -> SkillMeta | None:
@@ -68,6 +77,12 @@ class SkillRegistry:
         if event_sink is not None:
             event_sink(ContextSkillLoaded(skill_name=meta.name))
         return SkillDefinition(meta=meta, content=body)
+
+    def _drop_lookup_keys(self, canonical: str) -> None:
+        """Remove every lookup key currently pointing at ``canonical``."""
+        stale = [key for key, target in self._lookup.items() if target == canonical]
+        for key in stale:
+            del self._lookup[key]
 
     @staticmethod
     def _lookup_keys(meta: SkillMeta) -> set[str]:

@@ -102,6 +102,6 @@ def test_acquire_role_lock_rejects_unknown_role(tmp_path: Path) -> None:
 def test_acquire_role_lock_rejects_unsafe_task_id(tmp_path: Path) -> None:
     from dream.sprint import acquire_role_lock
 
-    with pytest.raises(ValueError, match="task_id|unsafe"):
+    with pytest.raises(ValueError, match=r"task_id|unsafe"):
         with acquire_role_lock(tmp_path, task_id="a/b", role="generator"):
             pass

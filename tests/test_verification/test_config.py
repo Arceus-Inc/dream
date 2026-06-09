@@ -49,6 +49,15 @@ def test_read_missing_file_is_empty(tmp_path: Path) -> None:
     assert read_verification_config(tmp_path / "nope.toml") == []
 
 
+def test_read_directory_path_raises(tmp_path: Path) -> None:
+    # An existing-but-non-file path (a directory here) is misconfiguration and
+    # must fail fast, not silently skip verification.
+    config_dir = tmp_path / "verification.toml"
+    config_dir.mkdir()
+    with pytest.raises(VerificationConfigError):
+        read_verification_config(config_dir)
+
+
 def test_read_parses_file(tmp_path: Path) -> None:
     path = tmp_path / "verification.toml"
     path.write_text('[[step]]\ncommand = "pytest -q"\n', encoding="utf-8")

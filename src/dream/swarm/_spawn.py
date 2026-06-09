@@ -8,7 +8,7 @@ Spec 10 §"Teammate spawn config" pins the runtime spawn handle and
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal, Protocol, runtime_checkable
 
 __all__ = [
@@ -31,6 +31,23 @@ later slice — they only affect visualisation, not the file bus."""
 
 SubagentTaskType = Literal["local_agent", "remote_agent", "in_process_teammate"]
 """Spec decision #11: which #07 ``TaskType`` the spawn maps to."""
+
+
+def _coerce_tokens(value: object, *, field_name: str) -> tuple[str, ...]:
+    """Coerce a list/tuple of string tokens to a tuple, rejecting bare strings.
+
+    A plain ``str`` is an iterable of characters, so accepting it would split a
+    single token (e.g. ``"read"``) into ``("r", "e", "a", "d")``. Callers must
+    pass an explicit sequence of tokens.
+    """
+    if isinstance(value, str):
+        raise TypeError(
+            f"{field_name} must be a sequence of strings, not a bare string "
+            f"(got {value!r}); wrap a single value as a one-element list"
+        )
+    if isinstance(value, tuple):
+        return value
+    return tuple(value)  # type: ignore[arg-type]
 
 
 class BridgeDisabled(RuntimeError):
@@ -64,11 +81,17 @@ class TeammateSpawnConfig:
             raise ValueError(
                 f"depth must be >= 1 (depth 0 is the top-level runner); got {self.depth}"
             )
-        # ergonomics: accept list, store tuple
-        if not isinstance(self.permissions, tuple):
-            object.__setattr__(self, "permissions", tuple(self.permissions))
-        if not isinstance(self.subscriptions, tuple):
-            object.__setattr__(self, "subscriptions", tuple(self.subscriptions))
+        # ergonomics: accept a list/tuple of tokens and store a tuple. A bare
+        # string is rejected, not iterated: ``"read"`` would otherwise coerce
+        # to ``("r", "e", "a", "d")`` and silently corrupt the token set.
+        object.__setattr__(
+            self, "permissions", _coerce_tokens(self.permissions, field_name="permissions")
+        )
+        object.__setattr__(
+            self,
+            "subscriptions",
+            _coerce_tokens(self.subscriptions, field_name="subscriptions"),
+        )
 
 
 @dataclass(frozen=True)

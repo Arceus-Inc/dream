@@ -29,7 +29,6 @@ from dream.swarm._mailbox import (
 )
 from dream.swarm._paths import leader_inbox_dir
 
-
 # --- MailboxMessage shape ----------------------------------------------------
 
 

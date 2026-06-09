@@ -4,11 +4,12 @@ Spec 13C.3 — the production wiring that turns a :class:`ToolRegistry` and the
 operator's ``.harness`` config into a :data:`PermissionGate` the dispatcher
 consults before every tool call.
 
-The *trusted* tier of each tool comes from its own declaration (built-in tools
-are verified, so their declared ``tier_required`` is honoured); discovered tools
-absent from the registry stay read-only until promoted (the trust ramp, handled
-inside :func:`build_policy`). Staleness/other warnings are returned as data for
-the caller to surface — this module never logs.
+The *trusted* tier of a tool comes from its own declaration only when it is a
+vetted built-in (``ToolSource.is_builtin``); discovered tools (per-repo, skill,
+MCP) are withheld from the trusted map by :func:`_trusted_tiers`, so they stay
+read-only until an operator promotes them in tool-tier-overrides (the trust
+ramp). Staleness/other warnings are returned as data for the caller to surface
+— this module never logs.
 """
 
 from __future__ import annotations
@@ -62,8 +63,15 @@ def compute_session_role_allowlist(
 
     Returned set is the dispatcher's hard allow-list (Spec 10 decision #8) —
     a role cannot dispatch a tool outside this set even with an allow-all gate.
-    The same set should also be passed to :func:`make_permission_gate` as
-    ``tool_allow`` so the gate refuses unlisted tools defensively.
+
+    Do NOT feed this set to :func:`make_permission_gate` as ``tool_allow``:
+    ``tool_allow`` is an *allow-list* that short-circuits the checker to
+    ``ALLOW`` (it returns early, before the path-deny / command-deny / tier /
+    trust steps). Using it for role enforcement would *widen* a role tool past
+    those guards (e.g. ``bash`` could run ``rm -rf /``) rather than restrict it.
+    Role enforcement is a "must be in set" deny and belongs in the dispatcher
+    (``EngineToolDispatcher.role_allowed_tools``); the gate must still apply its
+    full pipeline to every role-allowed tool.
     """
     trusted_tiers = _trusted_tiers(registry)
     assembly = build_policy(
@@ -76,9 +84,18 @@ def compute_session_role_allowlist(
 
 
 def _trusted_tiers(registry: ToolRegistry) -> dict[str, SandboxTier]:
+    """Declared tiers for *vetted built-in* tools only.
+
+    Discovered tools (per-repo, skill, MCP) are deliberately omitted: a tool
+    absent from this map falls to the checker's READ_ONLY trust default (the
+    trust ramp on :class:`Policy`), so a discovered tool that declares a
+    mutating tier does not inherit it. Operators promote such tools explicitly
+    via tool-tier-overrides, which :func:`build_policy` merges on top.
+    """
     return {
         tool.name: _tier_from_int(tool.declaration.tier_required)
-        for tool in registry.list_tools()
+        for tool, source in registry.iter_with_source()
+        if source.is_builtin
     }
 
 

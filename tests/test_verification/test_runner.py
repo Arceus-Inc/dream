@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -71,9 +72,51 @@ async def test_ui_verifier_seam_is_used(tmp_path: Path) -> None:
     assert report.steps[0].name == "/home"
 
 
-def test_skip_ui_verifier_returns_skipped() -> None:
-    import asyncio
+async def test_ui_verifier_exception_becomes_error_step(tmp_path: Path) -> None:
+    # A crashing UI verifier must produce an ``error`` step, not abort the run.
+    class _BoomUi:
+        async def verify(self, user_path: str) -> RepoVerificationStep:
+            raise RuntimeError("driver crashed")
 
+    report = await run_verification(
+        [_spec("echo ok")], cwd=tmp_path, ui_paths=("/home",), ui_verifier=_BoomUi()
+    )
+    assert [s.status for s in report.steps] == ["success", "error"]
+    assert "driver crashed" in report.steps[1].stderr
+    assert report.steps[1].name == "/home"
+
+
+async def test_falsy_ui_verifier_is_honoured(tmp_path: Path) -> None:
+    # A verifier that is falsy (``__bool__`` False) must still be used — an
+    # ``or`` would silently swap it for the skip default.
+    class _FalsyUi:
+        def __bool__(self) -> bool:
+            return False
+
+        async def verify(self, user_path: str) -> RepoVerificationStep:
+            return RepoVerificationStep(
+                command=f"ui:{user_path}", status="success", name=user_path
+            )
+
+    report = await run_verification(
+        [], cwd=tmp_path, ui_paths=("/home",), ui_verifier=_FalsyUi()
+    )
+    assert report.steps[0].status == "success"  # not "skipped"
+
+
+async def test_timeout_kills_child_process_group(tmp_path: Path) -> None:
+    # A timed-out step spawns a background child; killing the group must reap it.
+    marker = tmp_path / "alive.txt"
+    # Parent sleeps briefly; a backgrounded grandchild would outlive a PID-only
+    # kill and create the marker. A group kill prevents the marker entirely.
+    command = f"(sleep 3; touch {marker}) & sleep 5"
+    report = await run_verification([_spec(command)], cwd=tmp_path, timeout_seconds=0.3)
+    assert report.steps[0].status == "error"
+    await asyncio.sleep(1.0)  # give a leaked child time to fire its touch
+    assert not marker.exists()
+
+
+def test_skip_ui_verifier_returns_skipped() -> None:
     step = asyncio.run(SkipUiVerifier().verify("/x"))
     assert step.status == "skipped" and step.name == "/x"
 
