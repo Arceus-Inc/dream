@@ -24,12 +24,22 @@ from dream.tools._base import BaseTool
 
 
 class ToolSource(Enum):
-    """Provenance tag controlling registry list-order."""
+    """Provenance tag controlling registry list-order and trust."""
 
     DEFAULT = "default"
     PER_REPO = "per_repo"
     SKILL = "skill"
     MCP = "mcp"
+
+    @property
+    def is_builtin(self) -> bool:
+        """Whether this provenance is a vetted built-in tool.
+
+        Only built-ins (``DEFAULT``) are trusted at their declared tier. The
+        rest (per-repo, skill, MCP) are *discovered* and ride the trust ramp:
+        untrusted until an operator promotes them in tool-tier-overrides.
+        """
+        return self is ToolSource.DEFAULT
 
 
 class ToolCollisionError(ValueError):
@@ -63,6 +73,15 @@ class ToolRegistry:
     def get(self, name: str) -> BaseTool | None:
         """Return the registered tool, or ``None`` if not present."""
         return self._tools.get(name)
+
+    def iter_with_source(self) -> Iterator[tuple[BaseTool, ToolSource]]:
+        """Yield ``(tool, source)`` pairs in deterministic listing order.
+
+        Carries each tool's provenance alongside it so callers that gate on
+        trust (e.g. the permission-gate builder) need not re-derive origin.
+        """
+        for tool in self.list_tools():
+            yield tool, self._sources[tool.name]
 
     def list_tools(self) -> list[BaseTool]:
         """Return all registered tools in deterministic order."""
