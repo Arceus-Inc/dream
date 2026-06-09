@@ -24,9 +24,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
-
 import pytest
+from pydantic import BaseModel
 
 from dream.contracts.tool import ToolResult
 from dream.engine._engine import QueryEngine
