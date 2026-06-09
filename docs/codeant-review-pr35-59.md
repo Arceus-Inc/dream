@@ -6,15 +6,13 @@ _Generated 2026-06-08 from `codeant-ai[bot]` inline comments. 95 unique findings
 
 | Status | Count |
 |---|---|
-| ✅ Fixed | 91 |
+| ✅ Fixed | 92 |
 | ➖ Already fixed | 3 |
-| ⏭️ Deferred | 1 |
 
-**Total: 95** — 94 resolved (91 fixed this pass + 3 already addressed in the tree), 1 deferred to a tracked left-over spec.
+**Total: 95** — all resolved (92 fixed this pass + 3 already addressed in the tree).
 
 - **✅ Fixed** — patched TDD-style (test reproducing the issue + minimal fix + clean refactor).
 - **➖ Already fixed** — the tree already addressed it (earlier 13E/13F work); no change needed.
-- **⏭️ Deferred** — intentionally parked with a tracked left-over spec.
 
 ## ⭐ Architect-Review findings (design-level)
 
@@ -157,7 +155,7 @@ _Generated 2026-06-08 from `codeant-ai[bot]` inline comments. 95 unique findings
 | ✅ Fixed | High | Architect | `src/dream/services/threat_scan.py`:97 | Path‑glob suppressions compare glob_to_regex patterns (which are POSIX "/"-based) against Finding.path strings built from Path.__str__, so on Windows (where these contain backslashes) valid ignore globs like "tests/" will not suppress findi |
 | ✅ Fixed | Suggestion | Inline | `tests/test_repl/test_session_threat_gate.py`:52 | This assertion is too weak for the stated behavior: it passes for any non-3 exit code, including unexpected failures or accidental success. Assert the exact expected code (2) so the test actually verifies that clean repos pass the threat ga |
 | ✅ Fixed | Suggestion | Inline | `tests/test_services/test_threat_scan.py`:67 | This test assumes POSIX permission semantics, but chmod(0o666) is not reliably represented on some platforms (notably Windows), which can make the assertion flaky or consistently fail cross-platform. Gate this test to POSIX or derive the ex |
-| ⏭️ Deferred — leftover #05 (structural validator wiring) | Suggestion | Inline | `src/dream/repl/_session.py`:824 | This gate only runs threat_scan and never runs the structural repo checks, so sessions can start even when AGENTS.md/required docs/schema validations would have produced blocking findings. Use the combined session-start gate (or include val |
+| ✅ Fixed (warn-not-block) | Suggestion | Inline | `src/dream/repl/_session.py`:824 | This gate only runs threat_scan and never runs the structural repo checks, so sessions can start even when AGENTS.md/required docs/schema validations would have produced blocking findings. Use the combined session-start gate (or include val |
 | ✅ Fixed | Suggestion | Inline | `src/dream/services/threat_scan.py`:127 | Suppression path matching is based on glob regexes that use POSIX-style /, but paths are built with str(...), which is backslash-separated on Windows. This causes valid ignore globs to fail to match and prevents intended suppressions on Win |
 
 ## PR #50 — Spec13/13f governance

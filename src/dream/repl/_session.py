@@ -56,7 +56,7 @@ from dream.services.compact._orchestrator import (
 )
 from dream.services.context_log import ContextEvent
 from dream.services.core_beliefs import extract_standing_orders, render_standing_orders
-from dream.services.repo_validator import has_blocking
+from dream.services.repo_validator import has_blocking, validate_repo
 from dream.services.threat_scan import threat_scan
 from dream.services.token_estimation import (
     estimate_conversation_tokens,
@@ -906,15 +906,26 @@ def run_session_repl(
             out.write(f"blocked: {finding.message} ({finding.path})\n")
         return 3
 
-    # Session-start threat scan (Spec 13E): a worktree secret / world-writable
-    # file under docs/ / eval-in-tool in .harness/tools/ blocks the session
-    # before the agent runs. (The spec-01 structural validator is not wired
-    # here yet; this gates the security findings only.)
     # Resolve the home root from the effective env so ``DREAM_HOME`` overrides
     # are honoured here too (#43), keeping path roots consistent with the
     # harness ``build_default_harness`` constructs below.
     paths_env = env if env is not None else _os.environ
-    threat_findings = threat_scan(DreamPaths.resolve(work_dir, env=paths_env))
+    session_paths = DreamPaths.resolve(work_dir, env=paths_env)
+
+    # Session-start structural validation (Spec 01 / Architect PR#49): AGENTS.md,
+    # the required docs tree, JSON+schema validity, and stale exec-plans. Unlike
+    # the threat scan this is *advisory* — its findings are surfaced as warnings
+    # but never block the live REPL. Hard-blocking would refuse to start in any
+    # embedded-SDK consumer repo that doesn't carry the harness's own docs
+    # layout; security (the threat scan below) is what blocks. Wiring it here
+    # ensures these findings are no longer silently skipped.
+    for finding in validate_repo(session_paths):
+        out.write(f"warning: repo: {finding.message} ({finding.path})\n")
+
+    # Session-start threat scan (Spec 13E): a worktree secret / world-writable
+    # file under docs/ / eval-in-tool in .harness/tools/ blocks the session
+    # before the agent runs.
+    threat_findings = threat_scan(session_paths)
     if has_blocking(threat_findings):
         for finding in threat_findings:
             out.write(f"blocked: {finding.message} ({finding.path})\n")
