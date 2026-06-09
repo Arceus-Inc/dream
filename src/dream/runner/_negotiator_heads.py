@@ -72,6 +72,7 @@ _RESPONSE_EXAMPLE = '{"accept": true, "counter": null}'
 EVALUATOR_PROPOSE_INSTRUCTION_TEMPLATE = (
     "You are the EVALUATOR opening contract negotiation round {round_num}.\n"
     "\n"
+    "{intent_block}"
     "Propose the list of acceptance criteria this sprint must meet.\n"
     "Each criterion is a short imperative string the generator can verify.\n"
     "\n"
@@ -90,9 +91,26 @@ EVALUATOR_PROPOSE_INSTRUCTION_TEMPLATE = (
     "Requirements:\n"
     "- The payload MUST be a JSON list of strings.\n"
     "- Use SHORT, verifiable, imperative criteria (\"MUST ...\", \"SHOULD ...\").\n"
+    "- Tie every criterion to THIS task's intent above; do not propose generic\n"
+    "  boilerplate (\"preserve backward compatibility\", \"pass the existing\n"
+    "  suite\") that the task did not call for.\n"
+    "- Every criterion MUST be verifiable by reading the files in the working\n"
+    "  tree or running a test. Do NOT propose criteria that require\n"
+    "  documentation, a README/changelog, commit messages, or git history as\n"
+    "  evidence unless the intent explicitly asks for them — nothing is\n"
+    "  committed between the generator and verification, so such criteria can\n"
+    "  never be satisfied and loop the sprint forever.\n"
     "- Take the prior log into account: respond to counters, drop items the\n"
     "  generator already accepted, etc.\n"
 )
+
+
+def _format_intent_block(intent: str) -> str:
+    """Render the task-intent context block, or empty when no intent is set."""
+    intent = intent.strip()
+    if not intent:
+        return ""
+    return f"TASK INTENT\n-----------\n{intent}\n\n"
 
 
 GENERATOR_RESPOND_INSTRUCTION_TEMPLATE = (
@@ -206,22 +224,30 @@ def _coerce_response(data: Any) -> tuple[bool, list[str] | None]:
 def make_evaluator_propose_head(
     harness: Harness,
     *,
+    intent: str = "",
     harness_dir: Path | None = None,
     observer: RunTaskObserver | None = None,
 ) -> Callable[[int, list[NegotiationEntry]], Awaitable[list[str]]]:
     """Build an async :data:`~dream.sprint.EvaluatorPropose` over a harness.
 
     Each call opens an evaluator-bound session via
-    :meth:`Harness.run_role`, embeds the running negotiation log in the
-    prompt, parses the model's strict ``<proposal>``-envelope reply, and
-    returns the proposed criteria as a list of strings.
+    :meth:`Harness.run_role`, embeds the task ``intent`` and the running
+    negotiation log in the prompt, parses the model's strict
+    ``<proposal>``-envelope reply, and returns the proposed criteria as a
+    list of strings.
+
+    ``intent`` is the task intent; embedding it keeps the proposed criteria
+    specific to the actual work instead of generic boilerplate the evaluator
+    later cannot verify.
     """
+    intent_block = _format_intent_block(intent)
 
     async def propose(
         round_num: int, log: list[NegotiationEntry]
     ) -> list[str]:
         prompt = EVALUATOR_PROPOSE_INSTRUCTION_TEMPLATE.format(
             round_num=round_num,
+            intent_block=intent_block,
             log_block=_format_log(log),
             example=_PROPOSAL_EXAMPLE,
         )
