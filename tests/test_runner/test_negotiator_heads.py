@@ -561,3 +561,36 @@ async def test_heads_negotiate_to_imposed_after_cap() -> None:
     assert result.criteria == ("x",)
     assert result.warning_event is not None
     assert result.warning_event["type"] == "sprint.negotiation_imposed"
+
+
+# --------------------------------------------------------------------------
+# Verifiable, task-specific acceptance criteria (spurious needs-changes fix)
+# --------------------------------------------------------------------------
+
+from dream.runner._negotiator_heads import (  # noqa: E402
+    EVALUATOR_PROPOSE_INSTRUCTION_TEMPLATE,
+)
+
+
+async def test_propose_head_embeds_task_intent_so_criteria_are_specific() -> None:
+    # Without the task intent the evaluator proposes generic boilerplate
+    # ("MUST preserve backward compatibility", "MUST pass the existing suite")
+    # that has nothing to do with the actual sprint. Thread the intent in.
+    harness, streamer = _harness_with_replies([_proposal_envelope(["MUST x"])])
+    propose = make_evaluator_propose_head(
+        harness, intent="Create hello.py exposing greet(name) returning a greeting"
+    )
+    await propose(1, [])
+    prompt = streamer.last_user_text
+    assert "greet(name)" in prompt
+
+
+def test_propose_template_restricts_criteria_to_worktree_verifiable() -> None:
+    # The criteria the evaluator proposes must be checkable from the files in
+    # the worktree; it must not demand documentation/changelog/git-history
+    # evidence that the worktree flow never produces (root cause of the
+    # endless needs-changes loop).
+    t = EVALUATOR_PROPOSE_INSTRUCTION_TEMPLATE.lower()
+    assert "verifiab" in t
+    assert "documentation" in t
+    assert "git history" in t or "commit history" in t

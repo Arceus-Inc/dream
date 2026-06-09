@@ -89,6 +89,18 @@ PLANNER_INSTRUCTION_TEMPLATE = (
     '- "sprint_target" (int) and "notes" (string) are optional.\n'
     '- Set "evaluator_enabled": false only when verifier signal is\n'
     "  unavailable or actively misleading; default true.\n"
+    "\n"
+    "DECOMPOSITION\n"
+    "-------------\n"
+    "- Use the FEWEST steps that cover the intent. Each step is a full\n"
+    "  generator+evaluator sprint, so over-splitting wastes sprints and\n"
+    "  produces steps the evaluator cannot independently verify.\n"
+    "- A single cohesive deliverable is ONE step. For example, a module\n"
+    "  plus its unit test plus running the test is one step, not three.\n"
+    "- Do NOT add a separate documentation, README, or changelog step\n"
+    "  unless the intent explicitly asks for documentation.\n"
+    "- Split into multiple steps only for genuinely independent units of\n"
+    "  work (distinct features, files, or layers that can land separately).\n"
 )
 
 

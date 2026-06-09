@@ -219,7 +219,7 @@ class Harness:
                 )
             if evaluator_propose is None:
                 evaluator_propose = make_evaluator_propose_head(
-                    self, harness_dir=harness_dir, observer=observer
+                    self, intent=intent, harness_dir=harness_dir, observer=observer
                 )
             if generator_respond is None:
                 generator_respond = make_generator_respond_head(

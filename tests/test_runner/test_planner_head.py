@@ -450,3 +450,19 @@ async def test_planner_head_uses_harness_dir_for_role_overlay(
 
     assert captured[0].system_prompt is not None
     assert captured[0].system_prompt.startswith("OVERLAY PROMPT")
+
+
+# --------------------------------------------------------------------------
+# Decomposition granularity (over-decomposition fix)
+# --------------------------------------------------------------------------
+
+from dream.runner._planner_head import PLANNER_INSTRUCTION_TEMPLATE  # noqa: E402
+
+
+def test_planner_template_discourages_over_decomposition() -> None:
+    # A one-file "module + test" intent should be a single step, not a chain
+    # of module/tests/docs steps that the evaluator then can't all verify.
+    t = PLANNER_INSTRUCTION_TEMPLATE.lower()
+    assert "fewest" in t or "minimal number" in t
+    # And no standalone documentation step unless the intent asks for docs.
+    assert "documentation" in t
