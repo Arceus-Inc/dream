@@ -45,6 +45,7 @@ Event kinds emitted today (additions are non-breaking):
 
 from __future__ import annotations
 
+import os
 import sys
 from dataclasses import dataclass, field
 from typing import Any, Protocol, TextIO, runtime_checkable
@@ -72,6 +73,45 @@ class RunTaskObserver(Protocol):
     def on_event(self, event: dict[str, Any]) -> None: ...
 
 
+# --- visual styling (TTY-gated; StringIO and pipes get plain text) ----------
+
+_RESET = "\x1b[0m"
+_DIM = "\x1b[2m"
+_BOLD = "\x1b[1m"
+_RED = "\x1b[31m"
+_GREEN = "\x1b[32m"
+_YELLOW = "\x1b[33m"
+_BLUE = "\x1b[34m"
+_MAGENTA = "\x1b[35m"
+_CYAN = "\x1b[36m"
+
+_ROLE_COLOUR: dict[str, str] = {
+    "planner": _CYAN,
+    "generator": _GREEN,
+    "evaluator": _YELLOW,
+    "negotiator-evaluator": _MAGENTA,
+    "negotiator-generator": _MAGENTA,
+}
+
+_OUTCOME_COLOUR: dict[str, str] = {
+    "pass": _GREEN,
+    "needs-changes": _YELLOW,
+    "fail": _RED,
+}
+
+
+def _use_colour(stream: TextIO) -> bool:
+    """Only emit ANSI when the stream is a real terminal.
+
+    StringIO/pipes/redirected files return False so test snapshots and
+    machine-consumed logs stay plain text.
+    """
+    if os.environ.get("NO_COLOR"):
+        return False
+    isatty = getattr(stream, "isatty", None)
+    return bool(isatty and isatty())
+
+
 def _truncate(text: str, *, limit: int = 160) -> str:
     """One-line preview of an arbitrary string."""
     flat = " ".join(text.split())
@@ -80,22 +120,86 @@ def _truncate(text: str, *, limit: int = 160) -> str:
     return flat[: limit - 1] + "…"
 
 
+def _short_path(p: object) -> str:
+    """Render a path as just its basename when it's an absolute Windows/POSIX path.
+
+    Keeps short relative paths intact (`hello.py` stays `hello.py`); collapses
+    `C:\\Users\\…\\Temp\\dream-demo-xxx\\hello.py` to `hello.py` so the log
+    is scannable.
+    """
+    s = str(p)
+    if len(s) <= 60:
+        return s
+    for sep in ("\\", "/"):
+        idx = s.rfind(sep)
+        if idx != -1:
+            tail = s[idx + 1 :]
+            if tail:
+                return f"…/{tail}"
+    return _truncate(s, limit=60)
+
+
+def _format_tool_input(value: Any) -> str:
+    """Render tool input dicts compactly: drop noisy keys; shorten paths.
+
+    `{'path': 'hello.py', 'offset': 0, 'limit': 200}` → `path=hello.py`
+    `{'args': ['status', '--short']}` → `args=[status, --short]`
+    `{'command': 'python -m pytest', 'cwd': 'C:/.../foo', 'timeout': 120}` →
+        `command="python -m pytest" cwd=…/foo`
+    """
+    if not isinstance(value, dict):
+        return _truncate(repr(value), limit=120)
+
+    skip = {"offset", "limit", "timeout_seconds", "timeout", "max_bytes"}
+    parts: list[str] = []
+    for key, raw in value.items():
+        if key in skip:
+            continue
+        if key in {"path", "cwd", "file"}:
+            parts.append(f"{key}={_short_path(raw)}")
+        elif key == "content" and isinstance(raw, str):
+            parts.append(f"content={_truncate(raw, limit=40)!r}")
+        elif key in {"command", "cmd"} and isinstance(raw, str):
+            parts.append(f"{key}={_truncate(raw, limit=80)!r}")
+        elif key == "args" and isinstance(raw, list):
+            inner = ", ".join(str(x) for x in raw[:6])
+            parts.append(f"args=[{_truncate(inner, limit=60)}]")
+        else:
+            parts.append(f"{key}={_truncate(repr(raw), limit=40)}")
+        if sum(len(p) for p in parts) > 100:
+            break
+    return " ".join(parts) if parts else "{}"
+
+
 @dataclass
 class StdioObserver:
-    """Default observer: one tagged line per event on ``sys.stdout``.
+    """Default observer: one styled line per event on ``sys.stdout``.
 
-    Pass ``stream=sys.stderr`` (or any open text file) to redirect. The
-    ``role_text_buffering`` flag controls whether streaming text deltas
-    are accumulated across a role session and printed in one block on
-    ``role.session.closed`` (``True``, the default — readable) or
-    written verbatim as they arrive (``False`` — useful when piping
-    into another tool).
+    Output is plain ASCII unless ``stream`` is a TTY, in which case lines
+    are ANSI-coloured by role and indented under their parent sprint /
+    task scope. Set the ``NO_COLOR`` env var to force plain text on a
+    TTY. ``role_text_buffering`` (default ``True``) accumulates a role's
+    streamed text deltas and prints them as one ``reply:`` block on
+    session close — readable for humans. Set it to ``False`` for raw
+    delta-per-line streaming.
     """
 
     stream: TextIO = field(default_factory=lambda: sys.stdout)
     role_text_buffering: bool = True
 
     _text_buffers: dict[str, list[str]] = field(default_factory=dict)
+    _colour_cache: bool | None = field(default=None, init=False, repr=False)
+
+    @property
+    def _colour(self) -> bool:
+        if self._colour_cache is None:
+            object.__setattr__(self, "_colour_cache", _use_colour(self.stream))
+        return bool(self._colour_cache)
+
+    def _c(self, code: str, text: str) -> str:
+        if not self._colour or not code:
+            return text
+        return f"{code}{text}{_RESET}"
 
     def on_event(self, event: dict[str, Any]) -> None:
         kind = event.get("kind", "?")
@@ -120,97 +224,161 @@ class _CapturingObserver:
 
 
 # --- handlers ---------------------------------------------------------------
+#
+# Test-pinned prefixes (`[task] start`, `[planner] done`, `[sprint 1] start`,
+# `[generator] tool→ name`, etc.) are preserved verbatim so external tooling
+# can grep them. ANSI codes wrap the whole line so substrings still match
+# under `assert "<substring>" in out`.
+#
+# Indentation hierarchy:
+#   * task / planner / sprint  → flush left
+#   * role inside a phase      → 2 spaces
+#   * tool inside a role       → 4 spaces
+
+
+_INDENT_ROLE = "  "
+_INDENT_TOOL = "    "
 
 
 def _format_default(event: dict[str, Any], _obs: StdioObserver) -> str:
     return f"[?] {event.get('kind', 'unknown')} {event}"
 
 
-def _on_task_started(event: dict[str, Any], _obs: StdioObserver) -> str:
-    return f"[task] start task_id={event.get('task_id')!r} intent={_truncate(str(event.get('intent', '')))!r}"
-
-
-def _on_task_completed(event: dict[str, Any], _obs: StdioObserver) -> str:
-    return f"[task] done task_id={event.get('task_id')!r} sprints={event.get('sprint_count')}"
-
-
-def _on_planner_started(event: dict[str, Any], _obs: StdioObserver) -> str:
-    return f"[planner] drafting spec for {event.get('task_id')!r}"
-
-
-def _on_planner_completed(event: dict[str, Any], _obs: StdioObserver) -> str:
-    return (
-        f"[planner] done — wrote {event.get('spec_path')} + "
-        f"{event.get('ledger_path')} ({event.get('step_count')} steps)"
+def _on_task_started(event: dict[str, Any], obs: StdioObserver) -> str:
+    line = (
+        f"▶ [task] start task_id={event.get('task_id')!r} "
+        f"intent={_truncate(str(event.get('intent', '')))!r}"
     )
+    return obs._c(_BOLD + _BLUE, line)
 
 
-def _on_sprint_started(event: dict[str, Any], _obs: StdioObserver) -> str:
-    return (
-        f"[sprint {event.get('sprint_number')}] start step={event.get('step_id')!r} "
-        f"— {_truncate(str(event.get('step_description', '')))}"
+def _on_task_completed(event: dict[str, Any], obs: StdioObserver) -> str:
+    line = (
+        f"✓ [task] done task_id={event.get('task_id')!r} "
+        f"sprints={event.get('sprint_count')}"
     )
+    return obs._c(_BOLD + _BLUE, line)
 
 
-def _on_sprint_completed(event: dict[str, Any], _obs: StdioObserver) -> str:
+def _on_planner_started(event: dict[str, Any], obs: StdioObserver) -> str:
+    return obs._c(_CYAN, f"◇ [planner] drafting spec for {event.get('task_id')!r}")
+
+
+def _on_planner_completed(event: dict[str, Any], obs: StdioObserver) -> str:
+    line = (
+        f"✓ [planner] done — wrote {_short_path(event.get('spec_path'))} + "
+        f"{_short_path(event.get('ledger_path'))} ({event.get('step_count')} steps)"
+    )
+    return obs._c(_CYAN, line)
+
+
+def _on_sprint_started(event: dict[str, Any], obs: StdioObserver) -> str:
+    line = (
+        f"\n▶ [sprint {event.get('sprint_number')}] start "
+        f"step={event.get('step_id')!r} — "
+        f"{_truncate(str(event.get('step_description', '')))}"
+    )
+    return obs._c(_BOLD + _BLUE, line)
+
+
+def _on_sprint_completed(event: dict[str, Any], obs: StdioObserver) -> str:
     outcome = event.get("outcome")
-    suffix = f"outcome={outcome}" if outcome else "outcome=(evaluator disabled)"
-    return f"[sprint {event.get('sprint_number')}] done step={event.get('step_id')!r} {suffix}"
+    if outcome:
+        glyph = "✓" if outcome == "pass" else ("✗" if outcome == "fail" else "▲")
+        colour = _OUTCOME_COLOUR.get(outcome, "")
+        suffix = obs._c(colour, f"outcome={outcome}")
+    else:
+        glyph = "·"
+        suffix = "outcome=(evaluator disabled)"
+    line = (
+        f"{glyph} [sprint {event.get('sprint_number')}] done "
+        f"step={event.get('step_id')!r} {suffix}"
+    )
+    return obs._c(_BOLD, line)
 
 
-def _on_negotiation_imposed(event: dict[str, Any], _obs: StdioObserver) -> str:
-    return (
-        f"[sprint {event.get('sprint_number')}] negotiation cap hit after "
+def _on_negotiation_imposed(event: dict[str, Any], obs: StdioObserver) -> str:
+    line = (
+        f"⚠ [sprint {event.get('sprint_number')}] negotiation cap hit after "
         f"{event.get('rounds')} rounds — contract imposed"
     )
+    return obs._c(_YELLOW, line)
 
 
-def _on_contract_written(event: dict[str, Any], _obs: StdioObserver) -> str:
-    return f"[sprint {event.get('sprint_number')}] contract written → {event.get('path')}"
+def _on_contract_written(event: dict[str, Any], obs: StdioObserver) -> str:
+    line = (
+        f"◇ [sprint {event.get('sprint_number')}] contract written → "
+        f"{_short_path(event.get('path'))}"
+    )
+    return obs._c(_CYAN, line)
 
 
-def _on_generator_started(event: dict[str, Any], _obs: StdioObserver) -> str:
+def _on_generator_started(event: dict[str, Any], obs: StdioObserver) -> str:
     flag = "with contract" if event.get("has_contract") else "no contract (evaluator off)"
-    return (
-        f"[sprint {event.get('sprint_number')}] generator start "
+    line = (
+        f"▶ [sprint {event.get('sprint_number')}] generator start "
         f"step={event.get('step_id')!r} ({flag})"
     )
+    return obs._c(_GREEN, line)
 
 
-def _on_generator_completed(event: dict[str, Any], _obs: StdioObserver) -> str:
-    return f"[sprint {event.get('sprint_number')}] generator done step={event.get('step_id')!r}"
+def _on_generator_completed(event: dict[str, Any], obs: StdioObserver) -> str:
+    line = (
+        f"✓ [sprint {event.get('sprint_number')}] generator done "
+        f"step={event.get('step_id')!r}"
+    )
+    return obs._c(_GREEN, line)
 
 
-def _on_evaluator_started(event: dict[str, Any], _obs: StdioObserver) -> str:
-    return f"[sprint {event.get('sprint_number')}] evaluator start step={event.get('step_id')!r}"
+def _on_evaluator_started(event: dict[str, Any], obs: StdioObserver) -> str:
+    line = (
+        f"▶ [sprint {event.get('sprint_number')}] evaluator start "
+        f"step={event.get('step_id')!r}"
+    )
+    return obs._c(_YELLOW, line)
 
 
-def _on_evaluator_completed(event: dict[str, Any], _obs: StdioObserver) -> str:
+def _on_evaluator_completed(event: dict[str, Any], obs: StdioObserver) -> str:
+    outcome = str(event.get("outcome") or "")
+    glyph = "✓" if outcome == "pass" else ("✗" if outcome == "fail" else "▲")
+    colour = _OUTCOME_COLOUR.get(outcome, _YELLOW)
     notes = event.get("notes") or ""
     notes_part = f" notes={_truncate(notes)!r}" if notes else ""
-    return (
-        f"[sprint {event.get('sprint_number')}] evaluator done "
-        f"outcome={event.get('outcome')!r} score={event.get('score')}{notes_part}"
+    line = (
+        f"{glyph} [sprint {event.get('sprint_number')}] evaluator done "
+        f"outcome={outcome!r} score={event.get('score')}{notes_part}"
     )
+    return obs._c(colour, line)
 
 
-def _on_role_session_opened(event: dict[str, Any], _obs: StdioObserver) -> str:
-    return f"[{event.get('role')}] session open id={event.get('session_id')!r}"
+def _on_role_session_opened(event: dict[str, Any], obs: StdioObserver) -> str:
+    role = str(event.get("role", "?"))
+    colour = _ROLE_COLOUR.get(role, "")
+    line = f"{_INDENT_ROLE}╭ [{role}] session open id={event.get('session_id')!r}"
+    return obs._c(_DIM + colour, line)
 
 
 def _on_role_session_closed(event: dict[str, Any], obs: StdioObserver) -> str:
     role = str(event.get("role", "?"))
-    suffix = ""
+    colour = _ROLE_COLOUR.get(role, "")
+    cost = event.get("cost_usd")
+    cost_str = f"${cost:.4f}" if isinstance(cost, (int, float)) and cost > 0 else "$0"
+    reply_block = ""
     if obs.role_text_buffering:
         chunks = obs._text_buffers.pop(role, None)
         if chunks:
             joined = "".join(chunks).strip()
             if joined:
-                suffix = f"\n[{role}] reply: {_truncate(joined, limit=400)}"
-    return (
-        f"[{role}] session close id={event.get('session_id')!r} "
-        f"cost_usd={event.get('cost_usd')}{suffix}"
+                reply = _truncate(joined, limit=400)
+                reply_block = (
+                    f"\n{_INDENT_ROLE}{obs._c(colour, f'[{role}] reply:')} "
+                    f"{obs._c(_DIM, reply)}"
+                )
+    line = (
+        f"{_INDENT_ROLE}╰ [{role}] session close "
+        f"id={event.get('session_id')!r} cost_usd={cost} ({cost_str})"
     )
+    return obs._c(_DIM + colour, line) + reply_block
 
 
 def _on_role_text(event: dict[str, Any], obs: StdioObserver) -> str | None:
@@ -219,23 +387,36 @@ def _on_role_text(event: dict[str, Any], obs: StdioObserver) -> str | None:
     if obs.role_text_buffering:
         obs._text_buffers.setdefault(role, []).append(text)
         return None
-    return f"[{role}] {text}"
+    colour = _ROLE_COLOUR.get(role, "")
+    return obs._c(colour, f"{_INDENT_ROLE}[{role}] {text}")
 
 
-def _on_role_tool_start(event: dict[str, Any], _obs: StdioObserver) -> str:
+def _on_role_tool_start(event: dict[str, Any], obs: StdioObserver) -> str:
+    role = str(event.get("role", "?"))
     tool = event.get("tool", "?")
-    input_preview = _truncate(repr(event.get("input", {})), limit=120)
-    return f"[{event.get('role')}] tool→ {tool} {input_preview}"
+    input_preview = _format_tool_input(event.get("input", {}))
+    colour = _ROLE_COLOUR.get(role, "")
+    line = f"{_INDENT_TOOL}[{role}] tool→ {tool} {input_preview}"
+    return obs._c(colour, line)
 
 
-def _on_role_tool_result(event: dict[str, Any], _obs: StdioObserver) -> str:
-    flag = "error" if event.get("is_error") else "ok"
+def _on_role_tool_result(event: dict[str, Any], obs: StdioObserver) -> str:
+    role = str(event.get("role", "?"))
+    tool = event.get("tool")
+    is_error = bool(event.get("is_error"))
+    flag = "error" if is_error else "ok"
     preview = _truncate(str(event.get("content_preview", "")))
-    return f"[{event.get('role')}] tool← {event.get('tool')} [{flag}] {preview}"
+    role_colour = _ROLE_COLOUR.get(role, "")
+    flag_colour = _RED if is_error else _GREEN
+    head = obs._c(role_colour, f"{_INDENT_TOOL}[{role}] tool← {tool}")
+    flag_styled = obs._c(flag_colour, f"[{flag}]")
+    body = obs._c(_DIM, preview) if obs._colour else preview
+    return f"{head} {flag_styled} {body}"
 
 
-def _on_role_error(event: dict[str, Any], _obs: StdioObserver) -> str:
-    return f"[{event.get('role')}] ERROR {event.get('message')!r}"
+def _on_role_error(event: dict[str, Any], obs: StdioObserver) -> str:
+    line = f"{_INDENT_ROLE}[{event.get('role')}] ERROR {event.get('message')!r}"
+    return obs._c(_RED + _BOLD, line)
 
 
 _HANDLERS: dict[str, Any] = {
