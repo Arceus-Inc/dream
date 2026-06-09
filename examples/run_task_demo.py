@@ -79,9 +79,11 @@ def _load_env_file(path: Path) -> int:
 
 def _find_env_local() -> Path | None:
     """Search common locations for the dev .env.local."""
+    here = Path(__file__).resolve()
     candidates = [
-        Path.cwd() / ".env.local",                                      # if run from dream/
-        Path(__file__).resolve().parent.parent / "dream" / ".env.local",  # examples/ sibling
+        Path.cwd() / ".env.local",          # run from dream/ or examples/
+        here.parent / ".env.local",         # examples/.env.local
+        here.parent.parent / ".env.local",  # dream/.env.local (default)
     ]
     for p in candidates:
         if p.is_file():
