@@ -17,8 +17,11 @@ from pathlib import Path
 
 from dream.config.paths import DreamPaths
 from dream.services import cron as cron_service
+from dream.tasks._cron import CRON_MANIFEST_DIR, load_cron_manifests
 from dream.tasks._manager import BackgroundTaskManager
 from dream.tasks._types import TaskRecord
+
+_TERMINAL_STATUSES = frozenset({"completed", "failed", "killed"})
 
 
 def run_cron_cli(*, kind: str, working_dir: Path, timeout: int) -> int:
@@ -38,6 +41,13 @@ def run_cron_cli(*, kind: str, working_dir: Path, timeout: int) -> int:
     async def _run() -> int:
         manager = BackgroundTaskManager(tasks_dir=paths.tasks_dir)
         cron_service.bootstrap_default_manifests(working_dir)
+        # Mirror REPL startup: seed the registry from the on-disk manifests so a
+        # CLI-only setup keeps ``/cron list`` state and last_run/last_status in
+        # sync, and so registry-level disables are honored by run_cron_kind.
+        cron_service.ensure_registry_seeded(
+            registry_path,
+            load_cron_manifests(working_dir / CRON_MANIFEST_DIR),
+        )
 
         done: asyncio.Event = asyncio.Event()
         result: dict[str, TaskRecord] = {}
@@ -64,6 +74,15 @@ def run_cron_cli(*, kind: str, working_dir: Path, timeout: int) -> int:
                 sys.stdout.write(f"cron:{kind} skipped (manifest disabled)\n")
                 return 0
             spawned_id["id"] = record.id
+            # Close the race where a fast stub command reaches a terminal state
+            # before ``spawned_id`` was set — its completion event would have
+            # been ignored by ``_on_done``, so re-check terminal state here and
+            # latch ``done`` directly rather than waiting for an event that
+            # already fired.
+            current = manager.get_task(record.id)
+            if current is not None and current.status in _TERMINAL_STATUSES:
+                result["task"] = current
+                done.set()
             try:
                 await asyncio.wait_for(done.wait(), timeout=timeout)
             except TimeoutError:

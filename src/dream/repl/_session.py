@@ -84,6 +84,10 @@ from dream.tools.builtin import default_registry
 # A context-event sink the skill registry calls when a body loads.
 SkillEventSink = Callable[[ContextEvent], None]
 
+# A plain-string sink for operator-facing policy warnings (e.g. stale tier
+# promotions) surfaced from permission-policy assembly at session startup.
+PolicyWarningSink = Callable[[str], None]
+
 # ---------------------------------------------------------------------------
 # Default harness construction from env
 # ---------------------------------------------------------------------------
@@ -104,6 +108,7 @@ def build_default_harness(
     registry: ToolRegistry | None = None,
     skill_registry: SkillRegistry | None = None,
     skill_event_sink: SkillEventSink | None = None,
+    policy_warning_sink: PolicyWarningSink | None = None,
 ) -> Harness:
     """Build a Harness whose ``_engine_factory`` produces a real engine.
 
@@ -129,7 +134,10 @@ def build_default_harness(
     base_url = env.get("DREAM_SMOKE_BASE_URL", "https://api.openai.com/v1")
     tool_registry = registry if registry is not None else default_registry()
     compactor = AutoCompactState()
-    paths = DreamPaths(repo=working_dir, home=Path.home()).ensure()
+    # Resolve the home root from env so ``DREAM_HOME`` overrides are honoured for
+    # task storage / sidecars (#43); hardcoding ``Path.home()`` would write task
+    # artifacts under ~/.dream even when the operator redirected the home root.
+    paths = DreamPaths.resolve(working_dir, env=env).ensure()
     # Task tools (Spec 07): one BackgroundTaskManager per harness, shared across
     # sessions in this REPL so task IDs / archives stay consistent. The cron
     # registry lives at the in-repo convention (``.dream/cron/registry.json``);
@@ -152,6 +160,18 @@ def build_default_harness(
         cron_registry_path,
         load_cron_manifests(Path(working_dir) / CRON_MANIFEST_DIR),
     )
+    # Spec 13C policy-assembly warnings (e.g. stale tier promotions) are
+    # operator-facing security signals; surface them once at session startup
+    # rather than discarding them inside ``_factory`` (#47). They derive solely
+    # from ``.harness/tool-tier-overrides.toml`` (paths) and are independent of
+    # session/role, so one assembly here covers every session in this REPL.
+    if policy_warning_sink is not None:
+        _, policy_warnings = make_permission_gate(
+            tool_registry, paths=paths, cwd=working_dir
+        )
+        for warning in policy_warnings:
+            policy_warning_sink(warning)
+
     # 128K is the default we use throughout Spec 02; the watch panel /
     # /util command surface utilisation against this number.
     capabilities = ProviderCapabilities(max_context_tokens=128_000)
@@ -226,7 +246,9 @@ def build_default_harness(
         # OTel-shaped trace (Spec 12a): one durable JSONL per session under the
         # task sidecar. The session_id doubles as the sidecar dir key in the REPL.
         tracer = JsonlTracer(
-            TraceWriter(DreamPaths(repo=working_dir, home=Path.home()).trace_log(session_id)),
+            # Reuse the env-resolved ``paths`` so the trace log honours
+            # ``DREAM_HOME`` like task storage does (#43).
+            TraceWriter(paths.trace_log(session_id)),
             session_id=session_id,
             task_id=session_id,
         )
@@ -543,9 +565,23 @@ def _cmd_skill(
         return
     # Operator invocation: ``disable_model_invocation`` gates the *model*, not
     # the operator, so we load the body here regardless of that flag.
-    defn = registry.use_skill(
-        name, event_sink=lambda ev: _emit_context_event(sink, ev)
-    )
+    #
+    # The body is read lazily from disk, so it can fail *after* startup: the
+    # SKILL.md may have been removed, become unreadable, hold undecodable bytes,
+    # or have malformed frontmatter. None of those should crash the REPL command
+    # path — surface the failure and keep the session loop alive. ``OSError``
+    # covers removal/IO; ``ValueError`` covers ``UnicodeDecodeError`` and
+    # ``SkillFrontmatterError`` (both subclasses).
+    try:
+        defn = registry.use_skill(
+            name, event_sink=lambda ev: _emit_context_event(sink, ev)
+        )
+    except (OSError, ValueError) as exc:
+        output.write(
+            _c(_RED, f"could not load skill {name!r}: {exc}", use=use) + "\n"
+        )
+        sink.emit("session.skill_load_failed", skill=name, error=str(exc))
+        return
     output.write(_c(_CYAN, f"skill: {defn.meta.name}", use=use) + "\n")
     output.write(defn.content.rstrip() + "\n")
 
@@ -843,7 +879,16 @@ def run_session_repl(
     import os as _os
 
     out = output if output is not None else sys.stdout
-    work_dir = working_dir or Path.cwd()
+    # When ``working_dir`` is omitted, prefer the injected harness's configured
+    # repo root over the process cwd (#36) so skill validation, the skill
+    # registry, MCP allowlist, and the threat scan all target the active
+    # session's repo — not whatever directory the operator launched from.
+    if working_dir is not None:
+        work_dir = working_dir
+    elif harness is not None:
+        work_dir = harness.config.working_dir
+    else:
+        work_dir = Path.cwd()
 
     # Session-start skill gate (Spec 06 MUST #3): a malformed SKILL.md blocks
     # the session before anything else. Runs even with an injected harness.
@@ -857,7 +902,11 @@ def run_session_repl(
     # file under docs/ / eval-in-tool in .harness/tools/ blocks the session
     # before the agent runs. (The spec-01 structural validator is not wired
     # here yet; this gates the security findings only.)
-    threat_findings = threat_scan(DreamPaths(repo=work_dir, home=Path.home()))
+    # Resolve the home root from the effective env so ``DREAM_HOME`` overrides
+    # are honoured here too (#43), keeping path roots consistent with the
+    # harness ``build_default_harness`` constructs below.
+    paths_env = env if env is not None else _os.environ
+    threat_findings = threat_scan(DreamPaths.resolve(work_dir, env=paths_env))
     if has_blocking(threat_findings):
         for finding in threat_findings:
             out.write(f"blocked: {finding.message} ({finding.path})\n")
@@ -874,6 +923,12 @@ def run_session_repl(
 
     def _skill_event_sink(event: ContextEvent) -> None:
         _emit_context_event(sink, event)
+
+    def _policy_warning_sink(message: str) -> None:
+        # Operator-facing security signal (e.g. stale tier promotion): print it
+        # and mirror it to the JSONL watch panel so it isn't silently lost (#47).
+        out.write(f"warning: {message}\n")
+        sink.emit("session.policy_warning", message=message)
 
     # MCP tools (Spec 06 slice 4) register into this shared registry inside the
     # event loop (connect is async); the harness reads the registry lazily per
@@ -893,6 +948,7 @@ def run_session_repl(
             registry=tool_registry,
             skill_registry=skill_registry,
             skill_event_sink=_skill_event_sink,
+            policy_warning_sink=_policy_warning_sink,
         )
 
     sink.emit(
@@ -938,39 +994,46 @@ def run_session_repl(
                     ),
                     name="cron-tick-loop",
                 )
-        async with harness:
-            if tool_registry is not None:
-                setup = await setup_mcp_session(
-                    tool_registry,
-                    allowlist_path=allowlist_path,
-                    credentials_path=credentials_path,
-                )
-                if has_blocking(setup.findings):
-                    for finding in setup.findings:
-                        if finding.severity == "blocking":
-                            out.write(f"blocked: {finding.message} ({finding.path})\n")
-                    return 3
-                mcp_manager = setup.manager
-            try:
-                session = await harness.start_session(options)
-                await session_loop(
-                    session=session,
-                    sink=sink,
-                    skill_registry=skill_registry,
-                    mcp_manager=mcp_manager,
-                    input_func=input_func,
-                    output=out,
-                )
-            finally:
-                if mcp_manager is not None:
-                    await mcp_manager.close()
-                if cron_task is not None:
-                    cron_task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError, Exception):
-                        await cron_task
-                for un in unsubs:
-                    un()
-        return 0
+        # Outer ``finally`` so listener unsubscription + cron-task cancellation
+        # ALWAYS run once the listeners are registered — including the early
+        # ``return 3`` on a blocking MCP finding (#44). Keeping cleanup only in
+        # the inner ``finally`` leaked sink/output references (and caused
+        # duplicate lifecycle rendering on later runs) when MCP setup blocked.
+        try:
+            async with harness:
+                if tool_registry is not None:
+                    setup = await setup_mcp_session(
+                        tool_registry,
+                        allowlist_path=allowlist_path,
+                        credentials_path=credentials_path,
+                    )
+                    if has_blocking(setup.findings):
+                        for finding in setup.findings:
+                            if finding.severity == "blocking":
+                                out.write(f"blocked: {finding.message} ({finding.path})\n")
+                        return 3
+                    mcp_manager = setup.manager
+                try:
+                    session = await harness.start_session(options)
+                    await session_loop(
+                        session=session,
+                        sink=sink,
+                        skill_registry=skill_registry,
+                        mcp_manager=mcp_manager,
+                        input_func=input_func,
+                        output=out,
+                    )
+                finally:
+                    if mcp_manager is not None:
+                        await mcp_manager.close()
+            return 0
+        finally:
+            if cron_task is not None:
+                cron_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await cron_task
+            for un in unsubs:
+                un()
 
     # ``finally`` so the stop lifecycle event is written even when the loop
     # raises (otherwise an exception would skip ``session.repl.stopped`` and

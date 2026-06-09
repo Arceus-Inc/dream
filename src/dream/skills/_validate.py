@@ -36,15 +36,21 @@ def validate_skills(
                 # ``source`` is irrelevant for validation; we only care that it parses.
                 read_skill_meta(skill_file, source="project")
             except SkillFrontmatterError as exc:
-                findings.append(
-                    Finding(
-                        severity="blocking",
-                        code="skill_frontmatter_invalid",
-                        message=f"malformed skill frontmatter: {exc}",
-                        path=str(skill_file),
-                    )
-                )
+                findings.append(_blocking(skill_file, f"malformed skill frontmatter: {exc}"))
+            except (OSError, UnicodeDecodeError) as exc:
+                # Unreadable file or non-UTF-8 content: fail closed as a blocking
+                # finding rather than crashing session startup.
+                findings.append(_blocking(skill_file, f"unreadable skill file: {exc}"))
     return findings
+
+
+def _blocking(skill_file: Path, message: str) -> Finding:
+    return Finding(
+        severity="blocking",
+        code="skill_frontmatter_invalid",
+        message=message,
+        path=str(skill_file),
+    )
 
 
 __all__ = ["validate_skills"]

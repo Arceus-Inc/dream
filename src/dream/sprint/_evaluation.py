@@ -11,12 +11,13 @@ trace event can be derived from a saved record without re-parsing.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
-
-from dream.utils.fs import atomic_write_text
 
 from ._checks import checked_sprint_number, checked_task_id
 
@@ -106,13 +107,43 @@ def record_evaluation(
     path = evaluation_record_path(
         worktree_root, task_id=record.task_id, sprint_number=record.sprint_number
     )
-    if path.exists():
-        raise EvaluationAlreadyRecorded(
+    payload = (json.dumps(record.to_dict(), indent=2) + "\n").encode("utf-8")
+    _atomic_create_only(
+        path,
+        payload,
+        on_exists=lambda: EvaluationAlreadyRecorded(
             f"evaluation record already exists for {record.task_id}"
             f" sprint {record.sprint_number}: {path}"
-        )
-    atomic_write_text(path, json.dumps(record.to_dict(), indent=2) + "\n")
+        ),
+    )
     return path
+
+
+def _atomic_create_only(
+    path: Path, data: bytes, *, on_exists: Callable[[], Exception]
+) -> None:
+    """Create ``path`` with ``data``, refusing to overwrite an existing file.
+
+    Uses ``O_CREAT | O_EXCL`` so the existence check and the claim are a
+    single atomic syscall: two concurrent writers cannot both succeed, which
+    closes the check-then-write race the prior ``exists()`` probe left open.
+    Raises ``on_exists()`` when the path is already present.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    try:
+        fd = os.open(path, flags, 0o666)
+    except FileExistsError:
+        raise on_exists() from None
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+    except BaseException:
+        with contextlib.suppress(OSError):
+            path.unlink()
+        raise
 
 
 def load_pending_carry_items(

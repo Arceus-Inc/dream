@@ -15,20 +15,17 @@ from typing import Any
 
 import pytest
 
-from dream.swarm._mailbox import Mailbox
 from dream.swarm._paths import leader_inbox_dir
+from dream.swarm._registry import BackendRegistry
+from dream.swarm._remote import RemoteExecutor
 from dream.swarm._spawn import (
     MAX_SUBAGENT_DEPTH,
     BridgeDisabled,
-    SpawnResult,
     TeammateSpawnConfig,
 )
-from dream.swarm._registry import BackendRegistry
-from dream.swarm._remote import RemoteExecutor
 from dream.swarm.in_process import InProcessExecutor
 from dream.swarm.subprocess_backend import SubprocessExecutor
 from dream.tasks._manager import BackgroundTaskManager
-
 
 # --- helpers -------------------------------------------------------------
 
@@ -134,6 +131,26 @@ class TestInProcessExecutor:
         assert notifications[0]["payload"]["status"] == "failed"
         assert "kaboom" in notifications[0]["payload"]["summary"]
 
+    async def test_finished_tasks_are_evicted_from_tasks_map(
+        self, tmp_path: Path
+    ) -> None:
+        """Long-running leaders spawn many teammates; finished runner tasks
+        must not be retained in ``_tasks`` indefinitely (memory leak)."""
+        async def factory(cfg: TeammateSpawnConfig) -> str:
+            return "done"
+
+        ex = InProcessExecutor(
+            worktree_root=tmp_path,
+            leader_id="leader-1",
+            factory=factory,
+        )
+        for i in range(3):
+            await ex.spawn(_cfg(name=f"worker-{i}", task_type="in_process_teammate"))
+        await ex.wait_all()
+        # Give the done-callbacks a turn to run after the tasks complete.
+        await _sleep(0.0)
+        assert ex._tasks == {}
+
 
 # --- SubprocessExecutor --------------------------------------------------
 
@@ -213,11 +230,52 @@ class TestSubprocessExecutor:
         assert res.success is False
         assert res.error  # non-empty
 
+    async def test_successful_spawn_unregisters_listener_after_completion(
+        self, tmp_path: Path
+    ) -> None:
+        """The completion listener is one-shot: once the spawned task reaches a
+        terminal state it unregisters itself, so ``_listeners`` does not grow
+        unbounded across many successful spawns."""
+        argv = [sys.executable, "-c", "import sys; sys.exit(0)"]
+        manager = BackgroundTaskManager(tasks_dir=tmp_path / "tasks")
+        ex = SubprocessExecutor(
+            worktree_root=tmp_path,
+            leader_id="leader-1",
+            task_manager=manager,
+            argv_builder=lambda cfg: list(argv),
+        )
+        inbox = leader_inbox_dir(tmp_path, "leader-1")
+
+        for _ in range(3):
+            await ex.spawn(_cfg())
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                if len(_drain_notifications(inbox)) > 0:
+                    break
+                await _sleep(0.05)
+            # Drop delivered notifications so the next spawn's wait is clean.
+            for f in inbox.glob("*.json"):
+                f.unlink()
+
+        # Each spawn's listener must have removed itself once its task finished.
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and manager._listeners:
+            await _sleep(0.05)
+        assert manager._listeners == {}
+
 
 # --- RemoteExecutor (bridge gated off) -----------------------------------
 
 
 class TestRemoteExecutor:
+    async def test_agent_id_is_sanitized(self, tmp_path: Path) -> None:
+        """The returned ``agent_id`` must use the sanitizer contract so it
+        matches the IDs used by the team registry / identity flows, not the
+        raw ``name@team`` (which can carry spaces or ``@``)."""
+        ex = RemoteExecutor(worktree_root=tmp_path, leader_id="leader-1")
+        res = await ex.spawn(_cfg(name="Data Scout", team="Team Alpha"))
+        assert res.agent_id == "data-scout@team-alpha"
+
     async def test_remote_agent_refused_without_bridge(
         self, tmp_path: Path
     ) -> None:

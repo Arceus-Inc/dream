@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from dream.mcp._client import McpClientManager
 from dream.mcp._types import AllowlistEntry, McpToolInfo
@@ -32,12 +35,18 @@ def _navigate_schema() -> dict[str, object]:
     }
 
 
-async def _connected_manager() -> McpClientManager:
+@asynccontextmanager
+async def _connected_manager() -> AsyncIterator[McpClientManager]:
+    """Yield a connected manager and always close it, so in-memory sessions /
+    exit stacks never leak across tests (flaky async teardown otherwise)."""
     server = build_server("pw", tool_names=("navigate",))
     entry = AllowlistEntry(name="pw", endpoint="stdio://pw", transport="stdio")
     mgr = McpClientManager([entry], session_opener=opener_for({"pw": server}))
     await mgr.connect_all()
-    return mgr
+    try:
+        yield mgr
+    finally:
+        await mgr.close()
 
 
 def test_mcp_tool_name_namespaces_and_sanitizes() -> None:
@@ -48,8 +57,8 @@ def test_mcp_tool_name_namespaces_and_sanitizes() -> None:
 def test_input_model_from_schema_required_and_optional() -> None:
     model = input_model_from_schema("Navigate", _navigate_schema())
     model(url="x")  # required satisfied
-    with pytest.raises(Exception):
-        model()  # missing required url
+    with pytest.raises(ValidationError):
+        model()  # missing required url → pydantic validation error, not any error
     fields = model.model_fields
     assert "url" in fields and "wait" in fields
 
@@ -64,12 +73,12 @@ def test_adapter_name_schema_and_declaration() -> None:
 
 
 async def test_adapter_execute_calls_manager(tmp_path: Path) -> None:
-    mgr = await _connected_manager()
-    info = mgr.list_tools()[0]
-    adapter = McpToolAdapter(mgr, info)
-    result = await adapter.execute({"url": "x"}, _ctx(tmp_path))
-    assert result.is_error is False
-    assert "navigate" in result.content
+    async with _connected_manager() as mgr:
+        info = mgr.list_tools()[0]
+        adapter = McpToolAdapter(mgr, info)
+        result = await adapter.execute({"url": "x"}, _ctx(tmp_path))
+        assert result.is_error is False
+        assert "navigate" in result.content
 
 
 async def test_adapter_execute_disconnected_returns_tool_error(tmp_path: Path) -> None:
@@ -85,40 +94,37 @@ async def test_adapter_execute_disconnected_returns_tool_error(tmp_path: Path) -
 
 
 async def test_register_mcp_tools_uses_mcp_source_and_deterministic_order(tmp_path: Path) -> None:
-    mgr = await _connected_manager()
-    registry = default_registry()
-    added = register_mcp_tools(registry, mgr)
-    assert added == ["mcp__pw__navigate"]
-    assert "mcp__pw__navigate" in registry
-    # MCP tools come after the default bucket in the deterministic order.
-    names = [t.name for t in registry.list_tools()]
-    assert names[-1] == "mcp__pw__navigate"
-    await mgr.close()
+    async with _connected_manager() as mgr:
+        registry = default_registry()
+        added = register_mcp_tools(registry, mgr)
+        assert added == ["mcp__pw__navigate"]
+        assert "mcp__pw__navigate" in registry
+        # MCP tools come after the default bucket in the deterministic order.
+        names = [t.name for t in registry.list_tools()]
+        assert names[-1] == "mcp__pw__navigate"
 
 
 async def test_register_management_tools_adds_three(tmp_path: Path) -> None:
-    mgr = await _connected_manager()
-    registry = default_registry()
-    added = register_mcp_management_tools(registry, mgr, tmp_path / "creds.toml")
-    assert set(added) == {"list_mcp_resources", "read_mcp_resource", "mcp_auth"}
-    for name in added:
-        assert name in registry
-    await mgr.close()
+    async with _connected_manager() as mgr:
+        registry = default_registry()
+        added = register_mcp_management_tools(registry, mgr, tmp_path / "creds.toml")
+        assert set(added) == {"list_mcp_resources", "read_mcp_resource", "mcp_auth"}
+        for name in added:
+            assert name in registry
 
 
 async def test_management_tools_share_mcp_bucket_order(tmp_path: Path) -> None:
-    mgr = await _connected_manager()
-    registry = default_registry()
-    register_mcp_tools(registry, mgr)
-    register_mcp_management_tools(registry, mgr, tmp_path / "creds.toml")
-    names = [t.name for t in registry.list_tools()]
-    mcp_names = [n for n in names if n in {
-        "mcp__pw__navigate", "list_mcp_resources", "read_mcp_resource", "mcp_auth"
-    }]
-    # All MCP-bucket tools are contiguous at the tail and alphabetically sorted.
-    assert names[-len(mcp_names):] == mcp_names
-    assert mcp_names == sorted(mcp_names)
-    await mgr.close()
+    async with _connected_manager() as mgr:
+        registry = default_registry()
+        register_mcp_tools(registry, mgr)
+        register_mcp_management_tools(registry, mgr, tmp_path / "creds.toml")
+        names = [t.name for t in registry.list_tools()]
+        mcp_names = [n for n in names if n in {
+            "mcp__pw__navigate", "list_mcp_resources", "read_mcp_resource", "mcp_auth"
+        }]
+        # All MCP-bucket tools are contiguous at the tail and alphabetically sorted.
+        assert names[-len(mcp_names):] == mcp_names
+        assert mcp_names == sorted(mcp_names)
 
 
 class _DummyManager:

@@ -87,6 +87,7 @@ def test_clean_orphan_temp_files_removes_only_scheme_matches(tmp_path: Path) -> 
     assert removed == [orphan]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits")
 def test_explicit_mode_applied_at_creation(tmp_path: Path) -> None:
     target = tmp_path / "secret"
     atomic_write_bytes(target, b"x", mode=0o600)

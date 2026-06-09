@@ -17,7 +17,6 @@ from pathlib import Path
 
 import pytest
 
-
 # --- evaluation record shape -------------------------------------------
 
 
@@ -61,7 +60,7 @@ def test_evaluation_record_path_under_docs_evals(tmp_path: Path) -> None:
 def test_evaluation_record_path_rejects_unsafe_task_id(tmp_path: Path, bad: str) -> None:
     from dream.sprint import evaluation_record_path
 
-    with pytest.raises(ValueError, match="task_id|unsafe"):
+    with pytest.raises(ValueError, match=r"task_id|unsafe"):
         evaluation_record_path(tmp_path, task_id=bad, sprint_number=1)
 
 
@@ -94,6 +93,46 @@ def test_record_evaluation_refuses_duplicate_for_same_sprint(tmp_path: Path) -> 
     record_evaluation(tmp_path, rec)
     with pytest.raises(EvaluationAlreadyRecorded):
         record_evaluation(tmp_path, rec)
+
+
+def test_record_evaluation_does_not_overwrite_when_exists_check_is_bypassed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Criterion #10 must hold even under a check-then-write race.
+
+    We simulate the race directly: force the pre-write ``exists()`` probe to
+    report False (as both racing writers would see before either rename),
+    write a first record, then attempt a second write. A guard that relies
+    only on ``exists()`` would silently overwrite the first record; an atomic
+    create must refuse the second writer instead.
+    """
+    from pathlib import Path as _Path
+
+    from dream.sprint import (
+        EvaluationAlreadyRecorded,
+        EvaluationRecord,
+        evaluation_record_path,
+        record_evaluation,
+    )
+
+    first = EvaluationRecord(
+        task_id="t1", sprint_number=1, step_id="s1", outcome="pass", notes="first"
+    )
+    second = EvaluationRecord(
+        task_id="t1", sprint_number=1, step_id="s1", outcome="fail", notes="second"
+    )
+    path = evaluation_record_path(tmp_path, task_id="t1", sprint_number=1)
+
+    record_evaluation(tmp_path, first)
+
+    monkeypatch.setattr(_Path, "exists", lambda self: False)
+    with pytest.raises(EvaluationAlreadyRecorded):
+        record_evaluation(tmp_path, second)
+
+    # The first record must survive untouched.
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["notes"] == "first"
+    assert saved["outcome"] == "pass"
 
 
 # --- outcome → ledger -------------------------------------------------
@@ -186,6 +225,25 @@ def test_fail_outcome_marks_step_blocked() -> None:
     assert by_id["s1"].status == "blocked"
 
 
+@pytest.mark.parametrize("stale_status", ["pending", "done", "blocked"])
+def test_apply_outcome_rejects_non_in_progress_step(stale_status: str) -> None:
+    """Only the active in_progress step may transition. A stale or misrouted
+    evaluation record must not move a pending/done/blocked step backward or
+    sideways."""
+    from dream.planner import LedgerStep, PlannerLedger
+    from dream.sprint import EvaluationRecord, apply_outcome
+
+    ledger = PlannerLedger(
+        task_id="t1",
+        intent="ship widget",
+        created_at=0.0,
+        steps=(LedgerStep(id="s1", description="A", status=stale_status),),
+    )
+    rec = EvaluationRecord(task_id="t1", sprint_number=1, step_id="s1", outcome="pass")
+    with pytest.raises(ValueError, match="in_progress"):
+        apply_outcome(ledger, rec)
+
+
 def test_apply_outcome_raises_on_unknown_step_id() -> None:
     from dream.sprint import EvaluationRecord, apply_outcome
 
@@ -226,6 +284,67 @@ def test_tech_debt_append_preserves_prior_entries(tmp_path: Path) -> None:
     text = (tmp_path / "docs" / "exec-plans" / "tech-debt-tracker.md").read_text("utf-8")
     assert "r1" in text and "r2" in text
     assert text.index("r1") < text.index("r2")
+
+
+def test_append_tech_debt_holds_exclusive_lock_around_read_modify_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The read-modify-write append must be guarded by an exclusive lock so
+    concurrent appenders can't both read the same content and lose an entry.
+
+    We assert the structural fix directly: the lock is held while the file is
+    read and written, so the critical section is serialized cross-process.
+    """
+    import contextlib
+
+    from dream.sprint import EvaluationRecord, _outcome, append_tech_debt
+
+    events: list[str] = []
+
+    @contextlib.contextmanager
+    def fake_lock(lock_path, *args, **kwargs):  # type: ignore[no-untyped-def]
+        events.append("lock-acquire")
+        try:
+            yield
+        finally:
+            events.append("lock-release")
+
+    real_read_text = _outcome.Path.read_text
+
+    def spy_read_text(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        if self.name == "tech-debt-tracker.md":
+            events.append("read")
+        return real_read_text(self, *args, **kwargs)
+
+    real_write = _outcome.atomic_write_text
+
+    def spy_write(path, text, *args, **kwargs):  # type: ignore[no-untyped-def]
+        events.append("write")
+        return real_write(path, text, *args, **kwargs)
+
+    # Seed so the append exercises the read-modify-write (read branch).
+    append_tech_debt(
+        tmp_path,
+        EvaluationRecord(
+            task_id="t0", sprint_number=1, step_id="s0", outcome="fail", notes="seed"
+        ),
+    )
+
+    monkeypatch.setattr(_outcome, "exclusive_file_lock", fake_lock)
+    monkeypatch.setattr(_outcome.Path, "read_text", spy_read_text)
+    monkeypatch.setattr(_outcome, "atomic_write_text", spy_write)
+
+    rec = EvaluationRecord(
+        task_id="t1", sprint_number=1, step_id="sA", outcome="fail", notes="x"
+    )
+    append_tech_debt(tmp_path, rec)
+
+    # read + write must both fall strictly inside the lock window.
+    assert events[0] == "lock-acquire"
+    assert events[-1] == "lock-release"
+    assert "read" in events and "write" in events
+    assert events.index("lock-acquire") < events.index("write")
+    assert events.index("write") < events.index("lock-release")
 
 
 def test_append_tech_debt_refuses_non_fail_outcome(tmp_path: Path) -> None:

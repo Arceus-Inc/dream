@@ -41,10 +41,17 @@ def parse_allowlist(text: str) -> list[AllowlistEntry]:
         raise AllowlistError("allowlist '[[mcp]]' must be an array of tables")
 
     entries: list[AllowlistEntry] = []
+    seen: set[str] = set()
     for item in raw:
         if not isinstance(item, dict):
             raise AllowlistError(f"each '[[mcp]]' must be a table, got {type(item).__name__}")
-        entries.append(_entry_from_table(item))
+        entry = _entry_from_table(item)
+        # Duplicate names are a config error: a dict-keyed manager would silently
+        # drop the earlier (possibly stricter) entry, so reject them at the source.
+        if entry.name in seen:
+            raise AllowlistError(f"duplicate mcp entry name: {entry.name!r}")
+        seen.add(entry.name)
+        entries.append(entry)
     return entries
 
 
@@ -81,9 +88,6 @@ def _entry_from_table(item: dict[str, Any]) -> AllowlistEntry:
             f"mcp entry {name!r} has invalid transport {transport!r}; "
             f"expected one of {_VALID_TRANSPORTS}"
         )
-    tools = item.get("tools", [])
-    if not isinstance(tools, list):
-        raise AllowlistError(f"mcp entry {name!r} 'tools' must be a list")
     pin = item.get("pinned_version_hash")
     return AllowlistEntry(
         name=name,
@@ -91,8 +95,24 @@ def _entry_from_table(item: dict[str, Any]) -> AllowlistEntry:
         transport=transport,
         tier_required=str(item.get("tier_required", "")),
         pinned_version_hash=pin if isinstance(pin, str) and pin.strip() else None,
-        tools=tuple(str(t) for t in tools),
+        tools=_checked_tools(name, item.get("tools", [])),
     )
+
+
+def _checked_tools(name: str, tools: Any) -> tuple[str, ...]:
+    """Validate the per-server ``tools`` coverage as a list of non-empty strings.
+
+    Malformed entries (numbers/objects) must fail loudly here rather than be
+    coerced to ``str`` and then silently fail tool matching at runtime.
+    """
+    if not isinstance(tools, list):
+        raise AllowlistError(f"mcp entry {name!r} 'tools' must be a list")
+    for tool in tools:
+        if not (isinstance(tool, str) and tool.strip()):
+            raise AllowlistError(
+                f"mcp entry {name!r} 'tools' must be non-empty strings, got {tool!r}"
+            )
+    return tuple(tools)
 
 
 __all__ = ["AllowlistError", "entry_to_config", "parse_allowlist", "read_allowlist"]

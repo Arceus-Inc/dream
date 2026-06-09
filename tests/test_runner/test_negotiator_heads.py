@@ -327,8 +327,11 @@ async def test_evaluator_propose_head_embeds_negotiation_log() -> None:
     assert "add aria-label to button" in prompt
     assert "propose r1" in prompt
     assert "counter r1" in prompt
-    # the round number must be in the prompt so the model knows where it is.
-    assert "2" in prompt
+    # the round number must be wired into the prompt so the model knows
+    # where it is. Assert the exact round phrase, not a bare "2" — the log
+    # already contains "2025-..." timestamps, so a bare digit check would
+    # pass even if round wiring were broken.
+    assert "negotiation round 2" in prompt
 
 
 # --------------------------------------------------------------------------

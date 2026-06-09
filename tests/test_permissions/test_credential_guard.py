@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from dream.permissions._credential_guard import (
     BUILTIN_CREDENTIAL_PATTERNS,
     is_credential_path,
@@ -78,7 +80,10 @@ def test_symlink_into_credential_dir_is_caught(tmp_path: Path) -> None:
     # the resolved form, even though the link's own path looks innocuous.
     target = Path.home() / ".ssh" / "id_rsa"
     link = tmp_path / "innocent.txt"
-    link.symlink_to(target)
+    try:
+        link.symlink_to(target)
+    except OSError as exc:  # restricted runners (e.g. Windows CI) can't symlink
+        pytest.skip(f"symlink creation unsupported here: {exc}")
     assert is_credential_path(link, tmp_path)
 
 

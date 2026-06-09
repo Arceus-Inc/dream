@@ -63,8 +63,15 @@ def compute_session_role_allowlist(
 
     Returned set is the dispatcher's hard allow-list (Spec 10 decision #8) —
     a role cannot dispatch a tool outside this set even with an allow-all gate.
-    The same set should also be passed to :func:`make_permission_gate` as
-    ``tool_allow`` so the gate refuses unlisted tools defensively.
+
+    Do NOT feed this set to :func:`make_permission_gate` as ``tool_allow``:
+    ``tool_allow`` is an *allow-list* that short-circuits the checker to
+    ``ALLOW`` (it returns early, before the path-deny / command-deny / tier /
+    trust steps). Using it for role enforcement would *widen* a role tool past
+    those guards (e.g. ``bash`` could run ``rm -rf /``) rather than restrict it.
+    Role enforcement is a "must be in set" deny and belongs in the dispatcher
+    (``EngineToolDispatcher.role_allowed_tools``); the gate must still apply its
+    full pipeline to every role-allowed tool.
     """
     trusted_tiers = _trusted_tiers(registry)
     assembly = build_policy(

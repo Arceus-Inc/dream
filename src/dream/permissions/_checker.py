@@ -43,13 +43,12 @@ def evaluate(request: PermissionRequest, policy: Policy) -> PermissionDecision:
         if is_credential_path(path, policy.cwd, policy.credential_extra):
             return _decide(Outcome.DENY, f"credential-path guard: {path}", "credential_guard")
 
-    # 2. Tool deny-list.
-    if request.tool_name in policy.tool_deny:
+    # 2-3. Tool deny-list, with the allow-list as an *override for tool-deny only*.
+    # The allow-list does NOT short-circuit to ALLOW: command/path denies, tier
+    # checks, and the write boundary below still apply to allow-listed tools.
+    tool_allowed = request.tool_name in policy.tool_allow
+    if request.tool_name in policy.tool_deny and not tool_allowed:
         return _decide(Outcome.DENY, f"tool {request.tool_name!r} is deny-listed", "tool_deny")
-
-    # 3. Tool allow-list (operator override; the guard has already run).
-    if request.tool_name in policy.tool_allow:
-        return _decide(Outcome.ALLOW, f"tool {request.tool_name!r} is allow-listed", "tool_allow")
 
     # 4. Path deny rules.
     for path in request.target_paths:
@@ -122,15 +121,32 @@ def _matches_path(pattern: str, path: Path, cwd: Path) -> bool:
 
 
 def _path_forms(path: Path, cwd: Path) -> tuple[str, ...]:
-    """An absolute and (when in-tree) a cwd-relative POSIX form to match against."""
+    """POSIX forms to match a deny glob against.
+
+    Includes the lexical absolute form, a cwd-relative form (when in-tree), and
+    the symlink-resolved form. The resolved form prevents a deny rule being
+    dodged via an in-repo symlink whose own path doesn't match the glob but
+    whose target does (parallel to the credential guard's resolved candidate).
+    """
     target = path.expanduser()
     if not target.is_absolute():
         target = cwd / target
     absolute = Path(os.path.normpath(target.as_posix()))
     cwd_abs = Path(os.path.normpath(cwd.as_posix()))
+    forms = [absolute.as_posix()]
     if absolute == cwd_abs or absolute.is_relative_to(cwd_abs):
-        return (absolute.as_posix(), absolute.relative_to(cwd_abs).as_posix())
-    return (absolute.as_posix(),)
+        forms.append(absolute.relative_to(cwd_abs).as_posix())
+    resolved = _resolved_posix(target)
+    if resolved is not None and resolved not in forms:
+        forms.append(resolved)
+    return tuple(forms)
+
+
+def _resolved_posix(target: Path) -> str | None:
+    try:
+        return target.resolve(strict=False).as_posix()
+    except OSError:
+        return None
 
 
 def _decide(outcome: Outcome, reason: str, rule: str) -> PermissionDecision:

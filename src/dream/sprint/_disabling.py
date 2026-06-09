@@ -31,6 +31,4 @@ def is_evaluator_enabled_for_sprint(
     """
     if not ledger.evaluator_enabled:
         return False
-    if sprint_override is False:
-        return False
-    return True
+    return sprint_override is not False

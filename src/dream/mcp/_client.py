@@ -42,11 +42,10 @@ class McpClientManager:
         credentials_path: Path | None = None,
         session_opener: SessionOpener | None = None,
     ) -> None:
-        self._entries: dict[str, AllowlistEntry] = {e.name: e for e in entries}
+        self._entries: dict[str, AllowlistEntry] = _entries_by_name(entries)
         self._opener: SessionOpener = session_opener or make_default_opener(credentials_path)
         self._statuses: dict[str, McpConnectionStatus] = {
-            e.name: McpConnectionStatus(name=e.name, state="pending", transport=e.transport)
-            for e in entries
+            name: _pending_status(entry) for name, entry in self._entries.items()
         }
         self._sessions: dict[str, ClientSession] = {}
         self._stacks: dict[str, AsyncExitStack] = {}
@@ -59,19 +58,22 @@ class McpClientManager:
         return findings
 
     async def close(self) -> None:
-        """Close all live sessions."""
+        """Close all live sessions and reset per-server status to pending.
+
+        Statuses are reset alongside the session/stack maps so a server can no
+        longer appear ``connected`` (with a stale tool/resource inventory) after
+        shutdown.
+        """
         for stack in list(self._stacks.values()):
             await _safe_aclose(stack)
         self._stacks.clear()
         self._sessions.clear()
+        for name, entry in self._entries.items():
+            self._statuses[name] = _pending_status(entry)
 
     async def reconnect_all(self) -> list[Finding]:
         """Close then reconnect every entry."""
         await self.close()
-        for name, entry in self._entries.items():
-            self._statuses[name] = McpConnectionStatus(
-                name=name, state="pending", transport=entry.transport
-            )
         return await self.connect_all()
 
     def list_statuses(self) -> list[McpConnectionStatus]:
@@ -123,6 +125,12 @@ class McpClientManager:
 
     # --- internals -----------------------------------------------------------
 
+    async def _discard_session(self, name: str) -> None:
+        stack = self._stacks.pop(name, None)
+        self._sessions.pop(name, None)
+        if stack is not None:
+            await _safe_aclose(stack)
+
     def _require_session(self, server: str) -> ClientSession:
         session = self._sessions.get(server)
         if session is None:
@@ -134,6 +142,9 @@ class McpClientManager:
         return session
 
     async def _connect_one(self, name: str, entry: AllowlistEntry) -> list[Finding]:
+        # Close any session left over from a prior connect so repeated
+        # connect_all() calls cannot orphan live transports (#resource-leak).
+        await self._discard_session(name)
         stack = AsyncExitStack()
         try:
             session = await stack.enter_async_context(self._opener(entry))
@@ -228,6 +239,25 @@ class McpClientManager:
             transport=entry.transport,
             detail=str(exc) or type(exc).__name__,
         )
+
+
+def _entries_by_name(entries: list[AllowlistEntry]) -> dict[str, AllowlistEntry]:
+    """Index entries by name, rejecting duplicates loudly.
+
+    A dict comprehension would silently drop earlier entries on a duplicate
+    name, making admission order-dependent (a later, looser entry could replace
+    a stricter one). Duplicate names are a config error — surface them.
+    """
+    by_name: dict[str, AllowlistEntry] = {}
+    for entry in entries:
+        if entry.name in by_name:
+            raise ValueError(f"duplicate MCP server name in allowlist: {entry.name!r}")
+        by_name[entry.name] = entry
+    return by_name
+
+
+def _pending_status(entry: AllowlistEntry) -> McpConnectionStatus:
+    return McpConnectionStatus(name=entry.name, state="pending", transport=entry.transport)
 
 
 async def _safe_aclose(stack: AsyncExitStack) -> None:

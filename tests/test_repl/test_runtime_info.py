@@ -13,12 +13,15 @@ from pathlib import Path
 from dream.repl._runtime_info import detect_shell, render_runtime_info
 
 
-def test_detect_shell_uses_shell_env_on_posix(monkeypatch) -> None:
+def test_detect_shell_always_reports_sh_on_posix(monkeypatch) -> None:
+    # ``create_subprocess_shell`` invokes ``/bin/sh -c`` on POSIX regardless of
+    # ``$SHELL``; advertising ``$SHELL`` would mislead the model into emitting
+    # zsh/bash syntax that fails under sh. So detection must ignore ``$SHELL``.
     monkeypatch.setattr(sys, "platform", "linux")
-    assert detect_shell({"SHELL": "/usr/bin/zsh"}) == "/usr/bin/zsh"
+    assert detect_shell({"SHELL": "/usr/bin/zsh"}) == "/bin/sh"
 
 
-def test_detect_shell_falls_back_to_sh_on_posix(monkeypatch) -> None:
+def test_detect_shell_reports_sh_on_posix_without_shell_env(monkeypatch) -> None:
     monkeypatch.setattr(sys, "platform", "linux")
     assert detect_shell({}) == "/bin/sh"
 
@@ -37,11 +40,13 @@ def test_detect_shell_falls_back_to_cmd_on_windows(monkeypatch) -> None:
 
 def test_render_runtime_info_names_block_and_shell(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(sys, "platform", "linux")
+    # Even with a fancy $SHELL set, the block must advertise /bin/sh — the shell
+    # create_subprocess_shell actually runs the command under on POSIX.
     text = render_runtime_info(env={"SHELL": "/bin/bash"}, working_dir=tmp_path)
     # Header line so the model sees the block as authoritative grounding.
     assert text.startswith("Runtime environment\n")
     # Shell line names the exact subsystem affected (task_create command=...).
-    assert "Shell (used by task_create command=...): /bin/bash" in text
+    assert "Shell (used by task_create command=...): /bin/sh" in text
     # The working_dir lands verbatim so the model doesn't guess relative paths.
     assert str(tmp_path) in text
 

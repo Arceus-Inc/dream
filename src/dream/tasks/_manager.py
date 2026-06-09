@@ -69,6 +69,24 @@ def _task_id(task_type: TaskType) -> str:
     return f"{task_type}-{uuid4().hex[:8]}"
 
 
+def _read_tail(path: Path, *, max_bytes: int) -> str:
+    """Read the last ``max_bytes`` bytes of ``path`` without loading the whole file.
+
+    Opens in binary and seeks from the end so memory is bounded by ``max_bytes``,
+    not by the file size. The window may start mid-character; ``errors="replace"``
+    on decode turns any partial leading byte sequence into a replacement char
+    rather than raising, which is acceptable for a human-facing log tail.
+    """
+    if max_bytes <= 0:
+        return ""
+    with path.open("rb") as fh:
+        size = fh.seek(0, os.SEEK_END)
+        start = max(0, size - max_bytes)
+        fh.seek(start)
+        window = fh.read()
+    return window.decode("utf-8", errors="replace")
+
+
 class BackgroundTaskManager:
     """In-memory supervisor for background subprocess tasks."""
 
@@ -167,11 +185,14 @@ class BackgroundTaskManager:
         return self._generations.get(task_id, 0)
 
     def read_task_output(self, task_id: str, *, max_bytes: int = 12000) -> str:
+        """Return the last ``max_bytes`` bytes of the task's output log.
+
+        Seeks from the end and reads a bounded window so memory stays O(max_bytes)
+        regardless of total log size — a multi-MB log no longer loads in full just
+        to surface a small tail.
+        """
         task = self._require_task(task_id)
-        content = task.output_file.read_text(encoding="utf-8", errors="replace")
-        if len(content) > max_bytes:
-            return content[-max_bytes:]
-        return content
+        return _read_tail(task.output_file, max_bytes=max_bytes)
 
     # --- control ----------------------------------------------------------
 

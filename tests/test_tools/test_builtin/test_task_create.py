@@ -169,3 +169,31 @@ async def test_invalid_input_schema_raises(tmp_path: Path) -> None:
     # description missing → pydantic validation error
     with pytest.raises(Exception):
         await TaskCreateTool().execute({"command": "echo hi"}, _ctx(tmp_path, sc))
+
+
+async def test_empty_argv_is_structured_error(tmp_path: Path) -> None:
+    """An empty argv would reach ``create_subprocess_exec()`` with no program
+    and raise a runtime TypeError; reject it as a normal tool error instead."""
+    sc = _session(tmp_path)
+    result = await TaskCreateTool().execute(
+        {"description": "x", "argv": []}, _ctx(tmp_path, sc)
+    )
+    assert result.is_error is True
+    assert "root_cause" in result.metadata
+    assert sc.manager.list_tasks() == []
+
+
+async def test_os_error_on_spawn_is_structured_error(tmp_path: Path) -> None:
+    """PermissionError / NotADirectoryError (OSError subclasses) raised during
+    spawn must convert to the structured tool error, not escape uncaught."""
+
+    class _BoomManager:
+        async def create_shell_task(self, **_: object) -> object:
+            raise PermissionError("permission denied")
+
+    sc = TaskSessionContext(manager=_BoomManager())  # type: ignore[arg-type]
+    result = await TaskCreateTool().execute(
+        {"description": "x", "command": "echo hi"}, _ctx(tmp_path, sc)
+    )
+    assert result.is_error is True
+    assert "permission denied" in result.metadata["root_cause"]

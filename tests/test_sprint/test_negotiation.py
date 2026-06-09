@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import pytest
 
-
 # --- helpers -----------------------------------------------------------
 
 
@@ -63,10 +62,16 @@ def test_negotiate_log_records_each_exchange() -> None:
         evaluator_propose=_eval_always(("MUST x",)),
         generator_respond=_gen_accept_after(2, counter=("MUST y",)),
     )
-    assert len(result.log) >= 3  # eval propose, gen counter, eval propose, gen accept
-    roles_seen = {(e.from_role, e.to_role) for e in result.log}
-    assert ("evaluator", "generator") in roles_seen
-    assert ("generator", "evaluator") in roles_seen
+    # accept_after(2): r1 propose + r1 counter, r2 propose + r2 accept => 4.
+    # An exact count catches a dropped exchange event that ``>= 3`` would miss.
+    assert len(result.log) == 4
+    directions = [(e.from_role, e.to_role) for e in result.log]
+    assert directions == [
+        ("evaluator", "generator"),  # r1 propose
+        ("generator", "evaluator"),  # r1 counter
+        ("evaluator", "generator"),  # r2 propose
+        ("generator", "evaluator"),  # r2 accept
+    ]
 
 
 # --- bounded at 3 rounds ----------------------------------------------
@@ -139,6 +144,96 @@ def test_negotiate_rejects_max_rounds_less_than_one() -> None:
             generator_respond=lambda r, log, p: (True, None),
             max_rounds=0,
         )
+
+
+def test_negotiate_rejects_max_rounds_above_three() -> None:
+    """Spec criterion #9 caps negotiation at 3 rounds; a larger bound would
+    let extra rounds slip through and break the contract."""
+    from dream.sprint import negotiate_contract
+
+    with pytest.raises(ValueError, match="max_rounds"):
+        negotiate_contract(
+            evaluator_propose=lambda r, log: ["x"],
+            generator_respond=lambda r, log, p: (False, ["y"]),
+            max_rounds=4,
+        )
+
+
+# --- sync path rejects awaitables and cleans them up ------------------
+
+
+class _ClosableAwaitable:
+    """A minimal awaitable that records whether ``close()`` was called.
+
+    Mirrors the surface the sync negotiation path relies on: it is
+    awaitable (so ``inspect.isawaitable`` is true) and exposes ``close()``
+    the way a coroutine does, so we can assert the path cleans it up.
+    """
+
+    def __init__(self, value: object) -> None:
+        self._value = value
+        self.closed = False
+
+    def __await__(self):  # pragma: no cover - never awaited by design
+        if False:
+            yield
+        return self._value
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_sync_path_closes_evaluator_awaitable_before_raising() -> None:
+    """The sync seam rejects awaitable-returning heads, but must close the
+    awaitable first so no live coroutine/task leaks behind the TypeError."""
+    from dream.sprint import negotiate_contract
+
+    awaitable = _ClosableAwaitable(["x"])
+
+    with pytest.raises(TypeError, match="awaitable"):
+        negotiate_contract(
+            evaluator_propose=lambda r, log: awaitable,
+            generator_respond=lambda r, log, p: (True, None),
+        )
+    assert awaitable.closed is True
+
+
+def test_sync_path_closes_generator_awaitable_before_raising() -> None:
+    from dream.sprint import negotiate_contract
+
+    awaitable = _ClosableAwaitable((True, None))
+
+    with pytest.raises(TypeError, match="awaitable"):
+        negotiate_contract(
+            evaluator_propose=lambda r, log: ["x"],
+            generator_respond=lambda r, log, p: awaitable,
+        )
+    assert awaitable.closed is True
+
+
+def test_sync_path_closes_real_coroutine_without_warning(
+    recwarn: pytest.WarningsRecorder,
+) -> None:
+    """A real coroutine returned in the sync path must not emit a
+    'coroutine was never awaited' RuntimeWarning."""
+    import gc
+
+    from dream.sprint import negotiate_contract
+
+    async def _coro() -> list[str]:
+        return ["x"]
+
+    # Hold the coroutine in a container so we can drop the only reference
+    # after the call, forcing the GC to surface any "never awaited" warning.
+    holder = [_coro()]
+    with pytest.raises(TypeError, match="awaitable"):
+        negotiate_contract(
+            evaluator_propose=lambda r, log: holder[0],
+            generator_respond=lambda r, log, p: (True, None),
+        )
+    holder.clear()
+    gc.collect()
+    assert not [w for w in recwarn.list if issubclass(w.category, RuntimeWarning)]
 
 
 # --- carry items from prior eval --------------------------------------

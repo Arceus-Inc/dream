@@ -1,7 +1,7 @@
 """In-process teammate executor — runs a parent-supplied async factory
 as an ``asyncio.Task`` and delivers its result through the file mailbox.
 
-Spec criteria #21–#23: worker results reach the leader via a
+Spec criteria #21-#23: worker results reach the leader via a
 ``task_notification`` file in ``.harness/swarm/{leader}/inbox/``, never
 through a synchronous return value or an in-process queue. (The lint
 ``test_swarm_does_not_use_in_memory_queues_for_messaging`` enforces this:
@@ -12,12 +12,14 @@ is not.)
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from dream.swarm._identity import TeammateIdentity
 from dream.swarm._mailbox import Mailbox, make_task_notification
 from dream.swarm._paths import leader_inbox_dir, validate_leader_id
 from dream.swarm._spawn import (
@@ -72,7 +74,9 @@ class InProcessExecutor:
             self.event_sink(event)
 
     async def spawn(self, config: TeammateSpawnConfig) -> SpawnResult:
-        agent_id = f"{config.name}@{config.team}"
+        agent_id = TeammateIdentity.create(
+            name=config.name, team=config.team
+        ).agent_id
 
         if config.depth > MAX_SUBAGENT_DEPTH:
             self._emit(_depth_event(depth=config.depth, agent_id=agent_id))
@@ -97,7 +101,7 @@ class InProcessExecutor:
             try:
                 result = await self.factory(config)
                 summary = result if isinstance(result, str) else str(result)
-            except BaseException as exc:  # noqa: BLE001 — convert to notification
+            except BaseException as exc:
                 status = "failed"
                 summary = f"{type(exc).__name__}: {exc}"
             finally:
@@ -112,19 +116,28 @@ class InProcessExecutor:
 
         task = asyncio.create_task(_runner(), name=task_id)
         self._tasks[agent_id] = task
+        # Evict the finished runner so a long-lived leader spawning many
+        # teammates does not retain completed/cancelled task objects forever.
+        # Guard against clobbering a re-spawn under the same agent_id: only
+        # drop the entry if it still points at *this* task.
+        task.add_done_callback(
+            lambda done: self._evict_if_current(agent_id, done)
+        )
         return SpawnResult(
             task_id=task_id, agent_id=agent_id, backend_type="in_process"
         )
+
+    def _evict_if_current(self, agent_id: str, task: asyncio.Task[None]) -> None:
+        if self._tasks.get(agent_id) is task:
+            del self._tasks[agent_id]
 
     async def shutdown(self, agent_id: str, *, force: bool = False) -> bool:
         task = self._tasks.pop(agent_id, None)
         if task is None or task.done():
             return False
         task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError, Exception):
             await task
-        except (asyncio.CancelledError, Exception):
-            pass
         return True
 
     async def wait_all(self) -> None:

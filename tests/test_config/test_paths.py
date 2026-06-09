@@ -77,6 +77,18 @@ def test_task_id_methods_reject_traversal(tmp_path: Path, bad: str) -> None:
         p.checkpoint_ref(bad, 1)
 
 
+def test_role_manifest_overlay_path(tmp_path: Path) -> None:
+    p = DreamPaths.resolve(tmp_path, env={})
+    assert p.role_manifest_overlay("planner") == p.repo / ".harness" / "roles" / "planner.toml"
+
+
+@pytest.mark.parametrize("bad", ["", ".", "..", "../x", "a/b", "a\\b", "/abs"])
+def test_role_manifest_overlay_rejects_traversal(tmp_path: Path, bad: str) -> None:
+    p = DreamPaths.resolve(tmp_path, env={})
+    with pytest.raises(ValueError):
+        p.role_manifest_overlay(bad)
+
+
 def test_checkpoint_ref_format(tmp_path: Path) -> None:
     p = DreamPaths.resolve(tmp_path, env={})
     assert p.checkpoint_ref("T1", 3) == f"{CHECKPOINT_REF_PREFIX}/T1/3"

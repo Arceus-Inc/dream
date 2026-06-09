@@ -15,10 +15,12 @@ This module is pure transitions: no event emission, no contract writing.
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 from dream.planner import PlannerLedger
+from dream.utils.file_lock import exclusive_file_lock
 from dream.utils.fs import atomic_write_text
 
 from ._contract import tech_debt_path
@@ -36,6 +38,13 @@ def apply_outcome(ledger: PlannerLedger, record: EvaluationRecord) -> PlannerLed
     new_steps = list(ledger.steps)
     for i, step in enumerate(new_steps):
         if step.id == step_id:
+            if step.status != "in_progress":
+                raise ValueError(
+                    f"cannot apply outcome to step {step_id!r}: only an "
+                    f"in_progress step may transition, got status "
+                    f"{step.status!r}"
+                )
+            new_status: Literal["done", "blocked", "in_progress"]
             if record.outcome == "pass":
                 new_status = "done"
             elif record.outcome == "fail":
@@ -48,7 +57,7 @@ def apply_outcome(ledger: PlannerLedger, record: EvaluationRecord) -> PlannerLed
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def append_tech_debt(worktree_root: str | Path, record: EvaluationRecord) -> Path:
@@ -62,7 +71,6 @@ def append_tech_debt(worktree_root: str | Path, record: EvaluationRecord) -> Pat
             f"append_tech_debt accepts only outcome='fail' records, got {record.outcome!r}"
         )
     path = tech_debt_path(worktree_root)
-    prior = path.read_text(encoding="utf-8") if path.exists() else ""
     items_md = "\n".join(f"  - {item}" for item in record.items) if record.items else ""
     entry = (
         f"## {record.task_id} — sprint-{record.sprint_number} — step {record.step_id}\n"
@@ -71,5 +79,10 @@ def append_tech_debt(worktree_root: str | Path, record: EvaluationRecord) -> Pat
         + (f"- items:\n{items_md}\n" if items_md else "")
         + "\n"
     )
-    atomic_write_text(path, prior + entry)
+    # Serialize the read-modify-write so concurrent appenders can't both read
+    # the same prior content and clobber one another (last-write-wins).
+    lock_path = path.with_name(f"{path.name}.lock")
+    with exclusive_file_lock(lock_path):
+        prior = path.read_text(encoding="utf-8") if path.exists() else ""
+        atomic_write_text(path, prior + entry)
     return path

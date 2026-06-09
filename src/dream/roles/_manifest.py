@@ -45,7 +45,7 @@ class RoleManifest(BaseModel):
     color: str = "neutral"
 
     @model_validator(mode="after")
-    def _only_generator_may_use_null_tools(self) -> "RoleManifest":
+    def _only_generator_may_use_null_tools(self) -> RoleManifest:
         if self.tools is None and self.name != "generator":
             raise ValueError(
                 f"tools=null is reserved for the generator role; "

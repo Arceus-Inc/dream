@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from dream.swarm._identity import TeammateIdentity
 from dream.swarm._spawn import (
     BackendType,
     BridgeDisabled,
@@ -38,9 +39,10 @@ class RemoteExecutor:
         )
         if self.raise_on_disabled:
             raise BridgeDisabled(message)
+        identity = TeammateIdentity.create(name=config.name, team=config.team)
         return SpawnResult(
             task_id="",
-            agent_id=f"{config.name}@{config.team}",
+            agent_id=identity.agent_id,
             backend_type="remote",
             success=False,
             error=message,

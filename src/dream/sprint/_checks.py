@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-__all__ = ["checked_task_id", "checked_sprint_number"]
+__all__ = ["checked_sprint_number", "checked_task_id"]
 
 
 def checked_task_id(task_id: str) -> str:
@@ -19,6 +19,7 @@ def checked_task_id(task_id: str) -> str:
         or task_id in {".", ".."}
         or "/" in task_id
         or "\\" in task_id
+        or ":" in task_id  # Windows drive / NTFS alternate-data-stream syntax
         or "\x00" in task_id
         or Path(task_id).is_absolute()
     ):
@@ -27,6 +28,12 @@ def checked_task_id(task_id: str) -> str:
 
 
 def checked_sprint_number(sprint_number: int) -> int:
+    # ``bool`` is a subclass of ``int``; reject it so ``True``/``False`` can't
+    # masquerade as sprint 1/0 and produce a ``sprint-True.json`` filename.
+    if not isinstance(sprint_number, int) or isinstance(sprint_number, bool):
+        raise TypeError(
+            f"sprint_number must be an int, got {type(sprint_number).__name__}"
+        )
     if sprint_number < 1:
         raise ValueError(f"sprint_number must be >= 1, got {sprint_number}")
     return sprint_number

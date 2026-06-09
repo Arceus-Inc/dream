@@ -58,7 +58,7 @@ class TaskOutputTool(BaseTool):
             return _err(
                 str(exc),
                 root_cause=str(exc),
-                safe_retry="call task_list to discover valid ids",
+                safe_retry="reuse an id from a prior task_create result, or task_get to confirm it",
                 stop_condition="do not retry with the same id",
             )
 

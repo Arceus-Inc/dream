@@ -35,9 +35,11 @@ def validate_leader_id(leader_id: str) -> str:
     so we enforce:
 
     - non-empty, at most 64 characters;
-    - matches ``[a-zA-Z0-9._-]+`` (no path separators, no whitespace,
-      no shell metacharacters);
-    - no ``.`` / ``..`` traversal segments.
+    - matches ``[a-zA-Z0-9._-]+`` in full (no path separators, no whitespace,
+      no trailing newline, no shell metacharacters);
+    - no ``.`` / ``..`` traversal segments;
+    - no leading or trailing dot — Windows strips trailing dots, so ``"a"``
+      and ``"a."`` would otherwise resolve to the same directory.
     """
     if not leader_id:
         raise ValueError("leader id must not be empty")
@@ -46,13 +48,20 @@ def validate_leader_id(leader_id: str) -> str:
             f"leader id must be {_MAX_LEADER_ID_LENGTH} characters or fewer "
             f"(got {len(leader_id)})"
         )
-    if not _VALID_LEADER_ID.match(leader_id):
+    # fullmatch (not match): a ``$``-anchored ``match`` still accepts a
+    # trailing newline, which would create surprising on-disk names.
+    if not _VALID_LEADER_ID.fullmatch(leader_id):
         raise ValueError(
             f"leader id {leader_id!r}: must contain only letters, digits, "
             "dots, underscores, and dashes (no path separators)"
         )
     if leader_id in {".", ".."}:
         raise ValueError(f"leader id {leader_id!r}: traversal segment not allowed")
+    if leader_id.startswith(".") or leader_id.endswith("."):
+        raise ValueError(
+            f"leader id {leader_id!r}: must not start or end with a dot "
+            "(trailing dots are normalized away on Windows, risking collisions)"
+        )
     return leader_id
 
 

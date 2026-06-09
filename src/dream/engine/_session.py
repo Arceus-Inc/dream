@@ -453,6 +453,15 @@ async def run_session(
         yield record
         total_usage = total_usage + turn_usage
 
+        # Checkpoint a successful turn (spec 03 #4) BEFORE any limit-driven
+        # abort below: a turn whose outcome is ``complete`` must persist its
+        # snapshot even when this same turn trips a hard cap, otherwise resume
+        # re-runs already-completed work. Best-effort: a snapshot writer crash
+        # must not break the session.
+        if turn_outcome == "complete" and config.checkpoint is not None:
+            with contextlib.suppress(Exception):
+                config.checkpoint(record)
+
         # Spec 13D: count this turn's usage + tool calls and abort the session
         # when a hard cap is breached. Enforcement is at turn granularity — the
         # next turn never starts once a counter is tripped.
@@ -463,12 +472,6 @@ async def run_session(
             if (breached := config.limiter.breached()) is not None:
                 abort_reason = breached
                 break
-
-        # Checkpoint only on a successful turn (spec 03 #4).
-        # Best-effort: a snapshot writer crash must not break the session.
-        if turn_outcome == "complete" and config.checkpoint is not None:
-            with contextlib.suppress(Exception):
-                config.checkpoint(record)
 
         if turn_error is not None:
             abort_reason = turn_error

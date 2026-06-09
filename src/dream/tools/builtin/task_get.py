@@ -50,7 +50,7 @@ class TaskGetTool(BaseTool):
             return _err(
                 f"No task found with id: {args.task_id}",
                 root_cause=f"task id {args.task_id!r} is not in the manager's table",
-                safe_retry="call task_list (or task_create) to discover valid ids",
+                safe_retry="reuse an id from a prior task_create result",
                 stop_condition="do not retry with the same id",
             )
 

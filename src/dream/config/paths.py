@@ -32,11 +32,11 @@ __all__ = [
 ]
 
 
-def _checked_task_id(task_id: str) -> str:
-    """Reject task ids that could escape the ``.dream/`` roots (path traversal).
+def _checked_segment(value: str, *, label: str) -> str:
+    """Reject a path segment that could escape the ``.dream``/``.harness`` roots.
 
-    A last-line guard: the worktree manager (#02) validates slugs up front, but
-    these path builders must never join an unsafe segment regardless of caller.
+    A last-line guard: callers may validate slugs up front, but these path
+    builders must never join an unsafe segment regardless of caller.
 
     Scope: the checks are for an ASCII filesystem where ``/`` is the only path
     separator (POSIX) plus ``\\`` for Windows. Unicode separator look-alikes are
@@ -44,15 +44,20 @@ def _checked_task_id(task_id: str) -> str:
     port to an exotic FS should revisit this guard.
     """
     if (
-        not task_id
-        or task_id in {".", ".."}
-        or "/" in task_id
-        or "\\" in task_id
-        or "\x00" in task_id
-        or os.path.isabs(task_id)
+        not value
+        or value in {".", ".."}
+        or "/" in value
+        or "\\" in value
+        or "\x00" in value
+        or os.path.isabs(value)
     ):
-        raise ValueError(f"unsafe task_id: {task_id!r}")
-    return task_id
+        raise ValueError(f"unsafe {label}: {value!r}")
+    return value
+
+
+def _checked_task_id(task_id: str) -> str:
+    """Reject task ids that could escape the ``.dream/`` roots (path traversal)."""
+    return _checked_segment(task_id, label="task_id")
 
 
 @dataclass(frozen=True)
@@ -165,7 +170,7 @@ class DreamPaths:
 
         Layered over the bundled default by :func:`dream.roles.load_role_manifest`.
         """
-        return self.repo / ".harness" / "roles" / f"{role}.toml"
+        return self.repo / ".harness" / "roles" / f"{_checked_segment(role, label='role')}.toml"
 
     def checkpoint_ref(self, task_id: str, n: int | str) -> str:
         return f"{CHECKPOINT_REF_PREFIX}/{_checked_task_id(task_id)}/{n}"

@@ -30,6 +30,17 @@ def test_no_fences_blocks(tmp_path: Path) -> None:
     assert has_blocking(validate_skills(tmp_path, home=tmp_path / "home"))
 
 
+def test_non_utf8_skill_blocks_without_crashing(tmp_path: Path) -> None:
+    # read_skill_meta can raise UnicodeDecodeError; validation must convert it to
+    # a blocking finding rather than crashing session startup.
+    skill_dir = tmp_path / "docs" / "skills" / "binary"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_bytes(b"---\nname: \xff\xfe binary\n---\nbody")
+    findings = validate_skills(tmp_path, home=tmp_path / "home")
+    assert has_blocking(findings)
+    assert any("binary" in (f.path or "") for f in findings)
+
+
 def test_project_skills_skipped_when_gated(tmp_path: Path) -> None:
     write_skill(tmp_path / "docs" / "skills", "bad", raw="not valid frontmatter")
     findings = validate_skills(

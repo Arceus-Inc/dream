@@ -212,6 +212,42 @@ def test_heartbeat_tolerates_transient_lock_failure(
     assert mgr.heartbeat("T1", execution_run_id=ex) is False  # no raise
 
 
+def test_heartbeat_propagates_non_transient_db_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A corruption / schema / I/O failure must not be masked as a missed
+    heartbeat (``False``) — it has to surface so it is observable."""
+    clock = FakeClock(start_ms=1_000)
+    mgr = _mgr(tmp_path / "b.sqlite", clock)
+    co = _granted(mgr.claim("T1")).claim.checkout_run_id
+    ex = _granted(mgr.begin_execution("T1", checkout_run_id=co)).claim.execution_run_id
+
+    def _corrupt() -> object:
+        raise sqlite3.OperationalError("database disk image is malformed")
+
+    monkeypatch.setattr(mgr._board, "transaction", _corrupt)
+    with pytest.raises(sqlite3.OperationalError, match="malformed"):
+        mgr.heartbeat("T1", execution_run_id=ex)
+
+
+def test_release_returns_true_when_mirror_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ownership tokens are cleared in the board before the mirror write; a
+    mirror failure must not flip a successful release into a hard error."""
+    clock = FakeClock(start_ms=1_000)
+    mgr = _mgr(tmp_path / "b.sqlite", clock)
+    co = _granted(mgr.claim("T1")).claim.checkout_run_id
+
+    def _boom(task_id: str) -> None:
+        raise RuntimeError("mirror down")
+
+    monkeypatch.setattr(mgr._mirror, "on_release", _boom)
+    assert mgr.release("T1", checkout_run_id=co) is True
+    row = mgr.get("T1")
+    assert row is not None and row.checkout_run_id is None
+
+
 def test_concurrent_reclaim_exactly_one_winner(tmp_path: Path) -> None:
     clock = FakeClock(start_ms=1_000)
     path = tmp_path / "b.sqlite"

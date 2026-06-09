@@ -16,7 +16,7 @@ way to consume.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 __all__ = ["ArtefactKind", "HandoffArtefact", "Role", "handoff_event"]
@@ -94,7 +94,7 @@ def handoff_event(
 
     return {
         "type": f"handoff.{from_role}_to_{to_role}",
-        "ts": datetime.now(timezone.utc).isoformat(timespec="microseconds"),
+        "ts": datetime.now(UTC).isoformat(timespec="microseconds"),
         "from_role": from_role,
         "to_role": to_role,
         "artefacts": [a.to_dict() for a in artefacts],

@@ -118,7 +118,7 @@ def test_planner_ledger_path_is_under_exec_plans_active(tmp_path: Path) -> None:
 def test_planner_paths_reject_unsafe_task_id(tmp_path: Path, bad: str) -> None:
     from dream.planner import planner_ledger_path, planner_spec_path
 
-    with pytest.raises(ValueError, match="task_id|unsafe"):
+    with pytest.raises(ValueError, match=r"task_id|unsafe"):
         planner_spec_path(tmp_path, bad)
-    with pytest.raises(ValueError, match="task_id|unsafe"):
+    with pytest.raises(ValueError, match=r"task_id|unsafe"):
         planner_ledger_path(tmp_path, bad)

@@ -28,6 +28,14 @@ def test_split_frontmatter_without_fences_raises() -> None:
         split_frontmatter("no frontmatter here")
 
 
+def test_split_frontmatter_accepts_closing_fence_with_whitespace() -> None:
+    # _read_header_only accepts a closing fence with trailing whitespace; this
+    # must too, or a skill registers at startup then fails at body-load time.
+    header, body = split_frontmatter("---\nname: x\n---  \nbody one\n")
+    assert "name: x" in header
+    assert body.strip() == "body one"
+
+
 def test_parse_minimal_required_fields() -> None:
     meta = parse_skill_meta(
         "name: refactor\ndescription: Refactor code.\nwhen_to_use: When messy.",

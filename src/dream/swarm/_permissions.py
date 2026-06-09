@@ -29,6 +29,7 @@ longer-lived ``Policy.tool_allow`` rule is the caller's job, intentionally
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import json
 import time
@@ -228,10 +229,8 @@ class PermissionMailbox:
         # Resolved file is now on disk; remove pending. A failure here leaves
         # the pending file behind (leader retry is a KeyError because the
         # resolved file already exists — caller checks ``read_resolved``).
-        try:
+        with contextlib.suppress(OSError):
             pending_path.unlink()
-        except OSError:
-            pass
         return response
 
 
@@ -245,9 +244,7 @@ def _is_request_file(path: Path) -> bool:
         return False
     if path.name.startswith("."):
         return False
-    if ".tmp." in path.name:
-        return False
-    return True
+    return ".tmp." not in path.name
 
 
 def _try_load_request(path: Path) -> PermissionRequest | None:

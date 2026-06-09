@@ -9,6 +9,7 @@ with no lost update.
 from __future__ import annotations
 
 import dataclasses
+import sqlite3
 import threading
 from pathlib import Path
 
@@ -93,6 +94,45 @@ def test_transaction_rolls_back_on_exception(tmp_path: Path) -> None:
             tx.upsert(_claim("T1"))
             raise RuntimeError("boom")
     assert store.read("T1") is None  # rolled back
+    store.close()
+
+
+def test_commit_failure_rolls_back_and_leaves_connection_clean(
+    tmp_path: Path,
+) -> None:
+    """If COMMIT itself fails, the connection must not be left in an open
+    transaction (which would break the next BEGIN IMMEDIATE with a nested-
+    transaction error)."""
+    store = _store(tmp_path)
+    real_conn = store._conn
+
+    class _CommitFailsConn:
+        """Delegates to the real connection but raises once on COMMIT."""
+
+        def __init__(self) -> None:
+            self.fail_commit = True
+
+        def execute(self, sql: str, *args: object) -> object:
+            if sql == "COMMIT" and self.fail_commit:
+                raise sqlite3.OperationalError("disk I/O error")
+            return real_conn.execute(sql, *args)
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(real_conn, name)
+
+    fake = _CommitFailsConn()
+    store._conn = fake  # type: ignore[assignment]
+    with pytest.raises(sqlite3.OperationalError):
+        with store.transaction() as tx:
+            tx.upsert(_claim("T1"))
+
+    # The rollback must have run against the real connection, so it is not
+    # left in an open transaction. Stop failing COMMIT and prove reuse works.
+    fake.fail_commit = False
+    assert real_conn.in_transaction is False
+    with store.transaction() as tx:
+        tx.upsert(_claim("T2"))
+    assert store.read("T2") is not None
     store.close()
 
 

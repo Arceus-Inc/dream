@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from dream.swarm._identity import TeammateIdentity
 from dream.swarm._mailbox import Mailbox, make_task_notification
 from dream.swarm._paths import leader_inbox_dir, validate_leader_id
 from dream.swarm._spawn import (
@@ -63,7 +64,9 @@ class SubprocessExecutor:
             self.event_sink(event)
 
     async def spawn(self, config: TeammateSpawnConfig) -> SpawnResult:
-        agent_id = f"{config.name}@{config.team}"
+        agent_id = TeammateIdentity.create(
+            name=config.name, team=config.team
+        ).agent_id
 
         if config.depth > MAX_SUBAGENT_DEPTH:
             self._emit(_depth_event(depth=config.depth, agent_id=agent_id))
@@ -82,33 +85,27 @@ class SubprocessExecutor:
         mailbox = Mailbox(inbox)
 
         # Register the listener BEFORE create_shell_task so a very-fast
-        # child exit cannot fire the watcher before we are wired up.
-        # Filter by the task id we are about to create (captured by
-        # closure once we have the record).
+        # child exit cannot fire the watcher before we are wired up. The
+        # listener is one-shot: it filters by the task id we are about to
+        # create (captured by closure once we have the record) and removes
+        # itself once that task reaches a terminal state, so a long-lived
+        # leader spawning many teammates does not grow ``_listeners``
+        # without bound (pattern: ``tasks._cron_session`` one_shot).
         captured_task_id: dict[str, str] = {}
+        unregister: dict[str, Callable[[], None]] = {}
 
         def _listener(record: TaskRecord) -> None:
             wanted = captured_task_id.get("id")
             if wanted is None or record.id != wanted:
                 return
-            status = (
-                record.status
-                if record.status in {"completed", "failed", "killed"}
-                else "failed"
-            )
-            summary = f"subprocess {record.id} -> {record.status}"
-            if record.return_code is not None:
-                summary += f" (rc={record.return_code})"
-            msg = make_task_notification(
-                sender=agent_id,
-                recipient=self.leader_id,
-                task_id=record.id,
-                status=status,
-                summary=summary,
-            )
-            mailbox.write(msg)
+            try:
+                self._notify_terminal(record, mailbox=mailbox, agent_id=agent_id)
+            finally:
+                unregister_fn = unregister.get("fn")
+                if unregister_fn is not None:
+                    unregister_fn()
 
-        unregister = self.task_manager.register_completion_listener(_listener)
+        unregister["fn"] = self.task_manager.register_completion_listener(_listener)
 
         try:
             argv = self.argv_builder(config)
@@ -118,8 +115,8 @@ class SubprocessExecutor:
                 argv=argv,
                 task_type="local_agent",
             )
-        except BaseException as exc:  # noqa: BLE001 — convert to result
-            unregister()
+        except BaseException as exc:
+            unregister["fn"]()
             return SpawnResult(
                 task_id="",
                 agent_id=agent_id,
@@ -128,10 +125,36 @@ class SubprocessExecutor:
                 error=f"{type(exc).__name__}: {exc}",
             )
 
+        # Set the tracked id BEFORE returning so the listener can match its
+        # task. There is no ``await`` between ``create_shell_task`` returning
+        # and this assignment, so the single-threaded event loop cannot run
+        # the completion watcher in the gap — the terminal event is never
+        # dropped.
         captured_task_id["id"] = record.id
         self._agent_tasks[agent_id] = record.id
         return SpawnResult(
             task_id=record.id, agent_id=agent_id, backend_type="subprocess"
+        )
+
+    def _notify_terminal(
+        self, record: TaskRecord, *, mailbox: Mailbox, agent_id: str
+    ) -> None:
+        status = (
+            record.status
+            if record.status in {"completed", "failed", "killed"}
+            else "failed"
+        )
+        summary = f"subprocess {record.id} -> {record.status}"
+        if record.return_code is not None:
+            summary += f" (rc={record.return_code})"
+        mailbox.write(
+            make_task_notification(
+                sender=agent_id,
+                recipient=self.leader_id,
+                task_id=record.id,
+                status=status,
+                summary=summary,
+            )
         )
 
     async def shutdown(self, agent_id: str, *, force: bool = False) -> bool:

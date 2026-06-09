@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
+import signal
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -37,10 +39,25 @@ async def run_verification(
     results: list[RepoVerificationStep] = [
         await _run_step(spec, cwd=cwd, timeout_seconds=timeout_seconds) for spec in steps
     ]
-    verifier = ui_verifier or SkipUiVerifier()
+    # Honour any provided verifier — ``is None`` not ``or`` so a (falsy) custom
+    # verifier instance is never silently swapped for the skip default.
+    verifier = SkipUiVerifier() if ui_verifier is None else ui_verifier
     for path in ui_paths:
-        results.append(await verifier.verify(path))
+        results.append(await _run_ui(verifier, path))
     return VerificationReport(steps=tuple(results))
+
+
+async def _run_ui(verifier: UiVerifier, path: str) -> RepoVerificationStep:
+    """Run one UI verification, turning a verifier crash into an ``error`` step."""
+    try:
+        return await verifier.verify(path)
+    except Exception as exc:
+        return RepoVerificationStep(
+            command=f"ui:{path}",
+            status="error",
+            name=path,
+            stderr=f"UI verification raised: {exc}",
+        )
 
 
 async def _run_step(
@@ -53,6 +70,9 @@ async def _run_step(
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            # Own session/process group so a timeout can terminate the whole tree
+            # (shell + children/grandchildren), not just the top-level shell PID.
+            start_new_session=True,
         )
     except OSError as exc:
         return RepoVerificationStep(
@@ -83,8 +103,20 @@ async def _run_step(
 
 
 async def _kill(proc: asyncio.subprocess.Process) -> None:
-    with contextlib.suppress(ProcessLookupError):
-        proc.kill()
+    """Terminate the whole process group so timed-out children don't leak.
+
+    The step ran with ``start_new_session=True``, so the child is a group leader
+    whose pid equals the group id; ``killpg`` reaps the shell plus any
+    descendants. Falls back to a plain ``kill`` where process groups are
+    unavailable (e.g. Windows) or already gone.
+    """
+    killpg = getattr(os, "killpg", None)
+    if killpg is not None and proc.pid is not None:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    else:  # pragma: no cover - non-POSIX fallback
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
     with contextlib.suppress(Exception):
         await proc.wait()
 

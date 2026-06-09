@@ -10,6 +10,7 @@ contending writer wait rather than fail.
 
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -130,15 +131,35 @@ class BoardStore:
 
     @contextmanager
     def transaction(self) -> Iterator[BoardTransaction]:
-        """Run a CAS transaction: ``BEGIN IMMEDIATE`` → body → COMMIT / ROLLBACK."""
+        """Run a CAS transaction: ``BEGIN IMMEDIATE`` → body → COMMIT / ROLLBACK.
+
+        A failure in the body rolls back. A failure in ``COMMIT`` itself also
+        rolls back so the connection is never left in an open transaction —
+        otherwise the next ``BEGIN IMMEDIATE`` would fail with a nested-
+        transaction error and wedge every subsequent operation.
+        """
         self._conn.execute("BEGIN IMMEDIATE")
         try:
             yield BoardTransaction(self._conn)
         except BaseException:
-            self._conn.execute("ROLLBACK")
+            self._rollback_quietly()
             raise
-        else:
+        try:
             self._conn.execute("COMMIT")
+        except BaseException:
+            self._rollback_quietly()
+            raise
+
+    def _rollback_quietly(self) -> None:
+        """Roll back, swallowing a secondary rollback error so the original
+        failure is the one that propagates.
+
+        A ``sqlite3.OperationalError`` here means there was no active
+        transaction to roll back (e.g. the engine already auto-rolled back);
+        the original exception is the real signal.
+        """
+        with contextlib.suppress(sqlite3.OperationalError):
+            self._conn.execute("ROLLBACK")
 
     def journal_mode(self) -> str:
         return str(self._conn.execute("PRAGMA journal_mode").fetchone()[0])

@@ -65,3 +65,24 @@ def test_read_allowlist_missing_returns_empty(tmp_path: Path) -> None:
 def test_malformed_toml_raises(tmp_path: Path) -> None:
     with pytest.raises(AllowlistError):
         parse_allowlist("this is not = valid = toml [[")
+
+
+def test_duplicate_entry_names_rejected() -> None:
+    with pytest.raises(AllowlistError, match="duplicate mcp entry name"):
+        parse_allowlist(
+            '[[mcp]]\nname="x"\nendpoint="stdio://a"\ntransport="stdio"\n'
+            '[[mcp]]\nname="x"\nendpoint="stdio://b"\ntransport="stdio"\n'
+        )
+
+
+def test_tools_must_be_a_list() -> None:
+    with pytest.raises(AllowlistError, match="must be a list"):
+        parse_allowlist('[[mcp]]\nname="x"\nendpoint="stdio://x"\ntransport="stdio"\ntools="navigate"\n')
+
+
+def test_non_string_tool_entries_are_rejected() -> None:
+    # A number/object in ``tools`` must fail loudly, not be coerced to str.
+    with pytest.raises(AllowlistError, match="non-empty strings"):
+        parse_allowlist(
+            '[[mcp]]\nname="x"\nendpoint="stdio://x"\ntransport="stdio"\ntools=[1, 2]\n'
+        )

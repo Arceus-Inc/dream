@@ -65,6 +65,50 @@ DEFAULT_POLL_SECONDS = 30
 minute-granular cron expressions on time, large enough that the registry
 file lock isn't being grabbed constantly."""
 
+_TERMINAL_STATUSES = frozenset({"completed", "failed", "killed"})
+
+
+def _record_completion_outcome(
+    *,
+    manager: BackgroundTaskManager,
+    registry_path: str | Path,
+    name: str,
+    task_id: str,
+) -> None:
+    """Stamp the registry row from the task's *actual* terminal outcome.
+
+    Spawning only confirms the session started; ``last_status`` / ``last_run``
+    must reflect how it finished. A one-shot completion listener (keyed to the
+    spawned task) updates the row via :func:`mark_job_run`, then unregisters
+    itself so the listener set doesn't grow across ticks.
+    """
+    unregister: dict[str, object] = {}
+    fired: dict[str, bool] = {"done": False}
+
+    def _stamp(task: TaskRecord) -> None:
+        if fired["done"]:
+            return
+        fired["done"] = True
+        success = task.status == "completed" and task.return_code == 0
+        try:
+            mark_job_run(registry_path, name, success=success)
+        finally:
+            fn = unregister.get("fn")
+            if callable(fn):
+                fn()
+
+    def _on_terminal(task: TaskRecord) -> None:
+        if task.id != task_id or task.status not in _TERMINAL_STATUSES:
+            return
+        _stamp(task)
+
+    unregister["fn"] = manager.register_completion_listener(_on_terminal)
+    # Close the spawn/register race: if the task already reached a terminal
+    # state before this listener was attached, stamp from its current record.
+    current = manager.get_task(task_id)
+    if current is not None and current.status in _TERMINAL_STATUSES:
+        _stamp(current)
+
 
 def _manifest_dir(working_dir: Path) -> Path:
     return Path(working_dir) / CRON_MANIFEST_DIR
@@ -169,19 +213,36 @@ async def run_cron_kind(
             f"no cron manifest for kind {kind!r} at {manifest_path}"
         )
     manifest = load_cron_manifest(manifest_path)
+    registry = (
+        Path(registry_path)
+        if registry_path is not None and Path(registry_path).exists()
+        else None
+    )
+    job = get_cron_job(registry, kind) if registry is not None else None
+    # A registry-level disable (e.g. ``/cron toggle``) overrides an enabled
+    # manifest: surface it as a ``skipped`` run-record by spawning with a
+    # disabled manifest copy, mirroring the manifest-disabled path.
+    effective = (
+        manifest.model_copy(update={"enabled": False})
+        if job is not None and not job.enabled
+        else manifest
+    )
     record = await spawn_cron_session(
         manager=manager,
-        manifest=manifest,
+        manifest=effective,
         cwd=wd,
         runs_root=_runs_root(wd),
-        argv=_default_cron_argv(manifest),
+        argv=_default_cron_argv(effective),
     )
-    if (
-        registry_path is not None
-        and Path(registry_path).exists()
-        and get_cron_job(registry_path, kind) is not None
-    ):
-        mark_job_run(registry_path, kind, success=True)
+    if registry is not None and job is not None and effective.enabled and record is not None:
+        # Defer the registry stamp to the task's real terminal outcome instead
+        # of optimistically recording success right after spawn.
+        _record_completion_outcome(
+            manager=manager,
+            registry_path=registry,
+            name=kind,
+            task_id=record.id,
+        )
     return record
 
 
@@ -221,14 +282,25 @@ async def cron_tick_loop(
                     continue
                 try:
                     manifest = load_cron_manifest(manifest_path)
-                    await spawn_cron_session(
+                    record = await spawn_cron_session(
                         manager=manager,
                         manifest=manifest,
                         cwd=wd,
                         runs_root=runs_root,
                         argv=_default_cron_argv(manifest),
                     )
+                    # Roll next_run forward now so this job isn't re-grabbed on
+                    # the next tick before it finishes (dedup); the final
+                    # last_status is then corrected from the real terminal
+                    # outcome instead of this optimistic stamp.
                     mark_job_run(registry_path, job.name, success=True)
+                    if record is not None:
+                        _record_completion_outcome(
+                            manager=manager,
+                            registry_path=registry_path,
+                            name=job.name,
+                            task_id=record.id,
+                        )
                 except asyncio.CancelledError:
                     raise
                 except Exception:

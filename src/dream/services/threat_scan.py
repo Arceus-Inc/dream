@@ -64,7 +64,40 @@ _TEXT_SUFFIXES = {
     ".ts",
     ".env",
     ".sh",
+    # Credential-bearing formats — the whole point of the secret gate.
+    ".pem",
+    ".key",
+    ".crt",
+    ".cert",
+    ".pub",
+    ".pfx",
+    ".p12",
+    ".ovpn",
+    ".conf",
+    ".properties",
+    ".xml",
+    ".tf",
+    ".tfvars",
+    ".rb",
+    ".go",
+    ".java",
+    ".php",
+    ".pl",
 }
+# Extensionless files that commonly hold credentials. Matched by exact
+# (lower-cased) name so the scanner doesn't have to sniff every binary blob.
+_CREDENTIAL_FILENAMES = frozenset(
+    {
+        "credentials",
+        "id_rsa",
+        "id_dsa",
+        "id_ecdsa",
+        "id_ed25519",
+        ".netrc",
+        ".pgpass",
+        ".htpasswd",
+    }
+)
 _MAX_FILE_BYTES = 1_000_000
 
 # Secret-shaped patterns. The matched value is NEVER placed in a finding.
@@ -93,7 +126,12 @@ class LurkrIgnore:
             return True
         if path is None:
             return False
-        return any(glob_to_regex(glob).fullmatch(path) is not None for glob in self.paths)
+        # Glob patterns are POSIX ("/"-separated); normalize the candidate so a
+        # Windows-style backslash path still matches "tests/**"-shaped globs.
+        posix_path = path.replace("\\", "/")
+        return any(
+            glob_to_regex(glob).fullmatch(posix_path) is not None for glob in self.paths
+        )
 
 
 def load_lurkr_ignore(paths: DreamPaths) -> LurkrIgnore:
@@ -112,8 +150,23 @@ def load_lurkr_ignore(paths: DreamPaths) -> LurkrIgnore:
 
 
 def threat_scan(paths: DreamPaths) -> list[Finding]:
-    """Run the three session-start threat checks, minus operator suppressions."""
-    ignore = load_lurkr_ignore(paths)
+    """Run the three session-start threat checks, minus operator suppressions.
+
+    A malformed ``.harness/lurkr-ignore.toml`` is surfaced as a blocking
+    finding rather than raised, so the session-start gate fails closed without
+    crashing startup.
+    """
+    try:
+        ignore = load_lurkr_ignore(paths)
+    except LurkrIgnoreError as exc:
+        return [
+            Finding(
+                "blocking",
+                "lurkr_ignore_invalid",
+                f"invalid .harness/lurkr-ignore.toml: {exc}",
+                ".harness/lurkr-ignore.toml",
+            )
+        ]
     raw: list[Finding] = []
     raw += _scan_secrets(paths)
     raw += _scan_world_writable(paths)
@@ -124,7 +177,7 @@ def threat_scan(paths: DreamPaths) -> list[Finding]:
 def _scan_secrets(paths: DreamPaths) -> list[Finding]:
     findings: list[Finding] = []
     for path in _walk_text_files(paths.repo):
-        rel = str(path.relative_to(paths.repo))
+        rel = path.relative_to(paths.repo).as_posix()
         try:
             if path.stat().st_size > _MAX_FILE_BYTES:
                 continue
@@ -152,7 +205,7 @@ def _scan_world_writable(paths: DreamPaths) -> list[Finding]:
         except OSError:
             continue
         if mode & stat.S_IWOTH:
-            rel = str(path.relative_to(paths.repo))
+            rel = path.relative_to(paths.repo).as_posix()
             findings.append(Finding("blocking", "world_writable", "file is world-writable", rel))
     return findings
 
@@ -163,7 +216,7 @@ def _scan_eval_in_tool(paths: DreamPaths) -> list[Finding]:
     if not tools_dir.is_dir():
         return findings
     for path in sorted(tools_dir.rglob("*.py")):
-        rel = str(path.relative_to(paths.repo))
+        rel = path.relative_to(paths.repo).as_posix()
         try:
             tree = ast.parse(path.read_text(encoding="utf-8", errors="ignore"))
         except (OSError, SyntaxError):
@@ -205,7 +258,11 @@ def _walk_text_files(root: Path) -> Iterator[Path]:
         dirnames[:] = [d for d in dirnames if d not in _NOISE_DIRS]
         for name in filenames:
             path = Path(dirpath) / name
-            if path.suffix.lower() in _TEXT_SUFFIXES or name.startswith(".env"):
+            if (
+                path.suffix.lower() in _TEXT_SUFFIXES
+                or name.startswith(".env")
+                or name.lower() in _CREDENTIAL_FILENAMES
+            ):
                 yield path
 
 

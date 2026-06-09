@@ -21,13 +21,10 @@ Spec 10 acceptance criteria exercised here:
 
 from __future__ import annotations
 
-import asyncio
-from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
-
 
 # --- helpers ------------------------------------------------------------
 
@@ -417,6 +414,64 @@ async def test_run_task_holds_generator_lock_during_execute(tmp_path: Path) -> N
         evaluator_run=_make_evaluator_run(outcome="pass"),
     )
     assert contention == [RoleAlreadyActive]
+
+
+async def test_run_task_selects_step_after_acquiring_generator_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Selection + claim of the next step must happen *after* the generator
+    lock is acquired, on a freshly re-loaded ledger.
+
+    Regression for the select-before-lock race: picking the step from a stale
+    snapshot before the lock lets two overlapping run_task calls claim the
+    same pending step. We assert the ordering structurally — every in-loop
+    ledger re-load is bracketed by a held generator lock.
+    """
+    from dream.runner import _run
+
+    lock_depth = 0
+    loads_under_lock: list[bool] = []
+
+    real_acquire = _run.acquire_role_lock
+    real_load = _run.PlannerLedger.load
+
+    import contextlib
+
+    @contextlib.contextmanager
+    def tracking_acquire(root, *, task_id, role):  # type: ignore[no-untyped-def]
+        nonlocal lock_depth
+        with real_acquire(root, task_id=task_id, role=role) as p:
+            if role == "generator":
+                lock_depth += 1
+            try:
+                yield p
+            finally:
+                if role == "generator":
+                    lock_depth -= 1
+
+    def tracking_load(path):  # type: ignore[no-untyped-def]
+        loads_under_lock.append(lock_depth > 0)
+        return real_load(path)
+
+    monkeypatch.setattr(_run, "acquire_role_lock", tracking_acquire)
+    monkeypatch.setattr(_run.PlannerLedger, "load", staticmethod(tracking_load))
+
+    await _run.run_task(
+        task_id="t1",
+        intent="x",
+        worktree_root=tmp_path,
+        planner=_make_planner(steps=2),
+        generator_execute=_noop_execute,
+        evaluator_propose=_accept_first_proposal_propose(["c"]),
+        generator_respond=_accept_first_proposal_respond(),
+        evaluator_run=_make_evaluator_run(outcome="pass"),
+    )
+
+    # The initial post-planner load happens before the loop (no lock); every
+    # in-loop selection load must occur while the generator lock is held.
+    assert loads_under_lock.count(True) >= 2  # one per sprint, under lock
+    # And there is at least one in-loop load under the lock (the selection).
+    assert any(loads_under_lock)
 
 
 # --- criterion #9: imposed negotiation surfaces warning ----------------

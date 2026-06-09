@@ -1,6 +1,6 @@
 """Tests for the planner-runs-once orchestration.
 
-Spec 10 acceptance criteria #1–#4:
+Spec 10 acceptance criteria #1-#4:
 
 - #1 planner runs exactly once per task
 - #2 produces both the markdown spec and the json ledger
@@ -20,7 +20,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 
 # --- helpers ------------------------------------------------------------
 
@@ -190,7 +189,15 @@ async def test_planner_writes_only_under_exec_plans_active(tmp_path: Path) -> No
         planner=_stub_planner,
     )
 
-    all_files = {p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*") if p.is_file()}
+    # Criterion #3 concerns the *worktree source* outside exec-plans/active.
+    # Harness-internal coordination state under ``.dream`` (here: the
+    # runs-once lockfile that serializes concurrent run_planner calls) is not
+    # part of the worktree source and is excluded from this invariant.
+    all_files = {
+        p.relative_to(tmp_path).as_posix()
+        for p in tmp_path.rglob("*")
+        if p.is_file() and not p.relative_to(tmp_path).as_posix().startswith(".dream/")
+    }
     assert all_files == {
         "docs/exec-plans/active/abc-1.md",
         "docs/exec-plans/active/abc-1.json",
@@ -305,7 +312,7 @@ async def test_planner_propagates_callable_exception_and_leaves_no_files(
 async def test_planner_rejects_invalid_task_id(tmp_path: Path) -> None:
     from dream.planner import run_planner
 
-    with pytest.raises(ValueError, match="task_id|unsafe"):
+    with pytest.raises(ValueError, match=r"task_id|unsafe"):
         await run_planner(
             task_id="a/b",
             intent="x",

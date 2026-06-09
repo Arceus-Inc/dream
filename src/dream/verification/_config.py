@@ -38,9 +38,17 @@ def parse_verification_config(text: str) -> list[VerificationStepSpec]:
 
 
 def read_verification_config(path: Path) -> list[VerificationStepSpec]:
-    """Read + parse the config; a missing file yields no steps."""
-    if not path.is_file():
+    """Read + parse the config; only a *truly missing* path yields no steps.
+
+    An existing-but-non-regular path (e.g. a directory) is operator
+    misconfiguration and fails fast rather than masquerading as "no steps".
+    """
+    if not path.exists():
         return []
+    if not path.is_file():
+        raise VerificationConfigError(
+            f"verification config path is not a regular file: {path}"
+        )
     return parse_verification_config(path.read_text(encoding="utf-8"))
 
 

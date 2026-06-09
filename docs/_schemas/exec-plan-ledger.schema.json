@@ -1,24 +1,68 @@
 {
   "$defs": {
+    "ClaimRecord": {
+      "additionalProperties": false,
+      "description": "Durable ownership mirror written by ``#08`` at claim boundaries.\n\nThe board (`.dream/coordination/board.sqlite`) is the source of truth *of\nnow*; this field is the of-record audit and the source the board is rebuilt\nfrom if it is lost. Written on grant / release / reclaim only \u2014 never per\nheartbeat. ``#10p5`` extends it with ``recovery_count``.",
+      "properties": {
+        "checkout_run_id": {
+          "title": "Checkout Run Id",
+          "type": "string"
+        },
+        "claimed_at": {
+          "format": "date-time",
+          "title": "Claimed At",
+          "type": "string"
+        },
+        "claimed_by": {
+          "title": "Claimed By",
+          "type": "string"
+        },
+        "released_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Released At"
+        }
+      },
+      "required": [
+        "checkout_run_id",
+        "claimed_by",
+        "claimed_at"
+      ],
+      "title": "ClaimRecord",
+      "type": "object"
+    },
     "LedgerEntry": {
       "additionalProperties": false,
       "description": "One ordered sub-step of work inside a task.",
       "properties": {
-        "id": {
-          "title": "Id",
-          "type": "string"
-        },
         "description": {
           "title": "Description",
           "type": "string"
         },
-        "steps": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "notes": {
           "default": [],
           "items": {
             "type": "string"
           },
-          "title": "Steps",
+          "title": "Notes",
           "type": "array"
+        },
+        "passes": {
+          "default": false,
+          "title": "Passes",
+          "type": "boolean"
         },
         "status": {
           "default": "pending",
@@ -31,17 +75,12 @@
           "title": "Status",
           "type": "string"
         },
-        "passes": {
-          "default": false,
-          "title": "Passes",
-          "type": "boolean"
-        },
-        "notes": {
+        "steps": {
           "default": [],
           "items": {
             "type": "string"
           },
-          "title": "Notes",
+          "title": "Steps",
           "type": "array"
         }
       },
@@ -56,28 +95,20 @@
   "additionalProperties": false,
   "description": "The JSON half of an exec-plan (Spec 07 \u00a7Artefact shapes).",
   "properties": {
-    "task_id": {
-      "title": "Task Id",
-      "type": "string"
-    },
-    "state": {
-      "enum": [
-        "draft",
-        "active",
-        "completed",
-        "archived"
+    "claim": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ClaimRecord"
+        },
+        {
+          "type": "null"
+        }
       ],
-      "title": "State",
-      "type": "string"
+      "default": null
     },
     "created_at": {
       "format": "date-time",
       "title": "Created At",
-      "type": "string"
-    },
-    "updated_at": {
-      "format": "date-time",
-      "title": "Updated At",
       "type": "string"
     },
     "entries": {
@@ -91,6 +122,25 @@
       "default": false,
       "title": "Evaluator Enabled",
       "type": "boolean"
+    },
+    "state": {
+      "enum": [
+        "draft",
+        "active",
+        "completed",
+        "archived"
+      ],
+      "title": "State",
+      "type": "string"
+    },
+    "task_id": {
+      "title": "Task Id",
+      "type": "string"
+    },
+    "updated_at": {
+      "format": "date-time",
+      "title": "Updated At",
+      "type": "string"
     },
     "weights": {
       "additionalProperties": {

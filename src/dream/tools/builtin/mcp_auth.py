@@ -28,8 +28,9 @@ from dream.mcp._credentials import (
     ServerCredential,
     write_credential,
 )
-from dream.tools._base import BaseTool, ToolDeclaration
+from dream.tools._base import BaseTool, ToolDeclaration, ToolEffects
 from dream.tools._context import ToolExecutionContext
+from dream.tools.builtin._mcp_effects import endpoint_host
 
 _STDIO_MODES: frozenset[CredentialMode] = frozenset({"env", "bearer"})
 _NETWORK_MODES: frozenset[CredentialMode] = frozenset({"header", "bearer"})
@@ -57,6 +58,17 @@ class McpAuthTool(BaseTool):
     def __init__(self, manager: McpClientManager, credentials_path: Path) -> None:
         self._manager = manager
         self._credentials_path = credentials_path
+
+    def effects_for(self, input: dict[str, Any]) -> ToolEffects:
+        """Report the target server's host so the gate treats auth as a network
+        action (it reconnects the server). stdio servers are local and report no
+        host; an unknown server name also yields no host (execute() rejects it)."""
+        args = McpAuthInput.model_validate(input)
+        entry = self._manager.entry_for(args.server_name)
+        if entry is None:
+            return ToolEffects()
+        host = endpoint_host(entry.endpoint)
+        return ToolEffects(network_host=host) if host is not None else ToolEffects()
 
     async def execute(self, input: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
         del ctx
@@ -104,7 +116,17 @@ class McpAuthTool(BaseTool):
                 safe_retry="fix or delete the credentials file, then retry",
                 stop_condition="stop after repeated write failures and escalate",
             )
-        await self._manager.reconnect_all()
+        findings = await self._manager.reconnect_all()
+        blocking = [f for f in findings if f.severity == "blocking"]
+        if blocking:
+            detail = "; ".join(f"{f.code}: {f.message}" for f in blocking)
+            return _err(
+                f"Saved MCP auth for {args.server_name!r}, but reconnect found "
+                f"blocking issue(s): {detail}.",
+                root_cause=f"blocking reconnect finding(s): {detail}",
+                safe_retry="resolve the reported issue (e.g. version pin) and retry mcp_auth",
+                stop_condition="do not retry until the blocking reconnect finding clears",
+            )
 
         status = self._manager.status(args.server_name)
         state = status.state if status is not None else "unknown"

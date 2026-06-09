@@ -45,6 +45,19 @@ class TestSpawnConfigDefaults:
         with pytest.raises(Exception):
             cfg.permissions = ()  # type: ignore[misc]
 
+    def test_subscriptions_is_tuple_immutable(self) -> None:
+        cfg = self._cfg(subscriptions=["topic.a", "topic.b"])
+        assert cfg.subscriptions == ("topic.a", "topic.b")
+
+    def test_rejects_string_permissions(self) -> None:
+        # A bare string would silently coerce to ('r','e','a','d'); reject it.
+        with pytest.raises(TypeError, match="permissions"):
+            self._cfg(permissions="read")
+
+    def test_rejects_string_subscriptions(self) -> None:
+        with pytest.raises(TypeError, match="subscriptions"):
+            self._cfg(subscriptions="topic.a")
+
     def test_rejects_depth_below_one(self) -> None:
         with pytest.raises(ValueError, match="depth"):
             self._cfg(depth=0)

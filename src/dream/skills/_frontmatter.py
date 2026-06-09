@@ -30,10 +30,12 @@ def split_frontmatter(text: str) -> tuple[str, str]:
     lines = text.splitlines()
     if not lines or lines[0].strip() != _FENCE:
         raise SkillFrontmatterError("skill frontmatter must start with '---'")
-    try:
-        end = lines.index(_FENCE, 1)
-    except ValueError as exc:
-        raise SkillFrontmatterError("skill frontmatter missing closing '---'") from exc
+    # Strip-based fence match so a closing ``---`` with surrounding whitespace is
+    # accepted here too — keeping this in sync with ``_read_header_only`` avoids a
+    # skill registering at startup but failing at body-load time.
+    end = next((i for i in range(1, len(lines)) if lines[i].strip() == _FENCE), None)
+    if end is None:
+        raise SkillFrontmatterError("skill frontmatter missing closing '---'")
     header = "\n".join(lines[1:end])
     body = "\n".join(lines[end + 1 :])
     return header, body

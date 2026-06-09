@@ -21,9 +21,10 @@ from pydantic import BaseModel, create_model
 from dream.contracts.tool import ToolResult
 from dream.mcp._client import McpClientManager, McpServerNotConnectedError
 from dream.mcp._types import McpToolInfo
-from dream.tools._base import BaseTool, RiskClass, ToolDeclaration
+from dream.tools._base import BaseTool, RiskClass, ToolDeclaration, ToolEffects
 from dream.tools._context import ToolExecutionContext
 from dream.tools._registry import ToolRegistry, ToolSource
+from dream.tools.builtin._mcp_effects import endpoint_host, tier_required_for
 
 # MCP tools are external — default to the conservative non-safe risk class.
 _MCP_RISK: RiskClass = "mutating"
@@ -71,6 +72,20 @@ class McpToolAdapter(BaseTool):
             risk=_MCP_RISK, tier_required=tier_required, timeout_seconds=30.0
         )
 
+    def effects_for(self, input: dict[str, Any]) -> ToolEffects:
+        """Report the server's host so the gate treats an MCP call as network.
+
+        Without this the gate sees no effect and can't apply the NETWORK tier
+        ceiling to an external tool. stdio (local subprocess) servers carry no
+        host and report none; the gate then leans on the declared tier alone.
+        """
+        del input
+        entry = self._manager.entry_for(self._tool_info.server_name)
+        if entry is None:
+            return ToolEffects()
+        host = endpoint_host(entry.endpoint)
+        return ToolEffects(network_host=host) if host is not None else ToolEffects()
+
     async def execute(self, input: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
         del ctx
         try:
@@ -112,15 +127,50 @@ def input_model_from_schema(model_name: str, schema: dict[str, object]) -> type[
         if key in required:
             fields[key] = (py_type, ...)
         else:
-            fields[key] = (py_type | None, None)
+            # "Not required" is not "nullable": JSON Schema only permits an
+            # explicit null when the property's type allows it. Give optional
+            # fields a default (so they may be omitted) WITHOUT widening the
+            # type to ``| None``, unless the server schema declares null itself.
+            field_type = (py_type | None) if _allows_null(prop) else py_type
+            fields[key] = (field_type, None)
     return create_model(_model_identifier(model_name), **fields)
 
 
+def _allows_null(prop: dict[str, Any]) -> bool:
+    """Whether a property's JSON Schema explicitly permits ``null``."""
+    declared = prop.get("type")
+    if declared == "null":
+        return True
+    if isinstance(declared, list) and "null" in declared:
+        return True
+    for branch in _schema_branches(prop):
+        if isinstance(branch, dict) and branch.get("type") == "null":
+            return True
+    return False
+
+
+def _schema_branches(prop: dict[str, Any]) -> list[Any]:
+    branches: list[Any] = []
+    for key in ("anyOf", "oneOf"):
+        value = prop.get(key)
+        if isinstance(value, list):
+            branches.extend(value)
+    return branches
+
+
 def register_mcp_tools(registry: ToolRegistry, manager: McpClientManager) -> list[str]:
-    """Register every connected MCP tool as an adapter; return the names added."""
+    """Register every connected MCP tool as an adapter; return the names added.
+
+    Each adapter's ``tier_required`` is derived from its server's allowlist
+    entry (the operator's ``tier_required`` name), not hardcoded — so a server
+    pinned to a higher tier is gated accordingly instead of every MCP tool
+    landing at tier 1.
+    """
     added: list[str] = []
     for info in manager.list_tools():
-        adapter = McpToolAdapter(manager, info, tier_required=_MCP_TIER)
+        entry = manager.entry_for(info.server_name)
+        tier = tier_required_for(entry.tier_required) if entry is not None else _MCP_TIER
+        adapter = McpToolAdapter(manager, info, tier_required=tier)
         registry.register(adapter, source=ToolSource.MCP)
         added.append(adapter.name)
     return added

@@ -181,28 +181,32 @@ async def run_task(
 
     # 2. Sprint loop.
     for sprint_number in range(1, max_sprints + 1):
-        step = _find_next_work(ledger)
-        if step is None:
-            break
-
         sprint_events: list[dict[str, Any]] = []
-        enabled = is_evaluator_enabled_for_sprint(ledger, sprint_override=None)
         contract: SprintContract | None = None
         contract_path: Path | None = None
         eval_path: Path | None = None
         outcome: EvaluationOutcome | None = None
 
-        _emit(
-            {
-                "kind": "sprint.started",
-                "sprint_number": sprint_number,
-                "step_id": step.id,
-                "step_description": step.description,
-            }
-        )
-
-        # 2a. Generator: lock-protected (criterion #14).
+        # 2a. Generator: lock-protected (criterion #14). Selection + claim of
+        # the next step happens *inside* the lock, on a freshly re-loaded
+        # ledger, so two overlapping run_task calls can't both pick the same
+        # pending step from a stale snapshot.
         with acquire_role_lock(root, task_id=task_id, role="generator"):
+            ledger = PlannerLedger.load(ledger_path)
+            step = _find_next_work(ledger)
+            if step is None:
+                break
+            enabled = is_evaluator_enabled_for_sprint(ledger, sprint_override=None)
+
+            _emit(
+                {
+                    "kind": "sprint.started",
+                    "sprint_number": sprint_number,
+                    "step_id": step.id,
+                    "step_description": step.description,
+                }
+            )
+
             if step.status == "pending":
                 ledger = transition_step_to_in_progress(ledger, step.id)
                 ledger.save(ledger_path)

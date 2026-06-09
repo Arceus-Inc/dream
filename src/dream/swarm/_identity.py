@@ -52,7 +52,7 @@ class TeammateIdentity:
     team: str
 
     @classmethod
-    def create(cls, *, name: str, team: str) -> "TeammateIdentity":
+    def create(cls, *, name: str, team: str) -> TeammateIdentity:
         sname = sanitize_agent_name(name)
         steam = sanitize_team_name(team)
         return cls(agent_id=f"{sname}@{steam}", name=sname, team=steam)

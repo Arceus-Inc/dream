@@ -15,6 +15,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from dream.config.paths import _checked_task_id
 from dream.contracts.tool import ToolResult
 from dream.tasks._fsm import PLAN_STATES, plan_dir
 from dream.tasks._ledger import LedgerState
@@ -47,6 +48,18 @@ class PlanShowTool(BaseTool):
 
     async def execute(self, input: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
         args = PlanShowInput.model_validate(input)
+
+        # Reject empty / traversal-like ids up front so a bad id is a normal
+        # tool error rather than a ValueError escaping from read_plan deeper in.
+        try:
+            _checked_task_id(args.task_id)
+        except ValueError as exc:
+            return _err(
+                f"Invalid task_id: {args.task_id!r}.",
+                root_cause=str(exc),
+                safe_retry="pass a task_id with no path separators or traversal",
+                stop_condition="do not retry with the same task_id",
+            )
 
         task_ctx = read_task_context(ctx.metadata)
         if task_ctx is None:

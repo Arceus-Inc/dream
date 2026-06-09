@@ -153,8 +153,13 @@ class ClaimManager:
                         row, lease_expires_at_ms=now + self._lease_ms, last_heartbeat_at_ms=now
                     )
                 )
-        except sqlite3.OperationalError:
-            return False
+        except sqlite3.OperationalError as exc:
+            # Only a transient lock/busy contention is a "missed beat" we
+            # absorb (AC #11). Corruption, schema, or I/O errors must surface
+            # so they are observable and recoverable, not masked as False.
+            if _is_lock_contention(exc):
+                return False
+            raise
         return True
 
     def release(self, task_id: str, *, checkout_run_id: str) -> bool:
@@ -166,11 +171,34 @@ class ClaimManager:
             tx.upsert(
                 replace(row, state="releasing", checkout_run_id=None, execution_run_id=None)
             )
-        self._mirror.on_release(task_id)
+        # The board CAS already cleared ownership, so the release succeeded.
+        # The durable mirror is best-effort (board is source of *now*): a
+        # mirror failure must not flip a successful release into a hard error.
+        self._safe_release_mirror(task_id)
         return True
+
+    def _safe_release_mirror(self, task_id: str) -> None:
+        # Best-effort: the board CAS already committed the release, so a mirror
+        # failure must not raise. Mirrors the catch in ``_safe_grant_mirror``.
+        try:
+            self._mirror.on_release(task_id)
+        except Exception:
+            return
 
     def get(self, task_id: str) -> Claim | None:
         return self._board.read(task_id)
+
+
+def _is_lock_contention(exc: sqlite3.OperationalError) -> bool:
+    """True only for the transient lock/busy contention SQLite signals when a
+    ``BEGIN IMMEDIATE`` cannot acquire the write lock within ``busy_timeout``.
+
+    Everything else (``disk image is malformed``, ``no such table``, disk I/O)
+    is a real fault that must propagate rather than be swallowed as a missed
+    heartbeat.
+    """
+    message = str(exc).lower()
+    return "database is locked" in message or "database is busy" in message
 
 
 def _mint(prefix: str) -> str:
