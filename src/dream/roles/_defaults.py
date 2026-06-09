@@ -21,14 +21,14 @@ from dream.roles._manifest import RoleManifest, RoleName
 # silently dropped by ``compute_minimum_toolset``, so listing extras here
 # (e.g. ``query_logs`` from #12) is safe before those tools land.
 _READ_ONLY_TRIPLET: tuple[str, ...] = (
-    "file_read",
+    "read_file",
     "git",
     "query_logs",
 )
 
 _WRITERS_DENIED: tuple[str, ...] = (
-    "file_write",
-    "file_edit",
+    "write_file",
+    "edit_file",
     "bash",
 )
 

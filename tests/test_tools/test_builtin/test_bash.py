@@ -124,3 +124,40 @@ async def test_metadata_carries_argv_summary(tool: BashTool, ctx: ToolExecutionC
     result = await tool.execute({"command": "echo ok"}, ctx)
     assert "command" in result.metadata
     assert "echo ok" in result.metadata["command"]
+
+
+# --- cwd confinement (worktree-escape regression) ---------------------------
+
+
+async def test_dot_cwd_means_working_dir_not_process_cwd(
+    tool: BashTool, ctx: ToolExecutionContext, tmp_path: Path
+) -> None:
+    # Regression: a relative cwd="." must resolve to the harness working_dir,
+    # not the process cwd. A worker passing cwd="." was escaping its worktree
+    # and operating on the host repo.
+    (tmp_path / "marker.txt").write_text("MARKER", encoding="utf-8")
+    result = await tool.execute({"command": "cat marker.txt", "cwd": "."}, ctx)
+    assert result.is_error is False
+    assert "MARKER" in result.content
+
+
+async def test_relative_subdir_cwd_resolves_under_working_dir(
+    tool: BashTool, ctx: ToolExecutionContext, tmp_path: Path
+) -> None:
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "inner.txt").write_text("INSUB", encoding="utf-8")
+    result = await tool.execute({"command": "cat inner.txt", "cwd": "sub"}, ctx)
+    assert result.is_error is False
+    assert "INSUB" in result.content
+
+
+async def test_absolute_cwd_outside_working_dir_is_rejected(
+    tool: BashTool, ctx: ToolExecutionContext
+) -> None:
+    # An absolute cwd that escapes the working_dir must be refused with a
+    # structured error, not silently executed in the host filesystem.
+    result = await tool.execute({"command": "echo hi", "cwd": "/"}, ctx)
+    assert result.is_error is True
+    assert "working directory" in result.content.lower()
+    assert result.metadata.get("root_cause")
