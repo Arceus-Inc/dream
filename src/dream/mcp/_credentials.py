@@ -95,6 +95,9 @@ def apply_credentials(
 
 
 def _credential_from_table(name: str, raw: dict[str, object]) -> ServerCredential:
+    # ``raw`` is one server's parsed TOML table, e.g.
+    #   {"mode": "bearer", "value": "<secret>", "key": "Authorization"}
+    # ``mode``/``value`` are required; ``key`` is an optional override.
     mode = raw.get("mode")
     value = raw.get("value")
     key = raw.get("key")

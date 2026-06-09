@@ -30,6 +30,17 @@ _MAX_REASON_LEN = 200
 TaskItem = Annotated[str, StringConstraints(max_length=_MAX_TASK_LEN)]
 
 
+def _check_task_lengths(tasks: list[str]) -> None:
+    # Defence in depth: the per-item cap is enforced by ``TaskItem`` (and
+    # surfaced in the schema), but we re-check at runtime so the invariant
+    # holds even if the field type is ever loosened.
+    for t in tasks:
+        if len(t) > _MAX_TASK_LEN:
+            raise ValueError(
+                f"each task must be <= {_MAX_TASK_LEN} chars (got {len(t)})"
+            )
+
+
 class HeartbeatInput(BaseModel):
     """Arguments the model passes to the ``heartbeat`` tool."""
 
@@ -53,14 +64,7 @@ class HeartbeatInput(BaseModel):
     )
 
     def model_post_init(self, __context: Any) -> None:
-        # Defence in depth: the per-item cap is enforced by ``TaskItem`` (and
-        # surfaced in the schema), but we re-check at runtime so the invariant
-        # holds even if the field type is ever loosened.
-        for t in self.tasks:
-            if len(t) > _MAX_TASK_LEN:
-                raise ValueError(
-                    f"each task must be <= {_MAX_TASK_LEN} chars (got {len(t)})"
-                )
+        _check_task_lengths(self.tasks)
 
 
 class ForcedHeartbeatInput(BaseModel):
@@ -92,11 +96,7 @@ class ForcedHeartbeatInput(BaseModel):
     )
 
     def model_post_init(self, __context: Any) -> None:
-        for t in self.tasks:
-            if len(t) > _MAX_TASK_LEN:
-                raise ValueError(
-                    f"each task must be <= {_MAX_TASK_LEN} chars (got {len(t)})"
-                )
+        _check_task_lengths(self.tasks)
 
 
 class HeartbeatTool(BaseTool):

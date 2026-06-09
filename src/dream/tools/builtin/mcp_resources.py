@@ -17,6 +17,7 @@ from dream.contracts.tool import ToolResult
 from dream.mcp._client import McpClientManager, McpServerNotConnectedError
 from dream.tools._base import BaseTool, ToolDeclaration
 from dream.tools._context import ToolExecutionContext
+from dream.tools.builtin._errors import tool_error
 
 _READ_ONLY = ToolDeclaration(risk="safe", tier_required=0, timeout_seconds=30.0)
 
@@ -71,14 +72,11 @@ class ReadMcpResourceTool(BaseTool):
         try:
             output = await self._manager.read_resource(args.server, args.uri)
         except McpServerNotConnectedError as exc:
-            return ToolResult(
-                content=f"MCP server {args.server!r} is unavailable.",
-                is_error=True,
-                metadata={
-                    "root_cause": str(exc),
-                    "safe_retry": "wait for the server to reconnect, or run mcp_auth",
-                    "stop_condition": "stop after repeated disconnects and escalate",
-                },
+            return tool_error(
+                f"MCP server {args.server!r} is unavailable.",
+                root_cause=str(exc),
+                safe_retry="wait for the server to reconnect, or run mcp_auth",
+                stop_condition="stop after repeated disconnects and escalate",
             )
         return ToolResult(content=output, metadata={"server": args.server, "uri": args.uri})
 

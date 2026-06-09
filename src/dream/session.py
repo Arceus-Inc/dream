@@ -89,6 +89,22 @@ class SessionCost:
     cost_usd: float = 0.0
 
 
+@dataclass(frozen=True)
+class CompactionSettings:
+    """Read-only view of a bound engine's compaction configuration.
+
+    Surfaced by :meth:`Session.compaction_settings` so callers (the REPL
+    ``/util`` / ``/compact`` commands) can read compaction config and force a
+    microcompaction without reaching into ``Session._engine`` private attrs.
+    ``compactor`` is ``None`` when the engine has compaction disabled.
+    """
+
+    capabilities: Any | None
+    compactor: Any | None
+    threshold: float
+    preserve_recent: int
+
+
 class Session:
     """One conversation against a Harness.
 
@@ -124,6 +140,33 @@ class Session:
         # other and ``cancel`` could target the wrong stream. Only one
         # ``send`` may be in flight at a time (#33).
         self._active = False
+
+    def compaction_settings(self) -> CompactionSettings | None:
+        """Read-only view of the bound engine's compaction config.
+
+        Returns ``None`` when no engine is bound. The ``compactor`` field is
+        ``None`` when the bound engine has compaction disabled. Lets callers
+        read compaction state without reaching into ``_engine`` private attrs.
+        """
+        engine = self._engine
+        if engine is None:
+            return None
+        return CompactionSettings(
+            capabilities=engine.compaction_capabilities,
+            compactor=engine.compactor,
+            threshold=engine.compaction_threshold,
+            preserve_recent=engine.compaction_preserve_recent,
+        )
+
+    @property
+    def transcript(self) -> list[ConversationMessage]:
+        """The live conversation transcript (mutable; persists across sends).
+
+        Exposed so REPL commands (``/util`` token estimate, ``/compact`` splice,
+        ``/reset`` clear) can read and rewrite history without touching the
+        ``_transcript`` private attribute directly.
+        """
+        return self._transcript
 
     async def send(self, prompt: str) -> AsyncIterator[Event]:
         """Submit a user prompt and stream typed events back.
@@ -363,4 +406,4 @@ class Session:
         self._closed = True
 
 
-__all__ = ["Session", "SessionCost", "SessionOptions"]
+__all__ = ["CompactionSettings", "Session", "SessionCost", "SessionOptions"]

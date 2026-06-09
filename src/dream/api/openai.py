@@ -20,6 +20,7 @@ adapter share one table; the runner still does not branch on substrate name
 
 from __future__ import annotations
 
+import contextlib
 import time
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
@@ -104,11 +105,8 @@ class OpenAIChatSubstrate:
             **token_limit_param(model, max_tokens),
             **merged,
         }
-        try:
+        with self._translating_timeouts():
             response = self._client.chat.completions.create(**kwargs)
-        except Exception as exc:
-            self._reraise_timeout(exc)
-            raise
 
         if not response.choices:
             raise RuntimeError(
@@ -138,7 +136,10 @@ class OpenAIChatSubstrate:
             **token_limit_param(model, max_tokens),
             **merged,
         }
-        try:
+        # Wrap the *iteration* too: OpenAI streams lazily, so a read timeout
+        # surfaces while consuming ``stream`` (not at create()) — classify it
+        # the same as a non-streaming timeout instead of leaking a raw error.
+        with self._translating_timeouts():
             stream = self._client.chat.completions.create(**kwargs)
             for chunk in stream:
                 if not chunk.choices:
@@ -147,12 +148,6 @@ class OpenAIChatSubstrate:
                 piece = getattr(delta, "content", None)
                 if piece:
                     yield piece
-        except Exception as exc:
-            # Wrap the *iteration* too: OpenAI streams lazily, so a read timeout
-            # surfaces while consuming `stream` (not at create()) — classify it
-            # the same as a non-streaming timeout instead of leaking a raw error.
-            self._reraise_timeout(exc)
-            raise
 
     def count_tokens(self, text: str) -> int:
         return _approx_token_count(text)
@@ -184,6 +179,20 @@ class OpenAIChatSubstrate:
         if overrides:
             merged.update(overrides)
         return merged
+
+    @contextlib.contextmanager
+    def _translating_timeouts(self) -> Iterator[None]:
+        """Run a block, translating any OpenAI SDK timeout into ``SubstrateTimeout``.
+
+        Used by both ``complete`` and ``stream`` (the latter wraps the lazy
+        iteration too, since a read timeout surfaces while consuming the stream).
+        Non-timeout exceptions propagate unchanged.
+        """
+        try:
+            yield
+        except Exception as exc:
+            self._reraise_timeout(exc)
+            raise
 
     @staticmethod
     def _reraise_timeout(exc: BaseException) -> None:

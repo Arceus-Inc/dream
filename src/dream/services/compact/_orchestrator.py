@@ -92,6 +92,9 @@ def auto_compact_if_needed(
     threshold: float = 0.7,
     preserve_recent: int = DEFAULT_KEEP_RECENT,
     summariser: SummariserFn | None = None,
+    # Open continuity-state dict threaded to the attachment builders +
+    # checkpoint trail; see ``compact._attachments`` module docstring for the
+    # recognized keys (exec_plan_filename, blocked_steps, failing_tests, …).
     carryover_metadata: dict[str, Any] | None = None,
     event_sink: EventSink | None = None,
     force: bool = False,

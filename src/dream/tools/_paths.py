@@ -16,6 +16,10 @@ on both sides.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from dream.contracts.tool import ToolResult
 
 
 class PathEscapesRoot(ValueError):
@@ -41,4 +45,27 @@ def resolve_within(root: Path, candidate: str) -> Path:
     return resolved_target
 
 
-__all__ = ["PathEscapesRoot", "resolve_within"]
+def confine_path(root: Path, candidate: str) -> Path | ToolResult:
+    """Resolve ``candidate`` under ``root``, or return the standard escape error.
+
+    Wraps :func:`resolve_within`'s ``PathEscapesRoot`` in the Spec 05 three-part
+    ``ToolResult`` every filesystem tool returned by hand. Callers branch on the
+    return type: a ``Path`` is the confined target; a ``ToolResult`` is the
+    ready-to-return out-of-tree error.
+    """
+    # Imported lazily so this module stays dependency-light at import time and
+    # ``_errors`` (which imports the public contract) can't cycle back here.
+    from dream.tools.builtin._errors import tool_error
+
+    try:
+        return resolve_within(root, candidate)
+    except PathEscapesRoot as exc:
+        return tool_error(
+            f"Path outside the working directory: {candidate}",
+            root_cause=str(exc),
+            safe_retry="pass a path that stays within the working directory",
+            stop_condition="do not retry with the same out-of-tree path",
+        )
+
+
+__all__ = ["PathEscapesRoot", "confine_path", "resolve_within"]

@@ -67,15 +67,21 @@ def exclusive_file_lock(
     backend = _LockBackend.for_os(os.name if os_name is None else os_name)
     path = Path(lock_path)
     if backend is _LockBackend.WINDOWS:  # pragma: no cover - not exercised on posix CI
-        with _windows_lock(path):
+        with _windows_lock(path, blocking=True):
             yield
     else:
-        with _posix_lock(path):
+        with _posix_lock(path, blocking=True):
             yield
 
 
 @contextmanager
-def _posix_lock(lock_path: Path) -> Iterator[None]:
+def _posix_lock(lock_path: Path, *, blocking: bool) -> Iterator[bool]:
+    """POSIX ``flock`` scaffolding shared by the blocking and non-blocking paths.
+
+    Always yields whether the lock was acquired: ``blocking=True`` only ever
+    yields ``True`` (it waits), while ``blocking=False`` yields ``False`` without
+    entering the critical section when the lock is held elsewhere.
+    """
     try:
         import fcntl
     except ImportError as exc:  # pragma: no cover - posix always has fcntl
@@ -84,17 +90,28 @@ def _posix_lock(lock_path: Path) -> Iterator[None]:
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path.touch(exist_ok=True)
     with lock_path.open("a+b") as fh:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        flags = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
         try:
-            yield
+            fcntl.flock(fh.fileno(), flags)
+        except BlockingIOError:  # only reachable when non-blocking
+            yield False
+            return
+        try:
+            yield True
         finally:
             fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
 @contextmanager
-def _windows_lock(
-    lock_path: Path,
-) -> Iterator[None]:  # pragma: no cover - not exercised on posix CI
+def _windows_lock(  # pragma: no cover - not exercised on posix CI
+    lock_path: Path, *, blocking: bool
+) -> Iterator[bool]:
+    """Windows ``msvcrt.locking`` scaffolding shared by both paths.
+
+    Mirrors :func:`_posix_lock`: ``blocking=True`` retries until acquired (LK_LOCK
+    gives up after ~10s and raises ``OSError``), ``blocking=False`` (LK_NBLCK)
+    yields ``False`` immediately when the lock is held elsewhere.
+    """
     try:
         import msvcrt
     except ImportError as exc:
@@ -107,16 +124,23 @@ def _windows_lock(
             fh.write(b"\0")
             fh.flush()
         fh.seek(0)
-        # LK_LOCK gives up after ~10s and raises OSError; retry so a long
-        # critical section blocks until acquired (parity with POSIX LOCK_EX).
-        while True:
+        if blocking:
+            # LK_LOCK gives up after ~10s and raises OSError; retry so a long
+            # critical section blocks until acquired (parity with POSIX LOCK_EX).
+            while True:
+                try:
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)  # type: ignore[attr-defined]
+                    break
+                except OSError:
+                    time.sleep(0.1)
+        else:
             try:
-                msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)  # type: ignore[attr-defined]
-                break
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)  # type: ignore[attr-defined]
             except OSError:
-                time.sleep(0.1)
+                yield False
+                return
         try:
-            yield
+            yield True
         finally:
             fh.seek(0)
             msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)  # type: ignore[attr-defined]
@@ -145,57 +169,8 @@ def try_exclusive_file_lock(
     backend = _LockBackend.for_os(os.name if os_name is None else os_name)
     path = Path(lock_path)
     if backend is _LockBackend.WINDOWS:  # pragma: no cover - not exercised on posix CI
-        with _windows_try_lock(path) as acquired:
+        with _windows_lock(path, blocking=False) as acquired:
             yield acquired
     else:
-        with _posix_try_lock(path) as acquired:
+        with _posix_lock(path, blocking=False) as acquired:
             yield acquired
-
-
-@contextmanager
-def _posix_try_lock(lock_path: Path) -> Iterator[bool]:
-    try:
-        import fcntl
-    except ImportError as exc:  # pragma: no cover - posix always has fcntl
-        raise LockUnavailableError(f"fcntl not available: {exc}") from exc
-
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path.touch(exist_ok=True)
-    with lock_path.open("a+b") as fh:
-        try:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            yield False
-            return
-        try:
-            yield True
-        finally:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-
-
-@contextmanager
-def _windows_try_lock(
-    lock_path: Path,
-) -> Iterator[bool]:  # pragma: no cover - not exercised on posix CI
-    try:
-        import msvcrt
-    except ImportError as exc:
-        raise LockUnavailableError(f"msvcrt not available: {exc}") from exc
-
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open("a+b") as fh:
-        fh.seek(0)
-        if os.fstat(fh.fileno()).st_size == 0:
-            fh.write(b"\0")
-            fh.flush()
-        fh.seek(0)
-        try:
-            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)  # type: ignore[attr-defined]
-        except OSError:
-            yield False
-            return
-        try:
-            yield True
-        finally:
-            fh.seek(0)
-            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)  # type: ignore[attr-defined]

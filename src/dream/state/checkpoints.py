@@ -156,6 +156,14 @@ def gc_checkpoints(paths: DreamPaths, task_id: str, *, older_than_days: int = 30
             continue
         code, committed_at, _ = run_git(["show", "-s", "--format=%ct", sha], cwd=paths.repo)
         if code == 0 and committed_at and int(committed_at) < cutoff:
-            run_git(["update-ref", "-d", paths.checkpoint_ref(task_id, name)], cwd=paths.repo)
+            # Check the return code so a failed delete raises rather than being
+            # silently reported as removed — matching the file's all-or-nothing
+            # "every git step checked" contract.
+            _checked(
+                run_git(
+                    ["update-ref", "-d", paths.checkpoint_ref(task_id, name)], cwd=paths.repo
+                ),
+                "git update-ref -d",
+            )
             removed.append(name)
     return removed

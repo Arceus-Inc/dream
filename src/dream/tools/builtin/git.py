@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from dream.contracts.tool import ToolResult
 from dream.tools._base import BaseTool, ToolDeclaration
 from dream.tools._context import ToolExecutionContext
+from dream.tools.builtin._errors import tool_error as _err
 from dream.utils.git import run_git
 
 # A validator inspects the args *after* the subcommand and returns an error
@@ -188,14 +189,26 @@ class GitTool(BaseTool):
 
     async def execute(self, input: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
         args = GitInput.model_validate(input)
-        if not args.args:
+        if (rejection := self._validate(args.args)) is not None:
+            return rejection
+        returncode, stdout, stderr = run_git(args.args, cwd=ctx.working_dir)
+        return _build_result(args.args[0], returncode, stdout, stderr)
+
+    def _validate(self, argv: list[str]) -> ToolResult | None:
+        """Return the structured rejection for a disallowed call, else ``None``.
+
+        Three gates in order: a subcommand must be present, on the read-only
+        allowlist, and — for a mixed read/write subcommand — invoked in a
+        read-only form per its validator.
+        """
+        if not argv:
             return _err(
                 "git tool requires at least one argument (subcommand)",
                 root_cause="empty args list",
                 safe_retry="pass at least the subcommand, e.g. {'args': ['status']}",
                 stop_condition="do not retry with empty args",
             )
-        subcommand = args.args[0]
+        subcommand = argv[0]
         if subcommand not in self.ALLOWED_SUBCOMMANDS:
             allowed = ", ".join(sorted(self.ALLOWED_SUBCOMMANDS))
             return _err(
@@ -204,49 +217,39 @@ class GitTool(BaseTool):
                 safe_retry=f"use one of: {allowed}",
                 stop_condition="do not retry with a mutating git subcommand",
             )
-
         validator = _GATED_SUBCOMMANDS.get(subcommand)
-        if validator is not None and (reason := validator(args.args[1:])) is not None:
+        if validator is not None and (reason := validator(argv[1:])) is not None:
             return _err(
                 f"git {subcommand} invocation not allowed: {reason}",
                 root_cause=f"{subcommand!r} called in a mutating form",
                 safe_retry=reason,
                 stop_condition="do not retry with a mutating git invocation",
             )
-
-        returncode, stdout, stderr = run_git(args.args, cwd=ctx.working_dir)
-        is_error = returncode != 0
-        if stdout and stderr:
-            content = f"{stdout}\n--- stderr ---\n{stderr}"
-        else:
-            content = stdout or stderr or "(no output)"
-        metadata: dict[str, Any] = {
-            "returncode": returncode,
-            "subcommand": subcommand,
-            "stdout_bytes": len(stdout.encode("utf-8")),
-            "stderr_bytes": len(stderr.encode("utf-8")),
-        }
-        if is_error:
-            metadata.update(
-                {
-                    "root_cause": f"git {subcommand} exit {returncode}",
-                    "safe_retry": "inspect stderr and adjust arguments",
-                    "stop_condition": "do not retry with the same arguments",
-                }
-            )
-        return ToolResult(content=content, is_error=is_error, metadata=metadata)
+        return None
 
 
-def _err(content: str, *, root_cause: str, safe_retry: str, stop_condition: str) -> ToolResult:
-    return ToolResult(
-        content=content,
-        is_error=True,
-        metadata={
-            "root_cause": root_cause,
-            "safe_retry": safe_retry,
-            "stop_condition": stop_condition,
-        },
-    )
+def _build_result(subcommand: str, returncode: int, stdout: str, stderr: str) -> ToolResult:
+    """Assemble the ``ToolResult`` from a completed ``run_git`` invocation."""
+    is_error = returncode != 0
+    if stdout and stderr:
+        content = f"{stdout}\n--- stderr ---\n{stderr}"
+    else:
+        content = stdout or stderr or "(no output)"
+    metadata: dict[str, Any] = {
+        "returncode": returncode,
+        "subcommand": subcommand,
+        "stdout_bytes": len(stdout.encode("utf-8")),
+        "stderr_bytes": len(stderr.encode("utf-8")),
+    }
+    if is_error:
+        metadata.update(
+            {
+                "root_cause": f"git {subcommand} exit {returncode}",
+                "safe_retry": "inspect stderr and adjust arguments",
+                "stop_condition": "do not retry with the same arguments",
+            }
+        )
+    return ToolResult(content=content, is_error=is_error, metadata=metadata)
 
 
 __all__ = ["GitInput", "GitTool"]

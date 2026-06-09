@@ -30,6 +30,7 @@ from dream.mcp._credentials import (
 )
 from dream.tools._base import BaseTool, ToolDeclaration, ToolEffects
 from dream.tools._context import ToolExecutionContext
+from dream.tools.builtin._errors import tool_error as _err
 from dream.tools.builtin._mcp_effects import endpoint_host
 
 _STDIO_MODES: frozenset[CredentialMode] = frozenset({"env", "bearer"})
@@ -142,18 +143,6 @@ class McpAuthTool(BaseTool):
             safe_retry="check the credential value/key and retry mcp_auth",
             stop_condition="stop after repeated auth failures and escalate",
         )
-
-
-def _err(content: str, *, root_cause: str, safe_retry: str, stop_condition: str) -> ToolResult:
-    return ToolResult(
-        content=content,
-        is_error=True,
-        metadata={
-            "root_cause": root_cause,
-            "safe_retry": safe_retry,
-            "stop_condition": stop_condition,
-        },
-    )
 
 
 __all__ = ["McpAuthInput", "McpAuthTool"]

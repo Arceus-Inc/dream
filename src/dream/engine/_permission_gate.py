@@ -14,13 +14,12 @@ ramp). Staleness/other warnings are returned as data for the caller to surface
 
 from __future__ import annotations
 
+import functools
 from pathlib import Path
 
 from dream.config.paths import DreamPaths
 from dream.engine._tool_dispatch import PermissionGate
 from dream.permissions import (
-    PermissionDecision,
-    PermissionRequest,
     SandboxTier,
     build_policy,
     evaluate,
@@ -45,9 +44,7 @@ def make_permission_gate(
     )
     policy = assembly.policy
 
-    def gate(request: PermissionRequest) -> PermissionDecision:
-        return evaluate(request, policy)
-
+    gate = functools.partial(evaluate, policy=policy)
     return gate, assembly.warnings
 
 

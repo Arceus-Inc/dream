@@ -19,12 +19,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-from dream.planner import PlannerLedger
+from dream.planner import LedgerStep, PlannerLedger
 from dream.utils.file_lock import exclusive_file_lock
 from dream.utils.fs import atomic_write_text
 
 from ._contract import tech_debt_path
 from ._evaluation import EvaluationRecord
+from ._ledger_ops import replace_step_by_id
 
 __all__ = ["append_tech_debt", "apply_outcome"]
 
@@ -34,26 +35,23 @@ def apply_outcome(ledger: PlannerLedger, record: EvaluationRecord) -> PlannerLed
 
     Raises ``KeyError`` if the step id isn't present in the ledger.
     """
-    step_id = record.step_id
-    new_steps = list(ledger.steps)
-    for i, step in enumerate(new_steps):
-        if step.id == step_id:
-            if step.status != "in_progress":
-                raise ValueError(
-                    f"cannot apply outcome to step {step_id!r}: only an "
-                    f"in_progress step may transition, got status "
-                    f"{step.status!r}"
-                )
-            new_status: Literal["done", "blocked", "in_progress"]
-            if record.outcome == "pass":
-                new_status = "done"
-            elif record.outcome == "fail":
-                new_status = "blocked"
-            else:  # needs-changes
-                new_status = "in_progress"
-            new_steps[i] = replace(step, status=new_status)
-            return replace(ledger, steps=tuple(new_steps))
-    raise KeyError(f"step id not in ledger: {step_id!r}")
+    def _transition(step: LedgerStep) -> LedgerStep:
+        if step.status != "in_progress":
+            raise ValueError(
+                f"cannot apply outcome to step {record.step_id!r}: only an "
+                f"in_progress step may transition, got status "
+                f"{step.status!r}"
+            )
+        new_status: Literal["done", "blocked", "in_progress"]
+        if record.outcome == "pass":
+            new_status = "done"
+        elif record.outcome == "fail":
+            new_status = "blocked"
+        else:  # needs-changes
+            new_status = "in_progress"
+        return replace(step, status=new_status)
+
+    return replace_step_by_id(ledger, record.step_id, _transition)
 
 
 def _now_iso() -> str:

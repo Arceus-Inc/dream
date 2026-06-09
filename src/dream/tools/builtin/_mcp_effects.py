@@ -21,13 +21,12 @@ _DEFAULT_MCP_TIER = SandboxTier.REPO_WRITE
 def tier_required_for(wire: str) -> int:
     """Map an allowlist entry's tier *name* to the int a tool declaration needs.
 
-    An empty/unset name means the operator did not narrow the entry, so the
-    conservative default (REPO_WRITE) applies. An unrecognised name also falls
-    back to the default rather than raising — admitting the tool at a known-safe
-    tier is preferable to failing registration on a typo.
+    An empty/unset name means the operator did not narrow the entry, and an
+    unrecognised name is a typo: both fall back to the conservative default
+    (REPO_WRITE) rather than raising. ``from_wire("")`` already raises like any
+    other unknown wire, so the single ``except`` covers both cases — admitting
+    the tool at a known-safe tier is preferable to failing registration.
     """
-    if not wire:
-        return int(_DEFAULT_MCP_TIER)
     try:
         return int(SandboxTier.from_wire(wire))
     except ValueError:

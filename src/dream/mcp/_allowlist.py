@@ -76,6 +76,11 @@ def entry_to_config(entry: AllowlistEntry) -> McpServerConfig:
 
 
 def _entry_from_table(item: dict[str, Any]) -> AllowlistEntry:
+    # ``item`` is one ``[[mcp]]`` parsed TOML table, e.g.
+    #   {"name": "playwright", "endpoint": "stdio://npx @playwright/mcp",
+    #    "transport": "stdio", "tier_required": "repo_write",
+    #    "pinned_version_hash": "sha256:...", "tools": ["navigate", "click"]}
+    # Only ``name``/``endpoint``/``transport`` are required.
     name = item.get("name")
     endpoint = item.get("endpoint")
     transport = item.get("transport")

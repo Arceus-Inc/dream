@@ -194,42 +194,24 @@ class Harness:
         root = worktree_root if worktree_root is not None else self.config.working_dir
         effective_task_id = task_id if task_id is not None else _mint_task_id()
 
-        if (
-            planner is None
-            or generator_execute is None
-            or evaluator_propose is None
-            or generator_respond is None
-            or evaluator_run is None
-        ):
-            from dream.runner import (
-                make_evaluator_head,
-                make_evaluator_propose_head,
-                make_generator_head,
-                make_generator_respond_head,
-                make_planner_head,
+        planner, generator_execute, evaluator_propose, generator_respond, evaluator_run = (
+            self._resolve_heads(
+                planner=planner,
+                generator_execute=generator_execute,
+                evaluator_propose=evaluator_propose,
+                generator_respond=generator_respond,
+                evaluator_run=evaluator_run,
+                intent=intent,
+                harness_dir=harness_dir,
+                observer=observer,
             )
+        )
 
-            if planner is None:
-                planner = make_planner_head(
-                    self, harness_dir=harness_dir, observer=observer
-                )
-            if generator_execute is None:
-                generator_execute = make_generator_head(
-                    self, harness_dir=harness_dir, observer=observer
-                )
-            if evaluator_propose is None:
-                evaluator_propose = make_evaluator_propose_head(
-                    self, intent=intent, harness_dir=harness_dir, observer=observer
-                )
-            if generator_respond is None:
-                generator_respond = make_generator_respond_head(
-                    self, harness_dir=harness_dir, observer=observer
-                )
-            if evaluator_run is None:
-                evaluator_run = make_evaluator_head(
-                    self, harness_dir=harness_dir, observer=observer
-                )
-
+        # ``kwargs`` is hand-built (rather than passing real keyword args) so the
+        # facade forwards ONLY the optionals the caller actually set — defaults
+        # for ``max_sprints`` / ``verification_steps`` / ``goal_for_step`` /
+        # ``observer`` live in ``runner.run_task``, not here. See
+        # ``test_run_task_omits_unspecified_optionals``.
         kwargs: dict[str, Any] = {
             "task_id": effective_task_id,
             "intent": intent,
@@ -249,6 +231,79 @@ class Harness:
         if observer is not None:
             kwargs["observer"] = observer
         return await _run_task(**kwargs)
+
+    def _resolve_heads(
+        self,
+        *,
+        planner: PlannerCallable | None,
+        generator_execute: GeneratorExecute | None,
+        evaluator_propose: EvaluatorPropose | None,
+        generator_respond: GeneratorRespond | None,
+        evaluator_run: EvaluatorRun | None,
+        intent: str,
+        harness_dir: Path | None,
+        observer: RunTaskObserver | None,
+    ) -> tuple[
+        PlannerCallable,
+        GeneratorExecute,
+        EvaluatorPropose,
+        GeneratorRespond,
+        EvaluatorRun,
+    ]:
+        """Fill any ``None`` head with its production factory (10-I autowire).
+
+        A one-liner ``await harness.run_task(intent=...)`` wires every LLM head
+        from the configured engine; explicitly supplied heads pass through
+        untouched. Returns the five resolved heads in run_task argument order.
+        """
+        if (
+            planner is not None
+            and generator_execute is not None
+            and evaluator_propose is not None
+            and generator_respond is not None
+            and evaluator_run is not None
+        ):
+            return (
+                planner,
+                generator_execute,
+                evaluator_propose,
+                generator_respond,
+                evaluator_run,
+            )
+
+        from dream.runner import (
+            make_evaluator_head,
+            make_evaluator_propose_head,
+            make_generator_head,
+            make_generator_respond_head,
+            make_planner_head,
+        )
+
+        if planner is None:
+            planner = make_planner_head(self, harness_dir=harness_dir, observer=observer)
+        if generator_execute is None:
+            generator_execute = make_generator_head(
+                self, harness_dir=harness_dir, observer=observer
+            )
+        if evaluator_propose is None:
+            evaluator_propose = make_evaluator_propose_head(
+                self, intent=intent, harness_dir=harness_dir, observer=observer
+            )
+        if generator_respond is None:
+            generator_respond = make_generator_respond_head(
+                self, harness_dir=harness_dir, observer=observer
+            )
+        if evaluator_run is None:
+            evaluator_run = make_evaluator_head(
+                self, harness_dir=harness_dir, observer=observer
+            )
+        return (
+            planner,
+            generator_execute,
+            evaluator_propose,
+            generator_respond,
+            evaluator_run,
+        )
 
     # -- lifecycle --------------------------------------------------------
 

@@ -230,27 +230,37 @@ def _scan_eval_in_tool(paths: DreamPaths) -> list[Finding]:
     return findings
 
 
-def _uses_dangerous(tree: ast.AST) -> bool:
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id in {"eval", "exec"}
-        ):
-            return True
-        if isinstance(node, ast.Import) and any(
-            alias.name.split(".")[0] == "subprocess" for alias in node.names
-        ):
-            return True
-        if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "subprocess":
-            return True
-        if (
-            isinstance(node, ast.Attribute)
-            and isinstance(node.value, ast.Name)
-            and node.value.id == "subprocess"
-        ):
-            return True
+def _is_eval_call(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in {"eval", "exec"}
+    )
+
+
+def _imports_subprocess(node: ast.AST) -> bool:
+    if isinstance(node, ast.Import):
+        return any(alias.name.split(".")[0] == "subprocess" for alias in node.names)
+    if isinstance(node, ast.ImportFrom):
+        return (node.module or "").split(".")[0] == "subprocess"
     return False
+
+
+def _calls_subprocess_attr(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "subprocess"
+    )
+
+
+def _uses_dangerous(tree: ast.AST) -> bool:
+    return any(
+        _is_eval_call(node)
+        or _imports_subprocess(node)
+        or _calls_subprocess_attr(node)
+        for node in ast.walk(tree)
+    )
 
 
 def _walk_text_files(root: Path) -> Iterator[Path]:

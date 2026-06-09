@@ -17,7 +17,7 @@ import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from ._checks import checked_sprint_number, checked_task_id
 
@@ -32,7 +32,7 @@ __all__ = [
 
 
 EvaluationOutcome = Literal["pass", "needs-changes", "fail"]
-_VALID_OUTCOMES: frozenset[str] = frozenset({"pass", "needs-changes", "fail"})
+_VALID_OUTCOMES: frozenset[str] = frozenset(get_args(EvaluationOutcome))
 
 
 class EvaluationAlreadyRecorded(RuntimeError):

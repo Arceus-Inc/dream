@@ -24,7 +24,7 @@ import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, TypeVar
 
 from dream.api.credentials import (
     Credential,
@@ -69,7 +69,10 @@ class SubstrateSpec:
     max_window: int
     timeout_seconds: float
     credentials: list[Credential]
-    builder: Any  # callable (Credential) -> Substrate; ``Any`` to dodge protocol-typing noise
+    # Builds an adapter from a live credential. ``None`` only transiently while
+    # ``_spec_from_env`` constructs the spec, then assigns the real builder (it
+    # needs the finished spec to close over ``name`` / ``model`` / ``base_url``).
+    builder: Callable[[Credential], Substrate] | None
 
 
 def _build_openai_substrate(spec: SubstrateSpec) -> Any:
@@ -86,26 +89,35 @@ def _build_openai_substrate(spec: SubstrateSpec) -> Any:
     return _build
 
 
-def _env_int(name: str, default: int) -> int:
-    """Parse an integer env var, with a clear error instead of a raw ValueError."""
+_T = TypeVar("_T", int, float)
+
+
+def _env_number(
+    name: str, default: _T, *, parse: Callable[[str], _T], kind: str
+) -> _T:
+    """Parse a numeric env var, with a clear error instead of a raw ValueError.
+
+    ``parse`` is ``int`` / ``float``; ``kind`` names the type in the error
+    message (``"integer"`` / ``"number"``). An unset / blank var yields
+    ``default``.
+    """
     raw = os.environ.get(name)
     if raw is None or raw.strip() == "":
         return default
     try:
-        return int(raw)
+        return parse(raw)
     except ValueError as exc:
-        raise ValueError(f"{name}={raw!r} is not a valid integer") from exc
+        raise ValueError(f"{name}={raw!r} is not a valid {kind}") from exc
+
+
+def _env_int(name: str, default: int) -> int:
+    """Parse an integer env var (see :func:`_env_number`)."""
+    return _env_number(name, default, parse=int, kind="integer")
 
 
 def _env_float(name: str, default: float) -> float:
-    """Parse a float env var, with a clear error instead of a raw ValueError."""
-    raw = os.environ.get(name)
-    if raw is None or raw.strip() == "":
-        return default
-    try:
-        return float(raw)
-    except ValueError as exc:
-        raise ValueError(f"{name}={raw!r} is not a valid number") from exc
+    """Parse a float env var (see :func:`_env_number`)."""
+    return _env_number(name, default, parse=float, kind="number")
 
 
 def _spec_from_env() -> SubstrateSpec | None:
@@ -183,6 +195,10 @@ def _redact_args(args: dict[str, Any]) -> dict[str, Any]:
     length-only placeholder; other string values are length-capped so a large
     blob neither bloats nor leaks through the event file. Non-sensitive scalars
     pass through unchanged so the audit trail stays useful.
+
+    ``args`` is a tool-call argument map (the JSON object a ``/tool`` invocation
+    decoded), e.g. ``{"path": "src/x.py", "content": "<file body>"}`` →
+    ``{"path": "src/x.py", "content": "<redacted:N chars>"}``.
     """
     redacted: dict[str, Any] = {}
     for key, value in args.items():
@@ -259,6 +275,8 @@ class Dispatcher:
         }
         self._adapters: dict[tuple[str, str], Substrate] = {}
         for spec in specs:
+            if spec.builder is None:
+                raise ValueError(f"substrate spec {spec.name!r} has no builder")
             for cred in spec.credentials:
                 self._adapters[(spec.name, cred.label)] = spec.builder(cred)
         self.policy = FailoverPolicy(
@@ -670,6 +688,95 @@ def _cmd_tools(ctx: _SlashContext) -> bool:
     return True
 
 
+class _ToolInvocation(NamedTuple):
+    """Outcome of running one ``/tool`` call.
+
+    Exactly one of ``result`` / ``error`` is set: ``result`` carries the
+    tool's :class:`~dream.tools._base.ToolResult` on a clean run; ``error``
+    carries an ``(error_class_name, detail)`` pair when the call raised
+    (timeout or other exception). ``elapsed_ms`` is the wall time either way.
+    """
+
+    elapsed_ms: float
+    result: Any | None = None
+    error: tuple[str, str] | None = None
+    timed_out_after: float | None = None  # the declared timeout (s) on a timeout
+
+
+def _invoke_tool(
+    tool: Any, args: dict[str, Any], *, cwd: Path
+) -> _ToolInvocation:
+    """Run ``tool`` against ``args`` under its declared timeout (no I/O here).
+
+    Returns a :class:`_ToolInvocation`; never prints or emits — rendering and
+    the JSONL ``tool.*`` events are the caller's job so the side effects stay
+    in one place.
+    """
+    tool_ctx = ToolExecutionContext(working_dir=cwd, session_id="repl")
+    timeout = tool.declaration.timeout_seconds
+    started = time.monotonic()
+    try:
+        result = asyncio.run(asyncio.wait_for(tool.execute(args, tool_ctx), timeout=timeout))
+    except TimeoutError:
+        elapsed_ms = (time.monotonic() - started) * 1000.0
+        return _ToolInvocation(
+            elapsed_ms=elapsed_ms,
+            error=("TimeoutError", f"exceeded declared timeout of {timeout:.1f}s"),
+            timed_out_after=timeout,
+        )
+    except Exception as exc:
+        elapsed_ms = (time.monotonic() - started) * 1000.0
+        return _ToolInvocation(elapsed_ms=elapsed_ms, error=(type(exc).__name__, str(exc)[:200]))
+    elapsed_ms = (time.monotonic() - started) * 1000.0
+    return _ToolInvocation(elapsed_ms=elapsed_ms, result=result)
+
+
+def _render_tool_result(name: str, inv: _ToolInvocation) -> dict[str, Any]:
+    """Print the human-facing outcome of a ``/tool`` call; return its metadata.
+
+    ``metadata`` (recognized keys ``root_cause`` / ``safe_retry`` /
+    ``stop_condition`` …) is returned for the caller to forward to the sink.
+    Empty dict when the call raised.
+    """
+    if inv.error is not None:
+        error, detail = inv.error
+        if inv.timed_out_after is not None:
+            print(f"[error] tool {name!r} timed out after {inv.timed_out_after:.1f}s")
+        else:
+            print(f"[error] {error}: {detail}")
+        return {}
+    result = inv.result
+    assert result is not None  # error is None ⇒ result is set
+    label = "ERROR" if result.is_error else "ok"
+    print(f"[tool={name} {label}] elapsed={inv.elapsed_ms:.0f}ms")
+    if result.content:
+        print(result.content)
+    md: dict[str, Any] = result.metadata or {}
+    for key in ("root_cause", "safe_retry", "stop_condition"):
+        if key in md:
+            print(f"  {key}: {md[key]}")
+    return md
+
+
+def _emit_tool_outcome(
+    sink: EventSink | None, name: str, inv: _ToolInvocation, md: dict[str, Any]
+) -> None:
+    """Mirror a ``/tool`` outcome onto the JSONL audit sink (no-op when None)."""
+    if sink is None:
+        return
+    elapsed = round(inv.elapsed_ms, 1)
+    if inv.error is not None:
+        error, detail = inv.error
+        sink.emit("tool.failed", name=name, error=error, detail=detail, elapsed_ms=elapsed)
+        return
+    result = inv.result
+    assert result is not None  # error is None ⇒ result is set
+    if result.is_error:
+        sink.emit("tool.failed", name=name, is_error=True, elapsed_ms=elapsed, metadata=md)
+    else:
+        sink.emit("tool.completed", name=name, is_error=False, elapsed_ms=elapsed, metadata=md)
+
+
 def _cmd_tool(ctx: _SlashContext) -> bool:
     registry = ctx.state.registry
     if registry is None:
@@ -694,70 +801,14 @@ def _cmd_tool(ctx: _SlashContext) -> bool:
         print(f"[error] json args must be an object, got {type(args).__name__}")
         return True
 
-    tool_ctx = ToolExecutionContext(
-        working_dir=ctx.state.cwd,
-        session_id="repl",
-    )
     sink = ctx.state.sink
     if sink is not None:
         # Redact high-risk argument values (file bodies, shell commands,
         # secrets) before they hit the plaintext JSONL audit file.
         sink.emit("tool.invoked", name=name, args=_redact_args(args))
-    timeout = tool.declaration.timeout_seconds
-    started = time.monotonic()
-    try:
-        result = asyncio.run(asyncio.wait_for(tool.execute(args, tool_ctx), timeout=timeout))
-    except TimeoutError:
-        elapsed_ms = (time.monotonic() - started) * 1000.0
-        print(f"[error] tool {name!r} timed out after {timeout:.1f}s")
-        if sink is not None:
-            sink.emit(
-                "tool.failed",
-                name=name,
-                error="TimeoutError",
-                detail=f"exceeded declared timeout of {timeout:.1f}s",
-                elapsed_ms=round(elapsed_ms, 1),
-            )
-        return True
-    except Exception as exc:
-        elapsed_ms = (time.monotonic() - started) * 1000.0
-        print(f"[error] {type(exc).__name__}: {exc}")
-        if sink is not None:
-            sink.emit(
-                "tool.failed",
-                name=name,
-                error=type(exc).__name__,
-                detail=str(exc)[:200],
-                elapsed_ms=round(elapsed_ms, 1),
-            )
-        return True
-
-    elapsed_ms = (time.monotonic() - started) * 1000.0
-    label = "ERROR" if result.is_error else "ok"
-    print(f"[tool={name} {label}] elapsed={elapsed_ms:.0f}ms")
-    if result.content:
-        print(result.content)
-    md = result.metadata or {}
-    for key in ("root_cause", "safe_retry", "stop_condition"):
-        if key in md:
-            print(f"  {key}: {md[key]}")
-    if sink is not None:
-        if result.is_error:
-            sink.emit(
-                "tool.failed",
-                name=name,
-                is_error=True,
-                elapsed_ms=round(elapsed_ms, 1),
-                metadata=md,
-            )
-        else:
-            sink.emit(
-                "tool.completed",
-                name=name,
-                is_error=False,
-                elapsed_ms=round(elapsed_ms, 1),
-                metadata=md,
-            )
+    inv = _invoke_tool(tool, args, cwd=ctx.state.cwd)
+    md = _render_tool_result(name, inv)
+    _emit_tool_outcome(sink, name, inv, md)
     return True
 
 
@@ -768,52 +819,117 @@ def _task_usage() -> None:
     print("usage: /task list [status] | /task output <id> | /task stop <id>")
 
 
+def _task_list(mgr: BackgroundTaskManager, rest: list[str]) -> None:
+    status = rest[0] if rest else None
+    tasks = mgr.list_tasks(status=status)  # type: ignore[arg-type]
+    if not tasks:
+        print("(no tasks)")
+        return
+    for t in tasks:
+        print(f"  {t.id} [{t.status}] {t.description}")
+
+
+def _task_output(mgr: BackgroundTaskManager, rest: list[str]) -> None:
+    if not rest:
+        _task_usage()
+        return
+    task_id = rest[0]
+    if mgr.get_task(task_id) is None:
+        print(f"unknown task {task_id!r}")
+        return
+    print(mgr.read_task_output(task_id))
+
+
+def _task_stop(mgr: BackgroundTaskManager, rest: list[str]) -> None:
+    if not rest:
+        _task_usage()
+        return
+    task_id = rest[0]
+    if mgr.get_task(task_id) is None:
+        print(f"unknown task {task_id!r}")
+        return
+    asyncio.run(mgr.stop_task(task_id))
+    print(f"[stopped {task_id}]")
+
+
+# ``/task`` subcommand → handler. Each takes the live manager + trailing args.
+_TASK_SUBCOMMANDS: dict[str, Callable[[BackgroundTaskManager, list[str]], None]] = {
+    "list": _task_list,
+    "output": _task_output,
+    "stop": _task_stop,
+}
+
+
 def _cmd_task(ctx: _SlashContext) -> bool:
     mgr = ctx.state.task_manager
     if mgr is None:
         print("task manager not configured for this session")
         return True
     parts = ctx.arg.split()
-    if not parts:
+    handler = _TASK_SUBCOMMANDS.get(parts[0]) if parts else None
+    if handler is None:
         _task_usage()
         return True
-    sub, rest = parts[0], parts[1:]
-    if sub == "list":
-        status = rest[0] if rest else None
-        tasks = mgr.list_tasks(status=status)  # type: ignore[arg-type]
-        if not tasks:
-            print("(no tasks)")
-            return True
-        for t in tasks:
-            print(f"  {t.id} [{t.status}] {t.description}")
-        return True
-    if sub == "output":
-        if not rest:
-            _task_usage()
-            return True
-        task_id = rest[0]
-        if mgr.get_task(task_id) is None:
-            print(f"unknown task {task_id!r}")
-            return True
-        print(mgr.read_task_output(task_id))
-        return True
-    if sub == "stop":
-        if not rest:
-            _task_usage()
-            return True
-        task_id = rest[0]
-        if mgr.get_task(task_id) is None:
-            print(f"unknown task {task_id!r}")
-            return True
-        asyncio.run(mgr.stop_task(task_id))
-        print(f"[stopped {task_id}]")
-        return True
-    _task_usage()
+    handler(mgr, parts[1:])
     return True
 
 
 def _cron_usage() -> None:
     print("usage: /cron list | /cron show <name> | /cron toggle <name>")
+
+
+def _cron_list(registry: Path, rest: list[str]) -> None:
+    jobs = load_cron_jobs(registry)
+    if not jobs:
+        print("(no cron jobs)")
+        return
+    for j in jobs:
+        state = "enabled" if j.enabled else "disabled"
+        tz = f" tz={j.timezone}" if j.timezone else ""
+        nxt = f" next={j.next_run.isoformat()}" if j.next_run else ""
+        print(f"  {j.name}  {j.schedule!r}{tz}  [{state}]{nxt}")
+
+
+def _cron_show(registry: Path, rest: list[str]) -> None:
+    if not rest:
+        _cron_usage()
+        return
+    name = rest[0]
+    job = get_cron_job(registry, name)
+    if job is None:
+        print(f"unknown cron job {name!r}")
+        return
+    print(f"  name:           {job.name}")
+    print(f"  schedule:       {job.schedule}")
+    print(f"  timezone:       {job.timezone or '<none>'}")
+    print(f"  enabled:        {job.enabled}")
+    print(f"  tier_required:  {job.tier_required or '<none>'}")
+    print(f"  description:    {job.description or '<none>'}")
+    print(f"  next_run:       {job.next_run.isoformat() if job.next_run else '<unset>'}")
+    print(f"  last_run:       {job.last_run.isoformat() if job.last_run else '<never>'}")
+    print(f"  last_status:    {job.last_status or '<none>'}")
+
+
+def _cron_toggle(registry: Path, rest: list[str]) -> None:
+    if not rest:
+        _cron_usage()
+        return
+    name = rest[0]
+    job = get_cron_job(registry, name)
+    if job is None:
+        print(f"unknown cron job {name!r}")
+        return
+    new_state = not job.enabled
+    set_job_enabled(registry, name, enabled=new_state)
+    print(f"[{name} now {'enabled' if new_state else 'disabled'}]")
+
+
+# ``/cron`` subcommand → handler. Each takes the registry path + trailing args.
+_CRON_SUBCOMMANDS: dict[str, Callable[[Path, list[str]], None]] = {
+    "list": _cron_list,
+    "show": _cron_show,
+    "toggle": _cron_toggle,
+}
 
 
 def _cmd_cron(ctx: _SlashContext) -> bool:
@@ -822,59 +938,62 @@ def _cmd_cron(ctx: _SlashContext) -> bool:
         print("cron registry not configured for this session")
         return True
     parts = ctx.arg.split()
-    if not parts:
+    handler = _CRON_SUBCOMMANDS.get(parts[0]) if parts else None
+    if handler is None:
         _cron_usage()
         return True
-    sub, rest = parts[0], parts[1:]
-    if sub == "list":
-        jobs = load_cron_jobs(registry)
-        if not jobs:
-            print("(no cron jobs)")
-            return True
-        for j in jobs:
-            state = "enabled" if j.enabled else "disabled"
-            tz = f" tz={j.timezone}" if j.timezone else ""
-            nxt = f" next={j.next_run.isoformat()}" if j.next_run else ""
-            print(f"  {j.name}  {j.schedule!r}{tz}  [{state}]{nxt}")
-        return True
-    if sub == "show":
-        if not rest:
-            _cron_usage()
-            return True
-        name = rest[0]
-        job = get_cron_job(registry, name)
-        if job is None:
-            print(f"unknown cron job {name!r}")
-            return True
-        print(f"  name:           {job.name}")
-        print(f"  schedule:       {job.schedule}")
-        print(f"  timezone:       {job.timezone or '<none>'}")
-        print(f"  enabled:        {job.enabled}")
-        print(f"  tier_required:  {job.tier_required or '<none>'}")
-        print(f"  description:    {job.description or '<none>'}")
-        print(f"  next_run:       {job.next_run.isoformat() if job.next_run else '<unset>'}")
-        print(f"  last_run:       {job.last_run.isoformat() if job.last_run else '<never>'}")
-        print(f"  last_status:    {job.last_status or '<none>'}")
-        return True
-    if sub == "toggle":
-        if not rest:
-            _cron_usage()
-            return True
-        name = rest[0]
-        job = get_cron_job(registry, name)
-        if job is None:
-            print(f"unknown cron job {name!r}")
-            return True
-        new_state = not job.enabled
-        set_job_enabled(registry, name, enabled=new_state)
-        print(f"[{name} now {'enabled' if new_state else 'disabled'}]")
-        return True
-    _cron_usage()
+    handler(registry, parts[1:])
     return True
 
 
 def _plan_usage() -> None:
     print("usage: /plan list | /plan show <task_id>")
+
+
+def _plan_list(root: Path, rest: list[str]) -> None:
+    any_found = False
+    for state in PLAN_STATES:
+        d = plan_dir(root, state=state)
+        if not d.is_dir():
+            continue
+        tasks = sorted(p.stem for p in d.glob("*.json"))
+        if not tasks:
+            continue
+        any_found = True
+        print(f"  [{state}]")
+        for task_id in tasks:
+            print(f"    {task_id}")
+    if not any_found:
+        print("(no plans)")
+
+
+def _plan_show(root: Path, rest: list[str]) -> None:
+    if not rest:
+        _plan_usage()
+        return
+    task_id = rest[0]
+    for state in PLAN_STATES:
+        d = plan_dir(root, state=state)
+        if not (d / f"{task_id}.json").exists():
+            continue
+        plan = read_plan(d, task_id=task_id)
+        print(f"# {plan.task_id}  [{plan.ledger.state}]")
+        for section in plan.sections:
+            body = plan.sections[section].strip()
+            first = body.splitlines()[0] if body else ""
+            print(f"  {section}: {first}")
+        print("  entries:")
+        for e in plan.ledger.entries:
+            print(f"    - {e.id} [{e.status}] {e.description}")
+        return
+    print(f"unknown plan {task_id!r}")
+
+
+# ``/plan`` subcommand → handler. Each takes the plans root + trailing args.
+_PLAN_SUBCOMMANDS: dict[str, Callable[[Path, list[str]], None]] = {
+    "list": _plan_list,
+    "show": _plan_show,
+}
 
 
 def _cmd_plan(ctx: _SlashContext) -> bool:
@@ -883,48 +1002,11 @@ def _cmd_plan(ctx: _SlashContext) -> bool:
         print("plan store not configured for this session")
         return True
     parts = ctx.arg.split()
-    if not parts:
+    handler = _PLAN_SUBCOMMANDS.get(parts[0]) if parts else None
+    if handler is None:
         _plan_usage()
         return True
-    sub, rest = parts[0], parts[1:]
-    if sub == "list":
-        any_found = False
-        for state in PLAN_STATES:
-            d = plan_dir(root, state=state)
-            if not d.is_dir():
-                continue
-            tasks = sorted(p.stem for p in d.glob("*.json"))
-            if not tasks:
-                continue
-            any_found = True
-            print(f"  [{state}]")
-            for task_id in tasks:
-                print(f"    {task_id}")
-        if not any_found:
-            print("(no plans)")
-        return True
-    if sub == "show":
-        if not rest:
-            _plan_usage()
-            return True
-        task_id = rest[0]
-        for state in PLAN_STATES:
-            d = plan_dir(root, state=state)
-            if not (d / f"{task_id}.json").exists():
-                continue
-            plan = read_plan(d, task_id=task_id)
-            print(f"# {plan.task_id}  [{plan.ledger.state}]")
-            for section in plan.sections:
-                body = plan.sections[section].strip()
-                first = body.splitlines()[0] if body else ""
-                print(f"  {section}: {first}")
-            print("  entries:")
-            for e in plan.ledger.entries:
-                print(f"    - {e.id} [{e.status}] {e.description}")
-            return True
-        print(f"unknown plan {task_id!r}")
-        return True
-    _plan_usage()
+    handler(root, parts[1:])
     return True
 
 

@@ -110,6 +110,13 @@ class SprintContract:
         return replace(self, imposed=imposed)
 
     def to_dict(self) -> dict[str, Any]:
+        # On-disk JSON shape:
+        #   {"task_id": str, "sprint_number": int, "goal": str,
+        #    "scope_includes": list[str], "scope_excludes": list[str],
+        #    "acceptance_criteria": list[str],
+        #    "verification_steps": list[{"kind": "test"|"lint"|"eval", ...}],
+        #    "evaluator_enabled": bool, "imposed": bool,
+        #    "negotiation_log": list[{"ts", "from", "to", "message"}]}
         return {
             "task_id": self.task_id,
             "sprint_number": self.sprint_number,

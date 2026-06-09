@@ -106,30 +106,7 @@ class ToolExecutionContext:
                     "stop_condition": "do not retry beyond declared tool timeout",
                 },
             )
-        stdout = stdout_b.decode("utf-8", errors="replace")
-        stderr = stderr_b.decode("utf-8", errors="replace")
-        is_error = proc.returncode != 0
-        # Compose deterministic content: stdout, then a separator + stderr
-        # if stderr produced anything. Avoids the case where stderr-only
-        # output disappears.
-        if stderr:
-            content = f"{stdout}\n--- stderr ---\n{stderr}" if stdout else stderr
-        else:
-            content = stdout
-        metadata: dict[str, Any] = {
-            "returncode": proc.returncode,
-            "stdout_bytes": len(stdout_b),
-            "stderr_bytes": len(stderr_b),
-        }
-        if is_error:
-            metadata.update(
-                {
-                    "root_cause": f"exit code {proc.returncode}",
-                    "safe_retry": "inspect stderr and adjust arguments",
-                    "stop_condition": "do not retry on the same arguments",
-                }
-            )
-        return ToolResult(content=content, is_error=is_error, metadata=metadata)
+        return _compose_subprocess_result(stdout_b, stderr_b, proc.returncode)
 
     async def spill_large_output(self, content: str | bytes) -> str:
         """Spill ``content`` to scratch and return a reference token.
@@ -154,6 +131,38 @@ class ToolExecutionContext:
         if pointer is None:
             return inline
         return pointer.offloaded_to
+
+
+def _compose_subprocess_result(
+    stdout_b: bytes, stderr_b: bytes, returncode: int | None
+) -> ToolResult:
+    """Assemble a ``ToolResult`` from a completed subprocess's captured streams.
+
+    Content is stdout, then a separator + stderr if stderr produced anything;
+    this avoids the case where stderr-only output disappears. ``metadata``
+    carries ``returncode`` + byte counts (and the three-part error contract on
+    a non-zero exit) so observation derivation never parses the stream.
+    """
+    stdout = stdout_b.decode("utf-8", errors="replace")
+    stderr = stderr_b.decode("utf-8", errors="replace")
+    is_error = returncode != 0
+    # Both streams → join with a separator; otherwise the one with content
+    # (stderr wins when present) so stderr-only output never disappears.
+    content = f"{stdout}\n--- stderr ---\n{stderr}" if stderr and stdout else stderr or stdout
+    metadata: dict[str, Any] = {
+        "returncode": returncode,
+        "stdout_bytes": len(stdout_b),
+        "stderr_bytes": len(stderr_b),
+    }
+    if is_error:
+        metadata.update(
+            {
+                "root_cause": f"exit code {returncode}",
+                "safe_retry": "inspect stderr and adjust arguments",
+                "stop_condition": "do not retry on the same arguments",
+            }
+        )
+    return ToolResult(content=content, is_error=is_error, metadata=metadata)
 
 
 __all__ = ["ToolExecutionContext"]

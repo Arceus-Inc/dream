@@ -52,6 +52,8 @@ class PermissionRequest:
     request_id: str
     worker_id: str
     tool_name: str
+    # The tool-call argument map for ``tool_name`` (e.g. ``{"path": ...,
+    # "content": ...}`` for a write tool) — arbitrary per-tool JSON.
     tool_input: dict[str, Any]
     description: str = ""
     created_at: float = field(default_factory=time.time)

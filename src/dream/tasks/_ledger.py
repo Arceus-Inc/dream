@@ -168,6 +168,18 @@ class Ledger(BaseModel):
                 return i
         raise LedgerStateError(f"unknown entry id: {entry_id!r}")
 
+    def _with_entry_replaced(
+        self, idx: int, new_entry: LedgerEntry, now: datetime
+    ) -> Ledger:
+        """Splice ``new_entry`` into position ``idx`` and bump ``updated_at``.
+
+        The single tuple-splice + ``model_copy`` shared by ``append_note`` and
+        ``_replace_entry`` (and thus the ``mark_*`` helpers): any entry mutation
+        is a content change and must move the ledger's last-modified marker.
+        """
+        new_entries = (*self.entries[:idx], new_entry, *self.entries[idx + 1 :])
+        return self.model_copy(update={"entries": new_entries, "updated_at": now})
+
     # --- mutation (returns new instance) ---------------------------------
 
     def append_note(self, *, entry_id: str, note: str, now: datetime) -> Ledger:
@@ -180,8 +192,7 @@ class Ledger(BaseModel):
         idx = self._entry_index(entry_id)
         target = self.entries[idx]
         new_entry = target.model_copy(update={"notes": (*target.notes, note)})
-        new_entries = (*self.entries[:idx], new_entry, *self.entries[idx + 1 :])
-        return self.model_copy(update={"entries": new_entries, "updated_at": now})
+        return self._with_entry_replaced(idx, new_entry, now)
 
     def mark_in_progress(self, *, entry_id: str, now: datetime) -> Ledger:
         if self.in_progress_entry() is not None:
@@ -215,8 +226,7 @@ class Ledger(BaseModel):
         if passes is not None:
             update["passes"] = passes
         new_entry = target.model_copy(update=update)
-        new_entries = (*self.entries[:idx], new_entry, *self.entries[idx + 1 :])
-        return self.model_copy(update={"entries": new_entries, "updated_at": now})
+        return self._with_entry_replaced(idx, new_entry, now)
 
     # --- schema -----------------------------------------------------------
 

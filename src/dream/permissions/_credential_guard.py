@@ -19,10 +19,10 @@ trailing ``/**`` also matches the directory itself.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from dream.permissions._globs import glob_to_regex
+from dream.utils.paths import canonical_path_forms
 
 #: Fixed, non-removable credential patterns.
 BUILTIN_CREDENTIAL_PATTERNS: tuple[str, ...] = (
@@ -52,14 +52,9 @@ def _candidates(path: Path, cwd: Path) -> tuple[str, ...]:
     parent (e.g. a dotfiles ``~/.config`` link). The *resolved* form catches a
     symlink that points *into* a credential location. Either match blocks.
     """
-    candidate = path.expanduser()
-    if not candidate.is_absolute():
-        candidate = cwd / candidate
-    lexical = Path(os.path.normpath(candidate.as_posix())).as_posix()
-    try:
-        resolved = candidate.resolve(strict=False).as_posix()
-    except OSError:
-        resolved = lexical
+    canonical = canonical_path_forms(path, cwd)
+    lexical = canonical.lexical.as_posix()
+    resolved = canonical.resolved.as_posix() if canonical.resolved is not None else lexical
     return (lexical, resolved) if resolved != lexical else (lexical,)
 
 

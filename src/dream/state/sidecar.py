@@ -37,6 +37,13 @@ _SIDECAR_DB = "db.sqlite"  # spec 01 decision 8 — per-task structured state
 TaskStatus = Literal["running", "paused", "completed", "failed"]
 
 
+class _Unset:
+    """Sentinel for an omitted ``update_state`` argument (distinct from ``None``)."""
+
+
+_UNSET = _Unset()
+
+
 class TaskState(BaseModel):
     """Schema-validated task state persisted at ``sidecars/{task-id}/state.json``."""
 
@@ -117,13 +124,33 @@ def read_state(paths: DreamPaths, task_id: str) -> TaskState:
     return TaskState.model_validate_json(state_path.read_text())
 
 
-def update_state(paths: DreamPaths, task_id: str, **changes: object) -> TaskState:
-    """Atomically apply ``changes`` to ``state.json`` under an exclusive lock.
+def update_state(
+    paths: DreamPaths,
+    task_id: str,
+    *,
+    last_checkpoint_turn: int | _Unset = _UNSET,
+    status: TaskStatus | _Unset = _UNSET,
+    parent_checkpoint_ref: str | None | _Unset = _UNSET,
+) -> TaskState:
+    """Atomically apply the supplied changes to ``state.json`` under an exclusive lock.
+
+    Only the *mutable* ``TaskState`` fields are accepted; the identity fields
+    (``task_id``/``base_branch``/``created_at``/``harness_version``) are fixed at
+    creation. Each argument defaults to a sentinel meaning "leave unchanged", so
+    ``parent_checkpoint_ref=None`` can explicitly clear the lineage.
 
     The merged result is re-validated through ``TaskState`` before writing, so an
     invalid update (e.g. an unsupported status) is rejected instead of corrupting
     ``state.json``.
     """
+    changes: dict[str, object] = {}
+    if not isinstance(last_checkpoint_turn, _Unset):
+        changes["last_checkpoint_turn"] = last_checkpoint_turn
+    if not isinstance(status, _Unset):
+        changes["status"] = status
+    if not isinstance(parent_checkpoint_ref, _Unset):
+        changes["parent_checkpoint_ref"] = parent_checkpoint_ref
+
     state_path = paths.sidecar(task_id) / "state.json"
     with exclusive_file_lock(_lock_path(paths, task_id)):
         current = TaskState.model_validate_json(state_path.read_text())

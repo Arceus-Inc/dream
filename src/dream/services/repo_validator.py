@@ -178,24 +178,38 @@ def _check_docs_json(paths: DreamPaths) -> list[Finding]:
     return findings
 
 
-def _validate_against_schema(paths: DreamPaths, jf: Path, rel: str, data: object) -> list[Finding]:
+def _resolve_schema_path(
+    paths: DreamPaths, jf: Path, rel: str, data: object
+) -> tuple[Path | None, list[Finding]]:
+    """Locate the local ``$schema`` file for ``data``.
+
+    Returns ``(path, [])`` when a confined local schema file exists,
+    ``(None, [])`` when no local schema is declared (absent or a remote URI we
+    don't fetch), or ``(None, [finding])`` when the declared schema escapes the
+    repo or doesn't resolve.
+    """
     if not isinstance(data, dict):
-        return []
+        return None, []
     schema_ref = data.get("$schema")
     if not isinstance(schema_ref, str) or "://" in schema_ref:
-        return []  # no local schema declared (or a remote URI we don't fetch)
+        return None, []  # no local schema declared (or a remote URI we don't fetch)
     schema_path = (jf.parent / schema_ref).resolve()
     if not schema_path.is_relative_to(paths.repo):
         # Refuse to load a schema from outside the repo (../ or absolute escape).
-        return [
+        return None, [
             Finding(
                 "blocking", "schema_path_invalid", f"$schema escapes the repo: {schema_ref}", rel
             )
         ]
     if not schema_path.is_file():
-        return [
+        return None, [
             Finding("blocking", "schema_missing", f"$schema does not resolve: {schema_ref}", rel)
         ]
+    return schema_path, []
+
+
+def _apply_schema(schema_path: Path, rel: str, data: object) -> list[Finding]:
+    """Load ``schema_path`` and validate ``data`` against it."""
     try:
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
         jsonschema.validate(data, schema)
@@ -216,6 +230,13 @@ def _validate_against_schema(paths: DreamPaths, jf: Path, rel: str, data: object
             )
         ]
     return []
+
+
+def _validate_against_schema(paths: DreamPaths, jf: Path, rel: str, data: object) -> list[Finding]:
+    schema_path, findings = _resolve_schema_path(paths, jf, rel, data)
+    if schema_path is None:
+        return findings
+    return _apply_schema(schema_path, rel, data)
 
 
 def _check_stale_exec_plans(paths: DreamPaths) -> list[Finding]:

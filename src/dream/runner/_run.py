@@ -94,10 +94,6 @@ class RunTaskResult:
     events: tuple[dict[str, Any], ...] = field(default_factory=tuple)
 
 
-def _default_goal(step: LedgerStep, sprint_number: int) -> str:
-    return step.description
-
-
 def _find_next_work(ledger: PlannerLedger) -> LedgerStep | None:
     """Resume an in-progress step (needs-changes retry) or claim next pending.
 
@@ -117,6 +113,234 @@ def _mark_step_done(ledger: PlannerLedger, step_id: str) -> PlannerLedger:
             new_steps[i] = replace(step, status="done")
             return replace(ledger, steps=tuple(new_steps))
     raise KeyError(f"step id not in ledger: {step_id!r}")
+
+
+@dataclass(frozen=True)
+class _GeneratorPhaseResult:
+    """Outcome of the lock-protected generator phase (2a + 2b) of one sprint.
+
+    ``step is None`` signals the loop should stop (no pending work). Otherwise
+    the claimed step, whether the evaluator is enabled, the (optionally written)
+    contract, the re-loaded+saved ledger, and the events accumulated so far.
+    """
+
+    step: LedgerStep | None
+    enabled: bool
+    contract: SprintContract | None
+    contract_path: Path | None
+    ledger: PlannerLedger
+    events: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class _EvaluatorPhaseResult:
+    """Outcome of the evaluator phase (2c) or the disabled-evaluator branch (2d)."""
+
+    eval_path: Path | None
+    outcome: EvaluationOutcome | None
+    ledger: PlannerLedger
+    events: list[dict[str, Any]]
+
+
+async def _run_generator_phase(
+    *,
+    root: Path,
+    task_id: str,
+    ledger_path: Path,
+    sprint_number: int,
+    ledger: PlannerLedger,
+    evaluator_propose: EvaluatorPropose,
+    generator_respond: GeneratorRespond,
+    generator_execute: GeneratorExecute,
+    verification_steps: tuple[dict[str, str], ...],
+    goal_provider: SprintGoalProvider,
+    emit: Callable[[dict[str, Any]], None],
+) -> _GeneratorPhaseResult:
+    """Phase 2a+2b: claim a step under the generator lock, negotiate (if the
+    evaluator is enabled), commit the contract, and run the generator seam.
+
+    Selection + claim of the next step happen *inside* the lock on a freshly
+    re-loaded ledger (criterion #14), so two overlapping ``run_task`` calls
+    can't both pick the same pending step from a stale snapshot.
+    """
+    events: list[dict[str, Any]] = []
+    contract: SprintContract | None = None
+    contract_path: Path | None = None
+    with acquire_role_lock(root, task_id=task_id, role="generator"):
+        ledger = PlannerLedger.load(ledger_path)
+        step = _find_next_work(ledger)
+        if step is None:
+            return _GeneratorPhaseResult(
+                step=None,
+                enabled=False,
+                contract=None,
+                contract_path=None,
+                ledger=ledger,
+                events=events,
+            )
+        enabled = is_evaluator_enabled_for_sprint(ledger, sprint_override=None)
+
+        emit(
+            {
+                "kind": "sprint.started",
+                "sprint_number": sprint_number,
+                "step_id": step.id,
+                "step_description": step.description,
+            }
+        )
+
+        if step.status == "pending":
+            ledger = transition_step_to_in_progress(ledger, step.id)
+            ledger.save(ledger_path)
+
+        if enabled:
+            carry = load_pending_carry_items(root, task_id=task_id, step_id=step.id)
+            negotiation = await negotiate_contract_async(
+                evaluator_propose=evaluator_propose,
+                generator_respond=generator_respond,
+                carry_items=carry,
+            )
+            if negotiation.warning_event is not None:
+                events.append(negotiation.warning_event)
+                emit(
+                    {
+                        "kind": "negotiation.imposed",
+                        "sprint_number": sprint_number,
+                        "rounds": negotiation.warning_event.get("rounds"),
+                    }
+                )
+
+            contract = build_contract_from_negotiation(
+                negotiation,
+                task_id=task_id,
+                sprint_number=sprint_number,
+                goal=goal_provider(step, sprint_number),
+                verification_steps=verification_steps,
+                evaluator_enabled=True,
+            )
+            contract_path = sprint_contract_path(
+                root, task_id=task_id, sprint_number=sprint_number
+            )
+            # Criterion #7: contract committed BEFORE generator touches sources.
+            contract.save(contract_path)
+            emit(
+                {
+                    "kind": "contract.written",
+                    "sprint_number": sprint_number,
+                    "path": str(contract_path),
+                }
+            )
+
+        # 2b. Generator execute (caller-supplied seam).
+        emit(
+            {
+                "kind": "generator.started",
+                "sprint_number": sprint_number,
+                "step_id": step.id,
+                "has_contract": contract is not None,
+            }
+        )
+        await generator_execute(task_id, sprint_number, contract, step)
+        emit(
+            {
+                "kind": "generator.completed",
+                "sprint_number": sprint_number,
+                "step_id": step.id,
+            }
+        )
+
+        if enabled and contract_path is not None:
+            events.append(
+                handoff_event(
+                    from_role="generator",
+                    to_role="evaluator",
+                    artefacts=[
+                        HandoffArtefact(
+                            kind="contract",
+                            path=contract_path.relative_to(root).as_posix(),
+                        ),
+                    ],
+                )
+            )
+
+    return _GeneratorPhaseResult(
+        step=step,
+        enabled=enabled,
+        contract=contract,
+        contract_path=contract_path,
+        ledger=ledger,
+        events=events,
+    )
+
+
+async def _run_evaluator_phase(
+    *,
+    root: Path,
+    task_id: str,
+    ledger_path: Path,
+    sprint_number: int,
+    step: LedgerStep,
+    enabled: bool,
+    contract: SprintContract | None,
+    ledger: PlannerLedger,
+    evaluator_run: EvaluatorRun,
+    emit: Callable[[dict[str, Any]], None],
+) -> _EvaluatorPhaseResult:
+    """Phase 2c (lock-protected evaluator) or 2d (disabled → implicit pass).
+
+    Independent of the generator lock. Returns the eval-artefact path + outcome
+    (both ``None`` in the disabled branch) and the saved ledger.
+    """
+    events: list[dict[str, Any]] = []
+    if not enabled:
+        # 2d. Disabled-evaluator branch: implicit pass advances the step.
+        ledger = _mark_step_done(ledger, step.id)
+        ledger.save(ledger_path)
+        return _EvaluatorPhaseResult(
+            eval_path=None, outcome=None, ledger=ledger, events=events
+        )
+
+    assert contract is not None
+    emit(
+        {
+            "kind": "evaluator.started",
+            "sprint_number": sprint_number,
+            "step_id": step.id,
+        }
+    )
+    with acquire_role_lock(root, task_id=task_id, role="evaluator"):
+        record = await evaluator_run(task_id, sprint_number, contract, step)
+        eval_path = record_evaluation(root, record)
+        if record.outcome == "fail":
+            append_tech_debt(root, record)
+        ledger = apply_outcome(ledger, record)
+        ledger.save(ledger_path)
+        outcome = record.outcome
+
+    emit(
+        {
+            "kind": "evaluator.completed",
+            "sprint_number": sprint_number,
+            "outcome": record.outcome,
+            "score": record.score,
+            "notes": record.notes,
+        }
+    )
+    events.append(
+        handoff_event(
+            from_role="evaluator",
+            to_role="generator",
+            artefacts=[
+                HandoffArtefact(
+                    kind="eval",
+                    path=eval_path.relative_to(root).as_posix(),
+                ),
+            ],
+        )
+    )
+    return _EvaluatorPhaseResult(
+        eval_path=eval_path, outcome=outcome, ledger=ledger, events=events
+    )
 
 
 async def run_task(
@@ -146,7 +370,8 @@ async def run_task(
         raise ValueError(f"max_sprints must be >= 0, got {max_sprints}")
 
     root = Path(worktree_root)
-    goal_provider = goal_for_step or _default_goal
+    # Default goal provider: the step's own description (#5 inline fallback).
+    goal_provider = goal_for_step or (lambda step, _sprint_number: step.description)
 
     def _emit(event: dict[str, Any]) -> None:
         if observer is not None:
@@ -179,161 +404,50 @@ async def run_task(
     )
     sprints: list[SprintRunResult] = []
 
-    # 2. Sprint loop.
+    # 2. Sprint loop — each iteration is a generator phase (2a/2b) then an
+    # evaluator phase (2c/2d). The generator phase returns ``step is None``
+    # once no pending work remains, which stops the loop.
     for sprint_number in range(1, max_sprints + 1):
-        sprint_events: list[dict[str, Any]] = []
-        contract: SprintContract | None = None
-        contract_path: Path | None = None
-        eval_path: Path | None = None
-        outcome: EvaluationOutcome | None = None
+        gen = await _run_generator_phase(
+            root=root,
+            task_id=task_id,
+            ledger_path=ledger_path,
+            sprint_number=sprint_number,
+            ledger=ledger,
+            evaluator_propose=evaluator_propose,
+            generator_respond=generator_respond,
+            generator_execute=generator_execute,
+            verification_steps=verification_steps,
+            goal_provider=goal_provider,
+            emit=_emit,
+        )
+        ledger = gen.ledger
+        if gen.step is None:
+            break
+        step = gen.step
 
-        # 2a. Generator: lock-protected (criterion #14). Selection + claim of
-        # the next step happens *inside* the lock, on a freshly re-loaded
-        # ledger, so two overlapping run_task calls can't both pick the same
-        # pending step from a stale snapshot.
-        with acquire_role_lock(root, task_id=task_id, role="generator"):
-            ledger = PlannerLedger.load(ledger_path)
-            step = _find_next_work(ledger)
-            if step is None:
-                break
-            enabled = is_evaluator_enabled_for_sprint(ledger, sprint_override=None)
+        evl = await _run_evaluator_phase(
+            root=root,
+            task_id=task_id,
+            ledger_path=ledger_path,
+            sprint_number=sprint_number,
+            step=step,
+            enabled=gen.enabled,
+            contract=gen.contract,
+            ledger=ledger,
+            evaluator_run=evaluator_run,
+            emit=_emit,
+        )
+        ledger = evl.ledger
 
-            _emit(
-                {
-                    "kind": "sprint.started",
-                    "sprint_number": sprint_number,
-                    "step_id": step.id,
-                    "step_description": step.description,
-                }
-            )
-
-            if step.status == "pending":
-                ledger = transition_step_to_in_progress(ledger, step.id)
-                ledger.save(ledger_path)
-
-            if enabled:
-                carry = load_pending_carry_items(
-                    root, task_id=task_id, step_id=step.id
-                )
-                negotiation = await negotiate_contract_async(
-                    evaluator_propose=evaluator_propose,
-                    generator_respond=generator_respond,
-                    carry_items=carry,
-                )
-                if negotiation.warning_event is not None:
-                    sprint_events.append(negotiation.warning_event)
-                    _emit(
-                        {
-                            "kind": "negotiation.imposed",
-                            "sprint_number": sprint_number,
-                            "rounds": negotiation.warning_event.get("rounds"),
-                        }
-                    )
-
-                contract = build_contract_from_negotiation(
-                    negotiation,
-                    task_id=task_id,
-                    sprint_number=sprint_number,
-                    goal=goal_provider(step, sprint_number),
-                    verification_steps=verification_steps,
-                    evaluator_enabled=True,
-                )
-                contract_path = sprint_contract_path(
-                    root, task_id=task_id, sprint_number=sprint_number
-                )
-                # Criterion #7: contract committed BEFORE generator touches sources.
-                contract.save(contract_path)
-                _emit(
-                    {
-                        "kind": "contract.written",
-                        "sprint_number": sprint_number,
-                        "path": str(contract_path),
-                    }
-                )
-
-            # 2b. Generator execute (caller-supplied seam).
-            _emit(
-                {
-                    "kind": "generator.started",
-                    "sprint_number": sprint_number,
-                    "step_id": step.id,
-                    "has_contract": contract is not None,
-                }
-            )
-            await generator_execute(task_id, sprint_number, contract, step)
-            _emit(
-                {
-                    "kind": "generator.completed",
-                    "sprint_number": sprint_number,
-                    "step_id": step.id,
-                }
-            )
-
-            if enabled and contract_path is not None:
-                handoff_g2e = handoff_event(
-                    from_role="generator",
-                    to_role="evaluator",
-                    artefacts=[
-                        HandoffArtefact(
-                            kind="contract",
-                            path=contract_path.relative_to(root).as_posix(),
-                        ),
-                    ],
-                )
-                sprint_events.append(handoff_g2e)
-
-        # 2c. Evaluator branch (lock-protected, independent of generator lock).
-        if enabled:
-            assert contract is not None
-            _emit(
-                {
-                    "kind": "evaluator.started",
-                    "sprint_number": sprint_number,
-                    "step_id": step.id,
-                }
-            )
-            with acquire_role_lock(root, task_id=task_id, role="evaluator"):
-                record = await evaluator_run(task_id, sprint_number, contract, step)
-                eval_path = record_evaluation(root, record)
-                if record.outcome == "fail":
-                    append_tech_debt(root, record)
-                ledger = apply_outcome(ledger, record)
-                ledger.save(ledger_path)
-                outcome = record.outcome
-
-            _emit(
-                {
-                    "kind": "evaluator.completed",
-                    "sprint_number": sprint_number,
-                    "outcome": record.outcome,
-                    "score": record.score,
-                    "notes": record.notes,
-                }
-            )
-            sprint_events.append(
-                handoff_event(
-                    from_role="evaluator",
-                    to_role="generator",
-                    artefacts=[
-                        HandoffArtefact(
-                            kind="eval",
-                            path=eval_path.relative_to(root).as_posix(),
-                        ),
-                    ],
-                )
-            )
-        else:
-            # 2d. Disabled-evaluator branch: implicit pass advances the step.
-            ledger = _mark_step_done(ledger, step.id)
-            ledger.save(ledger_path)
-
+        sprint_events = gen.events + evl.events
         sprints.append(
             SprintRunResult(
                 sprint_number=sprint_number,
                 step_id=step.id,
-                contract_path=contract_path,
-                eval_path=eval_path,
-                outcome=outcome,
+                contract_path=gen.contract_path,
+                eval_path=evl.eval_path,
+                outcome=evl.outcome,
                 events=tuple(sprint_events),
             )
         )
@@ -343,7 +457,7 @@ async def run_task(
                 "kind": "sprint.completed",
                 "sprint_number": sprint_number,
                 "step_id": step.id,
-                "outcome": outcome,
+                "outcome": evl.outcome,
             }
         )
 

@@ -21,6 +21,7 @@ from dream.contracts.tool import ToolResult
 from dream.skills._session import read_skill_context
 from dream.tools._base import BaseTool, ToolDeclaration
 from dream.tools._context import ToolExecutionContext
+from dream.tools.builtin._errors import tool_error as _err
 
 
 class SkillInput(BaseModel):
@@ -80,18 +81,6 @@ class SkillTool(BaseTool):
             content=defn.content,
             metadata={"skill": meta.name, "summary": f"loaded skill {meta.name!r}"},
         )
-
-
-def _err(content: str, *, root_cause: str, safe_retry: str, stop_condition: str) -> ToolResult:
-    return ToolResult(
-        content=content,
-        is_error=True,
-        metadata={
-            "root_cause": root_cause,
-            "safe_retry": safe_retry,
-            "stop_condition": stop_condition,
-        },
-    )
 
 
 __all__ = ["SkillInput", "SkillTool"]

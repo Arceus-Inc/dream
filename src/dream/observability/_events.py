@@ -78,6 +78,17 @@ def from_jsonl_line(line: str) -> TraceEvent:
 # --- attribute builders (one place that knows the key strings) --------------
 
 
+def _with_optional(base: dict[str, object], **optional: object) -> dict[str, object]:
+    """Return ``base`` extended with every ``optional`` whose value is not None.
+
+    Centralises the OTel omit-None convention shared by the attribute builders
+    below: a key is present iff a value was supplied, so consumers can test for
+    presence rather than guarding against sentinel placeholders.
+    """
+    base.update({key: value for key, value in optional.items() if value is not None})
+    return base
+
+
 def llm_call_attrs(
     *,
     system: str,
@@ -87,27 +98,25 @@ def llm_call_attrs(
     cache_read_tokens: int = 0,
     duration_ms: int | None = None,
 ) -> dict[str, object]:
-    attrs: dict[str, object] = {
-        GEN_AI_SYSTEM: system,
-        GEN_AI_REQUEST_MODEL: model,
-        GEN_AI_USAGE_PROMPT_TOKENS: prompt_tokens,
-        GEN_AI_USAGE_COMPLETION_TOKENS: completion_tokens,
-        GEN_AI_USAGE_CACHE_READ_TOKENS: cache_read_tokens,
-    }
-    if duration_ms is not None:
-        attrs["duration_ms"] = duration_ms
-    return attrs
+    return _with_optional(
+        {
+            GEN_AI_SYSTEM: system,
+            GEN_AI_REQUEST_MODEL: model,
+            GEN_AI_USAGE_PROMPT_TOKENS: prompt_tokens,
+            GEN_AI_USAGE_COMPLETION_TOKENS: completion_tokens,
+            GEN_AI_USAGE_CACHE_READ_TOKENS: cache_read_tokens,
+        },
+        duration_ms=duration_ms,
+    )
 
 
 def tool_call_attrs(
     *, tool_name: str, is_read_only: bool | None = None, duration_ms: int | None = None
 ) -> dict[str, object]:
-    attrs: dict[str, object] = {"tool.name": tool_name}
-    if is_read_only is not None:
-        attrs["tool.read_only"] = is_read_only
-    if duration_ms is not None:
-        attrs["duration_ms"] = duration_ms
-    return attrs
+    return _with_optional(
+        {"tool.name": tool_name},
+        **{"tool.read_only": is_read_only, "duration_ms": duration_ms},
+    )
 
 
 def tool_result_attrs(
@@ -117,27 +126,28 @@ def tool_result_attrs(
     offloaded: bool = False,
     offload_ref: str | None = None,
 ) -> dict[str, object]:
-    attrs: dict[str, object] = {
-        "tool.name": tool_name,
-        "tool.is_error": is_error,
-        "tool.offloaded": offloaded,
-    }
-    if offload_ref is not None:
-        attrs["tool.offload_ref"] = offload_ref
-    return attrs
+    return _with_optional(
+        {
+            "tool.name": tool_name,
+            "tool.is_error": is_error,
+            "tool.offloaded": offloaded,
+        },
+        **{"tool.offload_ref": offload_ref},
+    )
 
 
 def validator_finding_attrs(
     *, severity: str, code: str, message: str, path: str | None = None
 ) -> dict[str, object]:
-    attrs: dict[str, object] = {
-        "finding.severity": severity,
-        "finding.code": code,
-        "finding.message": message,
-    }
-    if path is not None:  # omit when absent (OTel convention; lets consumers test presence)
-        attrs["finding.path"] = path
-    return attrs
+    # ``path`` omitted when absent (OTel convention; lets consumers test presence).
+    return _with_optional(
+        {
+            "finding.severity": severity,
+            "finding.code": code,
+            "finding.message": message,
+        },
+        **{"finding.path": path},
+    )
 
 
 def state_transition_attrs(*, kind: str, from_state: str, to_state: str) -> dict[str, object]:

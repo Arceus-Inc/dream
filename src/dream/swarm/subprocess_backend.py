@@ -14,6 +14,7 @@ the real CLI without changing this module.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -23,12 +24,11 @@ from dream.swarm._identity import TeammateIdentity
 from dream.swarm._mailbox import Mailbox, make_task_notification
 from dream.swarm._paths import leader_inbox_dir, validate_leader_id
 from dream.swarm._spawn import (
-    MAX_SUBAGENT_DEPTH,
     BackendType,
     SpawnResult,
     TeammateSpawnConfig,
 )
-from dream.swarm.in_process import EventSink, _depth_event
+from dream.swarm.in_process import EventSink, _depth_guard
 from dream.tasks._manager import BackgroundTaskManager
 from dream.tasks._types import TaskRecord
 
@@ -68,18 +68,9 @@ class SubprocessExecutor:
             name=config.name, team=config.team
         ).agent_id
 
-        if config.depth > MAX_SUBAGENT_DEPTH:
-            self._emit(_depth_event(depth=config.depth, agent_id=agent_id))
-            return SpawnResult(
-                task_id="",
-                agent_id=agent_id,
-                backend_type="subprocess",
-                success=False,
-                error=(
-                    f"exceeded subagent depth: depth={config.depth} > "
-                    f"max={MAX_SUBAGENT_DEPTH}"
-                ),
-            )
+        refused = _depth_guard(config, agent_id, "subprocess", emit=self._emit)
+        if refused is not None:
+            return refused
 
         inbox = leader_inbox_dir(self.worktree_root, self.leader_id)
         mailbox = Mailbox(inbox)
@@ -115,7 +106,12 @@ class SubprocessExecutor:
                 argv=argv,
                 task_type="local_agent",
             )
-        except BaseException as exc:
+        except asyncio.CancelledError:
+            # Unregister the listener, then re-raise so the spawn is observed
+            # as cancelled rather than masked as a failed SpawnResult.
+            unregister["fn"]()
+            raise
+        except Exception as exc:
             unregister["fn"]()
             return SpawnResult(
                 task_id="",

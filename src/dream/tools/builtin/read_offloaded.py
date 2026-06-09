@@ -18,6 +18,7 @@ from dream.services.tool_outputs import read_offloaded
 from dream.tools._base import BaseTool, ToolDeclaration
 from dream.tools._context import ToolExecutionContext
 from dream.tools._paths import PathEscapesRoot, resolve_within
+from dream.tools.builtin._errors import tool_error as _err
 
 
 class ReadOffloadedInput(BaseModel):
@@ -101,18 +102,6 @@ class ReadOffloadedTool(BaseTool):
                 "summary": f"read {len(text)} chars from {args.path}",
             },
         )
-
-
-def _err(content: str, *, root_cause: str, safe_retry: str, stop_condition: str) -> ToolResult:
-    return ToolResult(
-        content=content,
-        is_error=True,
-        metadata={
-            "root_cause": root_cause,
-            "safe_retry": safe_retry,
-            "stop_condition": stop_condition,
-        },
-    )
 
 
 __all__ = ["ReadOffloadedInput", "ReadOffloadedTool"]

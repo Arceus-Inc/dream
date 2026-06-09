@@ -15,6 +15,8 @@ from dataclasses import replace
 
 from dream.planner import LedgerStep, PlannerLedger
 
+from ._ledger_ops import replace_step_by_id
+
 __all__ = [
     "StepNotPending",
     "pick_next_pending_step",
@@ -42,13 +44,12 @@ def transition_step_to_in_progress(
     ledger: PlannerLedger, step_id: str
 ) -> PlannerLedger:
     """Return a new ledger with ``step_id`` moved from ``pending`` → ``in_progress``."""
-    new_steps = list(ledger.steps)
-    for i, step in enumerate(new_steps):
-        if step.id == step_id:
-            if step.status != "pending":
-                raise StepNotPending(
-                    f"cannot transition step {step_id!r}: status is {step.status!r}, not 'pending'"
-                )
-            new_steps[i] = replace(step, status="in_progress")
-            return replace(ledger, steps=tuple(new_steps))
-    raise KeyError(f"step id not in ledger: {step_id!r}")
+
+    def _claim(step: LedgerStep) -> LedgerStep:
+        if step.status != "pending":
+            raise StepNotPending(
+                f"cannot transition step {step_id!r}: status is {step.status!r}, not 'pending'"
+            )
+        return replace(step, status="in_progress")
+
+    return replace_step_by_id(ledger, step_id, _claim)

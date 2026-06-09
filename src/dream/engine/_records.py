@@ -9,7 +9,7 @@ can decode the audit trail.
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any, Literal
 
@@ -109,10 +109,6 @@ def from_jsonl_line(line: str) -> TurnRecord | SessionEnd:
             raise ValueError(f"malformed session_end record: {exc}") from exc
     raise ValueError(f"unknown jsonl record kind: {kind!r}")
 
-
-# Silence "unused import" for ``field`` if it's not referenced — keep the
-# module's import surface stable for future fields with default_factory.
-_ = field
 
 __all__ = [
     "SessionEnd",

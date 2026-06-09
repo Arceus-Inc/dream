@@ -176,8 +176,10 @@ def read_context_log(path: Path) -> list[ContextEvent]:
 
 
 # Spec 04 acceptance #14: the agent itself can read its own context log so it
-# can prefer compactable content; same function, named per the spec for the
-# agent-facing tool surface.
+# can prefer compactable content. This is an intentional, kept alias — same
+# implementation as ``read_context_log`` but exported under the spec-mandated
+# agent-facing name so the tool surface reads as ``read_my_context_log``. Do
+# not inline away: callers import the spec name directly.
 read_my_context_log = read_context_log
 
 

@@ -53,20 +53,25 @@ def resolve_auth_env_value(auth_source: str) -> tuple[str, str] | None:
     return None
 
 
+# provider → auth_source for providers whose natural source isn't the
+# generic ``{provider}_api_key`` (copilot is OAuth-backed, not key-backed).
+_PROVIDER_AUTH_SOURCE: dict[str, str] = {
+    "copilot": "copilot_oauth",
+    "azure_openai": "azure_openai_api_key",
+    "anthropic": "anthropic_api_key",
+    "openai": "openai_api_key",
+}
+
+
 def default_auth_source_for_provider(provider: str, api_format: str | None = None) -> str:
     """Infer the natural auth source for a provider, with ``api_format`` as a tiebreaker.
 
     Used by :func:`Settings.resolve_auth` when a profile leaves ``auth_source`` blank
     so we don't force the operator to spell out the obvious wiring.
     """
-    if provider == "copilot":
-        return "copilot_oauth"
-    if provider == "azure_openai":
-        return "azure_openai_api_key"
-    if provider == "anthropic":
-        return "anthropic_api_key"
-    if provider == "openai":
-        return "openai_api_key"
+    explicit = _PROVIDER_AUTH_SOURCE.get(provider)
+    if explicit is not None:
+        return explicit
     if provider:
         # A named OpenAI-compatible provider (groq, openrouter, deepseek, …) gets
         # its OWN key env, not openai's — api_format is not provider identity.

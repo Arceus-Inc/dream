@@ -42,10 +42,17 @@ from dream.utils.fs import atomic_write_text
 __all__ = [
     "AGENT_TASK_TYPES",
     "RESTART_NOTICE",
+    "TERMINAL_STATUSES",
     "BackgroundTaskManager",
     "CompletionListener",
     "StartListener",
+    "register_one_shot_completion",
 ]
+
+TERMINAL_STATUSES: frozenset[TaskStatus] = frozenset(
+    {"completed", "failed", "killed"}
+)
+"""Task statuses that represent a finished task (natural exit or kill)."""
 
 CompletionListener = Callable[[TaskRecord], Awaitable[None] | None]
 """Called with the terminal :class:`TaskRecord` after natural exit or
@@ -63,6 +70,51 @@ AGENT_TASK_TYPES: frozenset[TaskType] = frozenset(
 RESTART_NOTICE = (
     "[dream] Agent task restarted; prior interactive context was not preserved.\n"
 )
+
+
+def register_one_shot_completion(
+    manager: BackgroundTaskManager,
+    task_id: str,
+    fn: Callable[[TaskRecord], None],
+) -> None:
+    """Run ``fn`` exactly once when ``task_id`` reaches a terminal state.
+
+    A completion listener keyed to ``task_id`` fires ``fn`` on the first
+    terminal transition, then unregisters itself so the listener set doesn't
+    grow across many spawns. The spawn/register race is closed: if the task
+    already reached a terminal state before this listener attached, ``fn`` is
+    stamped from its current record immediately.
+
+    ``fn`` is a *synchronous* one-shot stamp (the run-record / outcome write);
+    the race-close path fires it inline, so an awaitable could not be awaited
+    here. Every caller passes a sync listener.
+
+    The caller must register *after* the task is spawned (so ``task_id`` is
+    known); the race-close check makes a fast task that finished in between
+    safe.
+    """
+    unregister: dict[str, Callable[[], None]] = {}
+    fired = {"done": False}
+
+    def _fire(task: TaskRecord) -> None:
+        if fired["done"]:
+            return
+        fired["done"] = True
+        try:
+            fn(task)
+        finally:
+            unreg = unregister.get("fn")
+            if unreg is not None:
+                unreg()
+
+    def _on_terminal(task: TaskRecord) -> None:
+        if task.id == task_id and task.status in TERMINAL_STATUSES:
+            _fire(task)
+
+    unregister["fn"] = manager.register_completion_listener(_on_terminal)
+    current = manager.get_task(task_id)
+    if current is not None and current.status in TERMINAL_STATUSES:
+        _fire(current)
 
 
 def _task_id(task_type: TaskType) -> str:
@@ -206,27 +258,10 @@ class BackgroundTaskManager:
                 return task
             raise ValueError(f"Task {task_id} is not running")
 
-        # Tell the watcher to skip its own notification — stop_task owns
-        # this terminal transition. The suppression must be cleared even if
-        # ``terminate()`` raises (e.g. ``ProcessLookupError`` when the child
-        # already exited), otherwise the task id is wedged in the suppress
-        # set forever and a later natural completion never notifies.
-        self._suppress_watcher_notify.add(task_id)
-        try:
-            with contextlib.suppress(ProcessLookupError):
-                process.terminate()
-            try:
-                await asyncio.wait_for(process.wait(), timeout=3)
-            except TimeoutError:
-                with contextlib.suppress(ProcessLookupError):
-                    process.kill()
-                await process.wait()
-
-            # Wait for the watcher to finish so it doesn't race the final
-            # record rebind below.
-            await self._cancel_waiter(task_id)
-        finally:
-            self._suppress_watcher_notify.discard(task_id)
+        # stop_task owns this terminal transition; tear the process down with
+        # the watcher suppressed so it doesn't also fire listeners or race the
+        # final record rebind below.
+        await self._terminate_process(task_id, process)
 
         updated = task.with_status("killed").with_ended(time.time())
         if process.returncode is not None:
@@ -250,19 +285,7 @@ class BackgroundTaskManager:
 
         process = self._processes.get(task_id)
         if process is not None:
-            self._suppress_watcher_notify.add(task_id)
-            try:
-                with contextlib.suppress(ProcessLookupError):
-                    process.terminate()
-                try:
-                    await asyncio.wait_for(process.wait(), timeout=3)
-                except TimeoutError:
-                    with contextlib.suppress(ProcessLookupError):
-                        process.kill()
-                    await process.wait()
-                await self._cancel_waiter(task_id)
-            finally:
-                self._suppress_watcher_notify.discard(task_id)
+            await self._terminate_process(task_id, process)
             self._processes.pop(task_id, None)
 
         async with self._output_locks[task_id]:
@@ -322,6 +345,32 @@ class BackgroundTaskManager:
         if task is None:
             raise ValueError(f"No task found with ID: {task_id}")
         return task
+
+    async def _terminate_process(
+        self, task_id: str, process: asyncio.subprocess.Process
+    ) -> None:
+        """Tear down ``process`` (terminate→wait→timeout→kill→cancel_waiter).
+
+        The watcher is suppressed for the duration so it doesn't fire listeners
+        or race the caller's final record rebind — ``stop_task`` / ``restart_task``
+        own the terminal transition. The suppression is cleared even if
+        ``terminate()`` raises (e.g. ``ProcessLookupError`` when the child
+        already exited), otherwise the task id is wedged in the suppress set
+        forever and a later natural completion never notifies.
+        """
+        self._suppress_watcher_notify.add(task_id)
+        try:
+            with contextlib.suppress(ProcessLookupError):
+                process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=3)
+            except TimeoutError:
+                with contextlib.suppress(ProcessLookupError):
+                    process.kill()
+                await process.wait()
+            await self._cancel_waiter(task_id)
+        finally:
+            self._suppress_watcher_notify.discard(task_id)
 
     async def _cancel_waiter(self, task_id: str) -> None:
         waiter = self._waiters.pop(task_id, None)

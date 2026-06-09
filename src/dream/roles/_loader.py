@@ -32,6 +32,10 @@ def load_role_manifest(role: RoleName, *, harness_dir: Path) -> RoleManifest:
     if not overlay_path.is_file():
         return base
 
+    # ``overlay`` is the parsed ``{role}.toml`` table: a partial
+    # ``RoleManifest`` keyed by field name (e.g. ``{"tools": [...],
+    # "model": "...", "system_prompt": "..."}``) — any subset of the
+    # manifest's fields, each replacing the bundled default wholesale.
     with overlay_path.open("rb") as handle:
         overlay: dict[str, Any] = tomllib.load(handle)
 

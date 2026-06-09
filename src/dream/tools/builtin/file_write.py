@@ -17,7 +17,8 @@ from pydantic import BaseModel, Field
 from dream.contracts.tool import ToolResult
 from dream.tools._base import BaseTool, ToolDeclaration, ToolEffects
 from dream.tools._context import ToolExecutionContext
-from dream.tools._paths import PathEscapesRoot, resolve_within
+from dream.tools._paths import confine_path
+from dream.tools.builtin._errors import tool_error as _err
 from dream.utils.fs import atomic_write_text
 
 
@@ -42,15 +43,9 @@ class FileWriteTool(BaseTool):
 
     async def execute(self, input: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
         args = FileWriteInput.model_validate(input)
-        try:
-            path = resolve_within(ctx.working_dir, args.path)
-        except PathEscapesRoot as exc:
-            return _err(
-                f"Path outside the working directory: {args.path}",
-                root_cause=str(exc),
-                safe_retry="pass a path that stays within the working directory",
-                stop_condition="do not retry with the same out-of-tree path",
-            )
+        path = confine_path(ctx.working_dir, args.path)
+        if isinstance(path, ToolResult):
+            return path
 
         if path.exists() and path.is_dir():
             return _err(
@@ -80,18 +75,6 @@ class FileWriteTool(BaseTool):
                 "summary": f"wrote {len(encoded)} bytes",
             },
         )
-
-
-def _err(content: str, *, root_cause: str, safe_retry: str, stop_condition: str) -> ToolResult:
-    return ToolResult(
-        content=content,
-        is_error=True,
-        metadata={
-            "root_cause": root_cause,
-            "safe_retry": safe_retry,
-            "stop_condition": stop_condition,
-        },
-    )
 
 
 __all__ = ["FileWriteInput", "FileWriteTool"]

@@ -24,6 +24,7 @@ from dream.mcp._types import McpToolInfo
 from dream.tools._base import BaseTool, RiskClass, ToolDeclaration, ToolEffects
 from dream.tools._context import ToolExecutionContext
 from dream.tools._registry import ToolRegistry, ToolSource
+from dream.tools.builtin._errors import tool_error
 from dream.tools.builtin._mcp_effects import endpoint_host, tier_required_for
 
 # MCP tools are external — default to the conservative non-safe risk class.
@@ -93,14 +94,11 @@ class McpToolAdapter(BaseTool):
                 self._tool_info.server_name, self._tool_info.name, input
             )
         except McpServerNotConnectedError as exc:
-            return ToolResult(
-                content=f"MCP server {self._tool_info.server_name!r} is unavailable.",
-                is_error=True,
-                metadata={
-                    "root_cause": str(exc),
-                    "safe_retry": "wait for the server to reconnect, or run mcp_auth",
-                    "stop_condition": "stop after repeated disconnects and escalate",
-                },
+            return tool_error(
+                f"MCP server {self._tool_info.server_name!r} is unavailable.",
+                root_cause=str(exc),
+                safe_retry="wait for the server to reconnect, or run mcp_auth",
+                stop_condition="stop after repeated disconnects and escalate",
             )
         return ToolResult(
             content=output,
@@ -114,7 +112,19 @@ def mcp_tool_name(server_name: str, tool_name: str) -> str:
 
 
 def input_model_from_schema(model_name: str, schema: dict[str, object]) -> type[BaseModel]:
-    """Synthesize a pydantic input model from an MCP tool's JSON Schema."""
+    """Synthesize a pydantic input model from an MCP tool's JSON Schema.
+
+    ``schema`` is the server's advertised JSON Schema, e.g.::
+
+        {"type": "object",
+         "properties": {"url": {"type": "string"},
+                        "depth": {"type": ["integer", "null"]}},
+         "required": ["url"]}
+
+    Only ``properties`` (key → ``{"type": ...}``) and ``required`` (list of
+    names) are read; ``required`` names become mandatory fields, the rest
+    default to ``None``.
+    """
     properties = schema.get("properties", {})
     if not isinstance(properties, dict):
         return create_model(_model_identifier(model_name))

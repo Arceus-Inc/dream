@@ -79,6 +79,15 @@ def conversation_to_openai_messages(
     ``ImageBlock``s are not yet mapped; they pass through as part of the
     text content concatenation (callers that need vision should provide
     their own translation in a later stage).
+
+    Returned shape — a list of OpenAI Chat Completions message dicts, e.g.::
+
+        {"role": "system", "content": "..."}
+        {"role": "user", "content": "..."}
+        {"role": "assistant", "content": "..." | None,
+         "tool_calls": [{"id": "call_x", "type": "function",
+                         "function": {"name": "...", "arguments": "<json str>"}}]}
+        {"role": "tool", "tool_call_id": "call_x", "content": "..."}
     """
     out: list[dict[str, Any]] = []
     if system_prompt is not None:
@@ -212,6 +221,21 @@ class OpenAIChatStreamer:
                 for tc in delta.get("tool_calls") or ():
                     _merge_tool_call(tool_calls, tc)
 
+        async for ev in self._assemble_blocks(text_parts, tool_calls, usage):
+            yield ev
+
+    async def _assemble_blocks(
+        self,
+        text_parts: list[str],
+        tool_calls: dict[int, _ToolCallAccumulator],
+        usage: UsageSnapshot,
+    ) -> AsyncIterator[StreamEvent]:
+        """Fold the accumulated stream into the terminal ``AssistantTurnComplete``.
+
+        Yields a recoverable ``ErrorEvent`` for each tool call dropped (truncated
+        id/name or unparseable JSON arguments), then the final turn-complete
+        event carrying the surviving text + tool-use blocks.
+        """
         blocks: list[ContentBlock] = []
         text = "".join(text_parts)
         if text:
@@ -256,6 +280,9 @@ class OpenAIChatStreamer:
 def _merge_tool_call(
     acc: dict[int, _ToolCallAccumulator], partial: dict[str, Any]
 ) -> None:
+    # ``partial`` is one streamed tool_call delta fragment, e.g.
+    # {"index": 0, "id": "call_x", "type": "function",
+    #  "function": {"name": "bash", "arguments": "{\"cm"}}  # arguments arrive in pieces
     try:
         idx = int(partial.get("index", 0))
     except (TypeError, ValueError):
@@ -273,6 +300,9 @@ def _merge_tool_call(
 
 
 def _usage_from_payload(payload: dict[str, Any]) -> UsageSnapshot:
+    # ``payload`` is the chunk's ``usage`` block, e.g.
+    # {"prompt_tokens": 1200, "completion_tokens": 80,
+    #  "prompt_tokens_details": {"cached_tokens": 1024}}
     # ``cache_write_tokens`` is intentionally left at 0: OpenAI's wire format has
     # no cache-*write* counter (prompt caching is automatic and reports only
     # ``cached_tokens`` = cache *reads*). It's a UsageSnapshot field for parity

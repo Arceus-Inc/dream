@@ -131,113 +131,135 @@ class BashTool(BaseTool):
 
     async def execute(self, input: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
         args = BashInput.model_validate(input)
-        # Confine an operator/model-supplied cwd to the working directory: a
-        # relative cwd (``.``, ``sub``) is joined onto ``ctx.working_dir`` and an
-        # absolute or ``..`` path that escapes it is refused. Resolving against
-        # the *process* cwd let a worker pass ``cwd="."`` and operate on the host
-        # repo instead of its worktree (sandbox escape).
-        if args.cwd:
-            try:
-                cwd = resolve_within(ctx.working_dir, args.cwd)
-            except PathEscapesRoot as exc:
-                return ToolResult(
-                    content=f"Path outside the working directory: {args.cwd}",
-                    is_error=True,
-                    metadata={
-                        "command": args.command,
-                        "returncode": None,
-                        "timed_out": False,
-                        "root_cause": str(exc),
-                        "safe_retry": "pass a cwd within the working directory, or omit it",
-                        "stop_condition": "do not retry with the same out-of-tree cwd",
-                    },
-                )
-        else:
-            cwd = ctx.working_dir
-
+        cwd = _resolve_cwd(args, ctx)
+        if isinstance(cwd, ToolResult):
+            return cwd
         if _looks_like_interactive_scaffold(args.command):
-            return ToolResult(
-                content=(
-                    "Command appears to require interactive input; bash is "
-                    "non-interactive. Rerun with non-interactive flags "
-                    "(e.g. --yes, -y, --skip-install)."
-                ),
-                is_error=True,
-                metadata={
-                    "command": args.command,
-                    "interactive_required": True,
-                    "returncode": None,
-                    "timed_out": False,
-                    "root_cause": "interactive prompt required",
-                    "safe_retry": "rerun with non-interactive flags",
-                    "stop_condition": "do not retry the same interactive command",
-                },
-            )
+            return _interactive_required(args.command)
+        spawned = await _spawn(args.command, cwd)
+        if isinstance(spawned, ToolResult):
+            return spawned
+        return await _run_with_timeout(spawned, args.command, args.timeout_seconds)
 
-        argv = _shell_argv(args.command)
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *argv,
-                cwd=str(cwd),
-                stdin=asyncio.subprocess.DEVNULL,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-        except OSError as exc:
-            return ToolResult(
-                content=f"failed to spawn shell: {exc}",
-                is_error=True,
-                metadata={
-                    "command": args.command,
-                    "returncode": None,
-                    "timed_out": False,
-                    "root_cause": f"shell spawn failed: {exc}",
-                    "safe_retry": "verify the working directory exists",
-                    "stop_condition": "do not retry until the cwd is corrected",
-                },
-            )
 
-        # #25: consume stdout *concurrently* with execution via communicate().
-        # Awaiting process.wait() before reading deadlocks any command that
-        # writes more than the pipe buffer: the child blocks on write while we
-        # block on exit. communicate() drains the pipe as the child runs.
-        try:
-            stdout_b, _ = await asyncio.wait_for(
-                process.communicate(), timeout=args.timeout_seconds
-            )
-        except TimeoutError:
-            await _kill(process)
-            partial = await _read_remaining(process)
-            return ToolResult(
-                content=_format_timeout(partial, args.command, args.timeout_seconds),
-                is_error=True,
-                metadata={
-                    "command": args.command,
-                    "returncode": process.returncode,
-                    "timed_out": True,
-                    "root_cause": f"command timed out after {args.timeout_seconds}s",
-                    "safe_retry": "rerun with a tighter scope or larger timeout",
-                    "stop_condition": "do not retry beyond the declared tool timeout",
-                },
-            )
+def _resolve_cwd(args: BashInput, ctx: ToolExecutionContext) -> Path | ToolResult:
+    """Confine an operator/model-supplied cwd to the working directory.
 
-        buffer = bytearray(stdout_b)
-        text = _format(buffer)
-        is_error = process.returncode != 0
-        metadata: dict[str, Any] = {
-            "command": args.command,
-            "returncode": process.returncode,
+    A relative cwd (``.``, ``sub``) is joined onto ``ctx.working_dir`` and an
+    absolute or ``..`` path that escapes it is refused. Resolving against the
+    *process* cwd let a worker pass ``cwd="."`` and operate on the host repo
+    instead of its worktree (sandbox escape).
+    """
+    if not args.cwd:
+        return ctx.working_dir
+    try:
+        return resolve_within(ctx.working_dir, args.cwd)
+    except PathEscapesRoot as exc:
+        return ToolResult(
+            content=f"Path outside the working directory: {args.cwd}",
+            is_error=True,
+            metadata={
+                "command": args.command,
+                "returncode": None,
+                "timed_out": False,
+                "root_cause": str(exc),
+                "safe_retry": "pass a cwd within the working directory, or omit it",
+                "stop_condition": "do not retry with the same out-of-tree cwd",
+            },
+        )
+
+
+def _interactive_required(command: str) -> ToolResult:
+    return ToolResult(
+        content=(
+            "Command appears to require interactive input; bash is "
+            "non-interactive. Rerun with non-interactive flags "
+            "(e.g. --yes, -y, --skip-install)."
+        ),
+        is_error=True,
+        metadata={
+            "command": command,
+            "interactive_required": True,
+            "returncode": None,
             "timed_out": False,
-        }
-        if is_error:
-            metadata.update(
-                {
-                    "root_cause": f"exit code {process.returncode}",
-                    "safe_retry": "inspect output, adjust arguments, and rerun",
-                    "stop_condition": "do not retry on the same arguments after two failures",
-                }
-            )
-        return ToolResult(content=text, is_error=is_error, metadata=metadata)
+            "root_cause": "interactive prompt required",
+            "safe_retry": "rerun with non-interactive flags",
+            "stop_condition": "do not retry the same interactive command",
+        },
+    )
+
+
+async def _spawn(command: str, cwd: Path) -> asyncio.subprocess.Process | ToolResult:
+    """Spawn the shell for ``command``; on spawn failure return a tool error."""
+    try:
+        return await asyncio.create_subprocess_exec(
+            *_shell_argv(command),
+            cwd=str(cwd),
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+    except OSError as exc:
+        return ToolResult(
+            content=f"failed to spawn shell: {exc}",
+            is_error=True,
+            metadata={
+                "command": command,
+                "returncode": None,
+                "timed_out": False,
+                "root_cause": f"shell spawn failed: {exc}",
+                "safe_retry": "verify the working directory exists",
+                "stop_condition": "do not retry until the cwd is corrected",
+            },
+        )
+
+
+async def _run_with_timeout(
+    process: asyncio.subprocess.Process, command: str, timeout_seconds: float
+) -> ToolResult:
+    """Drain the process under a timeout, returning success/error/timeout result."""
+    # #25: consume stdout *concurrently* with execution via communicate().
+    # Awaiting process.wait() before reading deadlocks any command that
+    # writes more than the pipe buffer: the child blocks on write while we
+    # block on exit. communicate() drains the pipe as the child runs.
+    try:
+        stdout_b, _ = await asyncio.wait_for(process.communicate(), timeout=timeout_seconds)
+    except TimeoutError:
+        await _kill(process)
+        partial = await _read_remaining(process)
+        return ToolResult(
+            content=_format_timeout(partial, command, timeout_seconds),
+            is_error=True,
+            metadata={
+                "command": command,
+                "returncode": process.returncode,
+                "timed_out": True,
+                "root_cause": f"command timed out after {timeout_seconds}s",
+                "safe_retry": "rerun with a tighter scope or larger timeout",
+                "stop_condition": "do not retry beyond the declared tool timeout",
+            },
+        )
+    return _build_result(bytearray(stdout_b), command, process.returncode)
+
+
+def _build_result(buffer: bytearray, command: str, returncode: int | None) -> ToolResult:
+    """Assemble the success/error ``ToolResult`` from captured output."""
+    text = _format(buffer)
+    is_error = returncode != 0
+    metadata: dict[str, Any] = {
+        "command": command,
+        "returncode": returncode,
+        "timed_out": False,
+    }
+    if is_error:
+        metadata.update(
+            {
+                "root_cause": f"exit code {returncode}",
+                "safe_retry": "inspect output, adjust arguments, and rerun",
+                "stop_condition": "do not retry on the same arguments after two failures",
+            }
+        )
+    return ToolResult(content=text, is_error=is_error, metadata=metadata)
 
 
 def _shell_argv(command: str) -> list[str]:

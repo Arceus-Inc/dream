@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import json
 import tomllib
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -160,11 +160,6 @@ class CronJob(BaseModel):
         return v
 
 
-def _job_payload(job: CronJob) -> dict[str, Any]:
-    data: dict[str, Any] = json.loads(job.model_dump_json(exclude_none=True))
-    return data
-
-
 def _parse_job(payload: dict[str, Any]) -> CronJob | None:
     try:
         return CronJob.model_validate(payload)
@@ -205,7 +200,7 @@ def load_cron_jobs(registry_path: str | Path) -> list[CronJob]:
 def save_cron_jobs(registry_path: str | Path, jobs: Iterable[CronJob]) -> None:
     """Persist ``jobs`` to ``registry_path`` (sorted by name, atomic)."""
     ordered = sorted(jobs, key=lambda j: j.name)
-    payload = [_job_payload(j) for j in ordered]
+    payload = [json.loads(j.model_dump_json(exclude_none=True)) for j in ordered]
     atomic_write_text(
         Path(registry_path),
         json.dumps(payload, indent=2, default=str) + "\n",
@@ -263,8 +258,17 @@ def get_cron_job(registry_path: str | Path, name: str) -> CronJob | None:
     return None
 
 
-def set_job_enabled(registry_path: str | Path, name: str, *, enabled: bool) -> bool:
-    """Toggle a job's ``enabled`` flag. Return False if the job is unknown."""
+def _mutate_job(
+    registry_path: str | Path,
+    name: str,
+    mutate: Callable[[CronJob], CronJob],
+) -> bool:
+    """Replace the job named ``name`` with ``mutate(job)`` under the registry lock.
+
+    Returns False (no write) if the registry is missing or ``name`` is unknown.
+    Centralises the exists-check → lock → load → replace-by-name → save shape
+    shared by :func:`set_job_enabled` and :func:`mark_job_run`.
+    """
     registry = Path(registry_path)
     if not registry.exists():
         return False
@@ -275,45 +279,37 @@ def set_job_enabled(registry_path: str | Path, name: str, *, enabled: bool) -> b
         for j in jobs:
             if j.name == name:
                 hit = True
-                new_jobs.append(j.model_copy(update={"enabled": enabled}))
+                new_jobs.append(mutate(j))
             else:
                 new_jobs.append(j)
         if not hit:
             return False
         save_cron_jobs(registry, new_jobs)
     return True
+
+
+def set_job_enabled(registry_path: str | Path, name: str, *, enabled: bool) -> bool:
+    """Toggle a job's ``enabled`` flag. Return False if the job is unknown."""
+    return _mutate_job(
+        registry_path, name, lambda j: j.model_copy(update={"enabled": enabled})
+    )
 
 
 def mark_job_run(registry_path: str | Path, name: str, *, success: bool) -> bool:
     """Record a completed run: stamp ``last_run`` / ``last_status`` and
     recompute ``next_run`` from now. Return whether the job was found."""
-    registry = Path(registry_path)
-    if not registry.exists():
-        return False
-    with exclusive_file_lock(_registry_lock_path(registry)):
-        jobs = load_cron_jobs(registry)
-        hit = False
-        new_jobs: list[CronJob] = []
-        now = datetime.now(UTC)
-        for j in jobs:
-            if j.name == name:
-                hit = True
-                nxt = next_run_time(j.schedule, base=now, tz=j.timezone)
-                new_jobs.append(
-                    j.model_copy(
-                        update={
-                            "last_run": now,
-                            "last_status": "success" if success else "failed",
-                            "next_run": nxt,
-                        }
-                    )
-                )
-            else:
-                new_jobs.append(j)
-        if not hit:
-            return False
-        save_cron_jobs(registry, new_jobs)
-    return True
+    now = datetime.now(UTC)
+
+    def _stamp(j: CronJob) -> CronJob:
+        return j.model_copy(
+            update={
+                "last_run": now,
+                "last_status": "success" if success else "failed",
+                "next_run": next_run_time(j.schedule, base=now, tz=j.timezone),
+            }
+        )
+
+    return _mutate_job(registry_path, name, _stamp)
 
 
 # ---------------------------------------------------------------------------

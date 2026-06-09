@@ -9,14 +9,19 @@ are derived from the trace. Reads tolerate a partially-flushed tail line.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
 from dream.observability._events import TraceEvent, from_jsonl_line, to_jsonl_line
 
-_AGGREGATIONS = ("sum", "avg", "max")
+_AGGREGATORS: dict[str, Callable[[list[float]], float]] = {
+    "sum": sum,
+    "avg": lambda vs: sum(vs) / len(vs),
+    "max": max,
+}
+_AGGREGATIONS = tuple(_AGGREGATORS)
 _DURATION_UNITS_MS = {"s": 1_000, "m": 60_000, "h": 3_600_000, "d": 86_400_000}
 _COUNT_METRIC = "count"
 _ENVELOPE_LABELS = ("event_type", "session_id", "task_id", "span_id", "parent_span_id")
@@ -118,11 +123,7 @@ def query_metrics(
         values.append(float(value))
     if not values:
         return None
-    if agg == "sum":
-        return sum(values)
-    if agg == "avg":
-        return sum(values) / len(values)
-    return max(values)
+    return _AGGREGATORS[agg](values)
 
 
 def _parse_duration_ms(body: str) -> int:

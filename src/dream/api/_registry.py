@@ -186,13 +186,34 @@ def _match_by_model(model: str) -> ProviderSpec | None:
     # never shadowed by a local provider. Local/OAuth specs are a fallback group,
     # so an explicit local model or prefix (e.g. "ollama/llama3") still resolves.
     for group in (cloud, local_or_oauth):
-        for spec in group:
-            if model_prefix and normalized_prefix == spec.name:
+        match = _match_in_group(
+            group,
+            model_lower=model_lower,
+            model_normalized=model_normalized,
+            model_prefix=model_prefix,
+            normalized_prefix=normalized_prefix,
+        )
+        if match is not None:
+            return match
+    return None
+
+
+def _match_in_group(
+    group: list[ProviderSpec],
+    *,
+    model_lower: str,
+    model_normalized: str,
+    model_prefix: str,
+    normalized_prefix: str,
+) -> ProviderSpec | None:
+    """Match within one priority group: prefix-name first, then keyword scan."""
+    for spec in group:
+        if model_prefix and normalized_prefix == spec.name:
+            return spec
+    for spec in group:
+        for kw in spec.keywords:
+            if kw in model_lower or kw.replace("-", "_") in model_normalized:
                 return spec
-        for spec in group:
-            for kw in spec.keywords:
-                if kw in model_lower or kw.replace("-", "_") in model_normalized:
-                    return spec
     return None
 
 

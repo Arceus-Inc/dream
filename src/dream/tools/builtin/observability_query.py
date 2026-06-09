@@ -27,6 +27,7 @@ from dream.observability._query import (
 )
 from dream.tools._base import BaseTool, ToolDeclaration
 from dream.tools._context import ToolExecutionContext
+from dream.tools.builtin._errors import tool_error
 from dream.utils.clock import Clock, SystemClock
 
 _READ_ONLY = ToolDeclaration(risk="safe", tier_required=0, timeout_seconds=10.0)
@@ -139,14 +140,11 @@ def _trace_path(ctx: ToolExecutionContext) -> Path:
 
 
 def _bad_query(exc: QueryError) -> ToolResult:
-    return ToolResult(
-        content=f"Invalid query: {exc}",
-        is_error=True,
-        metadata={
-            "root_cause": str(exc),
-            "safe_retry": "fix the time spec / aggregation and retry",
-            "stop_condition": "do not retry the same malformed query",
-        },
+    return tool_error(
+        f"Invalid query: {exc}",
+        root_cause=str(exc),
+        safe_retry="fix the time spec / aggregation and retry",
+        stop_condition="do not retry the same malformed query",
     )
 
 

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from dream.utils.paths import canonical_path_forms
+
 
 def _resolve(path: Path) -> Path:
     try:
@@ -28,10 +30,12 @@ def validate_repo_write(
     Relative paths are anchored at ``cwd``; non-existent targets are permitted
     as long as their (symlink-)resolved location is in-bounds.
     """
-    target = path.expanduser()
-    if not target.is_absolute():
-        target = cwd / target
-    resolved = _resolve(target)
+    canonical = canonical_path_forms(path, cwd)
+    # OSError fallback: ``anchored.absolute()`` — identical to the prior
+    # ``path.absolute()`` fallback applied to the cwd-anchored target.
+    resolved = (
+        canonical.resolved if canonical.resolved is not None else canonical.anchored.absolute()
+    )
     roots = (_resolve(cwd), *(_resolve(root) for root in extra_allowed))
     if any(resolved == root or resolved.is_relative_to(root) for root in roots):
         return True, ""

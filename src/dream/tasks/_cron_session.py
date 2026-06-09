@@ -21,7 +21,7 @@ This module supplies the small piece that ties the runtime layer
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -30,7 +30,10 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict
 
 from dream.tasks._cron import CronManifest
-from dream.tasks._manager import BackgroundTaskManager, CompletionListener
+from dream.tasks._manager import (
+    BackgroundTaskManager,
+    register_one_shot_completion,
+)
 from dream.tasks._types import TaskRecord
 from dream.utils.fs import atomic_write_text
 
@@ -126,12 +129,14 @@ def read_cron_run_records(runs_root: str | Path, kind: str) -> list[CronRunRecor
 def _derive_outcome(task: TaskRecord) -> tuple[CronRunOutcome, str | None]:
     if task.metadata.get(MAX_SESSION_MINUTES_METADATA_KEY):
         return "failed", "max-session-minutes"
-    if task.status == "completed" and task.return_code == 0:
-        return "success", None
-    if task.status == "killed":
-        return "failed", "killed"
-    rc = task.return_code if task.return_code is not None else "?"
-    return "failed", f"return_code={rc}"
+    match task.status:
+        case "completed" if task.return_code == 0:
+            return "success", None
+        case "killed":
+            return "failed", "killed"
+        case _:
+            rc = task.return_code if task.return_code is not None else "?"
+            return "failed", f"return_code={rc}"
 
 
 def _split_prs(metadata: Mapping[str, str]) -> tuple[str, ...]:
@@ -147,7 +152,7 @@ def make_cron_run_listener(
     kind: str,
     run_id: str,
     started_at: datetime,
-) -> CompletionListener:
+) -> Callable[[TaskRecord], None]:
     """Build a completion listener that writes the cron run-record."""
 
     def listener(task: TaskRecord) -> None:
@@ -234,22 +239,6 @@ async def spawn_cron_session(
     base_listener = make_cron_run_listener(
         runs_root=runs_root, kind=manifest.name, run_id=rid, started_at=start
     )
-    # Self-unregister after the first terminal transition for this run —
-    # avoids leaking listeners across many cron ticks.
-    spawned_task_id: dict[str, str] = {}
-    unregister: dict[str, object] = {}
-
-    def one_shot(task: TaskRecord) -> None:
-        if spawned_task_id and task.id != spawned_task_id["id"]:
-            return
-        try:
-            base_listener(task)
-        finally:
-            unreg = unregister.get("fn")
-            if callable(unreg):
-                unreg()
-
-    unregister["fn"] = manager.register_completion_listener(one_shot)
 
     record = await manager.create_shell_task(
         description=f"cron:{manifest.name}",
@@ -259,5 +248,8 @@ async def spawn_cron_session(
         task_type="local_agent",
         metadata=metadata,
     )
-    spawned_task_id["id"] = record.id
+    # Write the run-record once on the first terminal transition for this run,
+    # then self-unregister so listeners don't leak across many cron ticks. The
+    # helper closes the spawn/register race for a task that finished fast.
+    register_one_shot_completion(manager, record.id, base_listener)
     return record

@@ -34,76 +34,147 @@ from dream.permissions._types import (
     Policy,
     SandboxTier,
 )
+from dream.utils.paths import canonical_path_forms
 
 
 def evaluate(request: PermissionRequest, policy: Policy) -> PermissionDecision:
-    """Map a request + policy to an allow/deny/ask decision (pure, no IO except path resolution)."""
-    # 1. Credential guard — first, non-disableable.
+    """Map a request + policy to an allow/deny/ask decision (pure, no IO except path resolution).
+
+    A short ordered scan: each ``_step_*`` returns the first matching decision,
+    or ``None`` to defer to the next step. The step order is the fixed Spec 13A
+    pipeline (credential guard first, default-ask last).
+    """
+    for step in _PIPELINE:
+        decision = step(request, policy)
+        if decision is not None:
+            return decision
+    # An effectful action we can't characterise — fail safe to ask.
+    return PermissionDecision(outcome=Outcome.ASK, reason="no rule matched", rule="default")
+
+
+def _step_credential_guard(
+    request: PermissionRequest, policy: Policy
+) -> PermissionDecision | None:
+    """1. Credential guard — first, non-disableable."""
     for path in request.target_paths:
         if is_credential_path(path, policy.cwd, policy.credential_extra):
-            return _decide(Outcome.DENY, f"credential-path guard: {path}", "credential_guard")
+            return PermissionDecision(
+                outcome=Outcome.DENY,
+                reason=f"credential-path guard: {path}",
+                rule="credential_guard",
+            )
+    return None
 
-    # 2-3. Tool deny-list, with the allow-list as an *override for tool-deny only*.
-    # The allow-list does NOT short-circuit to ALLOW: command/path denies, tier
-    # checks, and the write boundary below still apply to allow-listed tools.
+
+def _step_tool_deny(request: PermissionRequest, policy: Policy) -> PermissionDecision | None:
+    """2-3. Tool deny-list, with the allow-list as an *override for tool-deny only*.
+
+    The allow-list does NOT short-circuit to ALLOW: command/path denies, tier
+    checks, and the write boundary below still apply to allow-listed tools.
+    """
     tool_allowed = request.tool_name in policy.tool_allow
     if request.tool_name in policy.tool_deny and not tool_allowed:
-        return _decide(Outcome.DENY, f"tool {request.tool_name!r} is deny-listed", "tool_deny")
+        return PermissionDecision(
+            outcome=Outcome.DENY,
+            reason=f"tool {request.tool_name!r} is deny-listed",
+            rule="tool_deny",
+        )
+    return None
 
-    # 4. Path deny rules.
+
+def _step_path_deny(request: PermissionRequest, policy: Policy) -> PermissionDecision | None:
+    """4. Path deny rules."""
     for path in request.target_paths:
         for rule in policy.path_deny:
             if not rule.allow and _matches_path(rule.pattern, path, policy.cwd):
-                return _decide(
-                    Outcome.DENY, f"path deny rule {rule.pattern!r}: {path}", "path_deny"
+                return PermissionDecision(
+                    outcome=Outcome.DENY,
+                    reason=f"path deny rule {rule.pattern!r}: {path}",
+                    rule="path_deny",
                 )
+    return None
 
-    # 5. Command deny (applies even at the unrestricted tier).
+
+def _step_command_deny(request: PermissionRequest, policy: Policy) -> PermissionDecision | None:
+    """5. Command deny (applies even at the unrestricted tier)."""
     if request.command is not None:
         for pattern in (*BUILTIN_COMMAND_DENY, *policy.command_deny):
             if pattern.search(request.command) is not None:
-                return _decide(
-                    Outcome.DENY, f"command-deny matched {pattern.pattern!r}", "command_deny"
+                return PermissionDecision(
+                    outcome=Outcome.DENY,
+                    reason=f"command-deny matched {pattern.pattern!r}",
+                    rule="command_deny",
                 )
+    return None
 
-    # 6. Unrestricted tier allows everything that survived the denies above.
+
+def _step_unrestricted_tier(
+    request: PermissionRequest, policy: Policy
+) -> PermissionDecision | None:
+    """6. Unrestricted tier allows everything that survived the denies above."""
     if policy.tier is SandboxTier.UNRESTRICTED:
-        return _decide(Outcome.ALLOW, "unrestricted tier", "tier_unrestricted")
+        return PermissionDecision(
+            outcome=Outcome.ALLOW, reason="unrestricted tier", rule="tier_unrestricted"
+        )
+    return None
 
-    # 7. A read-only, non-network action is always allowed.
+
+def _step_read_only(request: PermissionRequest, policy: Policy) -> PermissionDecision | None:
+    """7. A read-only, non-network action is always allowed."""
     if request.is_read_only and request.network_host is None:
-        return _decide(Outcome.ALLOW, "read-only action", "read_only")
+        return PermissionDecision(
+            outcome=Outcome.ALLOW, reason="read-only action", rule="read_only"
+        )
+    return None
 
-    # 8. Effectful action: gate by session tier, then tool trust, then write boundary.
+
+def _step_effectful(request: PermissionRequest, policy: Policy) -> PermissionDecision | None:
+    """8. Effectful action: gate by session tier, then tool trust, then write boundary."""
     effects = _effects(request)
     for effect in effects:
         need = effect.required_tier
         if policy.tier < need:
-            return _decide(
-                Outcome.DENY,
-                f"session tier {policy.tier.name.lower()} forbids {effect.label}",
-                "tier_session",
+            return PermissionDecision(
+                outcome=Outcome.DENY,
+                reason=f"session tier {policy.tier.name.lower()} forbids {effect.label}",
+                rule="tier_session",
             )
         trusted = policy.required_tier.get(request.tool_name, SandboxTier.READ_ONLY)
         if trusted < need:
-            return _decide(
-                Outcome.ASK,
-                f"tool {request.tool_name!r} not trusted for {effect.label}; "
-                "promote in tool-tier-overrides",
-                "tier_trust",
+            return PermissionDecision(
+                outcome=Outcome.ASK,
+                reason=(
+                    f"tool {request.tool_name!r} not trusted for {effect.label}; "
+                    "promote in tool-tier-overrides"
+                ),
+                rule="tier_trust",
             )
 
     if Effect.WRITE in effects:
         for path in request.target_paths:
             ok, reason = validate_repo_write(path, policy.cwd, policy.extra_allowed)
             if not ok:
-                return _decide(Outcome.DENY, reason, "path_boundary")
+                return PermissionDecision(
+                    outcome=Outcome.DENY, reason=reason, rule="path_boundary"
+                )
 
     if effects:
-        return _decide(Outcome.ALLOW, "permitted by tier", "tier_grant")
+        return PermissionDecision(
+            outcome=Outcome.ALLOW, reason="permitted by tier", rule="tier_grant"
+        )
+    return None
 
-    # 9. An effectful action we can't characterise — fail safe to ask.
-    return _decide(Outcome.ASK, "no rule matched", "default")
+
+# The fixed Spec 13A step order — credential guard first, default-ask last.
+_PIPELINE = (
+    _step_credential_guard,
+    _step_tool_deny,
+    _step_path_deny,
+    _step_command_deny,
+    _step_unrestricted_tier,
+    _step_read_only,
+    _step_effectful,
+)
 
 
 def _effects(request: PermissionRequest) -> tuple[Effect, ...]:
@@ -128,26 +199,14 @@ def _path_forms(path: Path, cwd: Path) -> tuple[str, ...]:
     dodged via an in-repo symlink whose own path doesn't match the glob but
     whose target does (parallel to the credential guard's resolved candidate).
     """
-    target = path.expanduser()
-    if not target.is_absolute():
-        target = cwd / target
-    absolute = Path(os.path.normpath(target.as_posix()))
+    canonical = canonical_path_forms(path, cwd)
+    absolute = canonical.lexical
     cwd_abs = Path(os.path.normpath(cwd.as_posix()))
     forms = [absolute.as_posix()]
     if absolute == cwd_abs or absolute.is_relative_to(cwd_abs):
         forms.append(absolute.relative_to(cwd_abs).as_posix())
-    resolved = _resolved_posix(target)
-    if resolved is not None and resolved not in forms:
-        forms.append(resolved)
+    if canonical.resolved is not None:
+        resolved = canonical.resolved.as_posix()
+        if resolved not in forms:
+            forms.append(resolved)
     return tuple(forms)
-
-
-def _resolved_posix(target: Path) -> str | None:
-    try:
-        return target.resolve(strict=False).as_posix()
-    except OSError:
-        return None
-
-
-def _decide(outcome: Outcome, reason: str, rule: str) -> PermissionDecision:
-    return PermissionDecision(outcome=outcome, reason=reason, rule=rule)

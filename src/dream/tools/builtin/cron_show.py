@@ -13,9 +13,11 @@ from pydantic import BaseModel, Field
 
 from dream.contracts.tool import ToolResult
 from dream.tasks._cron import CronJob, get_cron_job
-from dream.tasks._session import read_task_context
 from dream.tools._base import BaseTool, ToolDeclaration
 from dream.tools._context import ToolExecutionContext
+from dream.tools.builtin._errors import tool_error as _err
+from dream.tools.builtin._render import render_fields
+from dream.tools.builtin._task_context import require_task_context
 
 
 class CronShowInput(BaseModel):
@@ -35,14 +37,14 @@ class CronShowTool(BaseTool):
     async def execute(self, input: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
         args = CronShowInput.model_validate(input)
 
-        task_ctx = read_task_context(ctx.metadata)
-        if task_ctx is None:
-            return _err(
-                "Cron tools are not available in this session.",
-                root_cause="no task session context was wired",
-                safe_retry="run inside a session that enables task tools",
-                stop_condition="do not retry without task wiring",
-            )
+        task_ctx = require_task_context(
+            ctx.metadata,
+            content="Cron tools are not available in this session.",
+            root_cause="no task session context was wired",
+            safe_retry="run inside a session that enables task tools",
+        )
+        if isinstance(task_ctx, ToolResult):
+            return task_ctx
 
         registry = task_ctx.cron_registry_path
         if registry is None:
@@ -84,41 +86,24 @@ class CronShowTool(BaseTool):
 
 
 def _render(job: CronJob) -> str:
-    lines = [
-        f"name: {job.name}",
-        f"schedule: {job.schedule}",
-        f"enabled: {job.enabled}",
-    ]
-    if job.timezone:
-        lines.append(f"timezone: {job.timezone}")
-    if job.description:
-        lines.append(f"description: {job.description}")
-    if job.tier_required is not None:
-        lines.append(f"tier_required: {job.tier_required}")
-    if job.max_session_minutes is not None:
-        lines.append(f"max_session_minutes: {job.max_session_minutes}")
-    if job.entry_prompt:
-        lines.append(f"entry_prompt: {job.entry_prompt}")
-    if job.next_run is not None:
-        lines.append(f"next_run: {job.next_run.isoformat()}")
-    if job.last_run is not None:
-        lines.append(f"last_run: {job.last_run.isoformat()}")
-    if job.last_status is not None:
-        lines.append(f"last_status: {job.last_status}")
-    if job.created_at is not None:
-        lines.append(f"created_at: {job.created_at.isoformat()}")
-    return "\n".join(lines)
-
-
-def _err(content: str, *, root_cause: str, safe_retry: str, stop_condition: str) -> ToolResult:
-    return ToolResult(
-        content=content,
-        is_error=True,
-        metadata={
-            "root_cause": root_cause,
-            "safe_retry": safe_retry,
-            "stop_condition": stop_condition,
-        },
+    # ``timezone``/``description``/``entry_prompt`` keep their truthy skip
+    # (``or None`` drops empty strings); ``enabled`` is always shown even when
+    # ``False``; datetimes render via ``isoformat`` only when present.
+    return render_fields(
+        [
+            ("name", job.name),
+            ("schedule", job.schedule),
+            ("enabled", job.enabled),
+            ("timezone", job.timezone or None),
+            ("description", job.description or None),
+            ("tier_required", job.tier_required),
+            ("max_session_minutes", job.max_session_minutes),
+            ("entry_prompt", job.entry_prompt or None),
+            ("next_run", job.next_run.isoformat() if job.next_run is not None else None),
+            ("last_run", job.last_run.isoformat() if job.last_run is not None else None),
+            ("last_status", job.last_status),
+            ("created_at", job.created_at.isoformat() if job.created_at is not None else None),
+        ]
     )
 
 

@@ -16,7 +16,7 @@ import asyncio
 import contextlib
 import sys
 from collections.abc import Callable, Mapping
-from dataclasses import fields
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -44,6 +44,30 @@ from dream.harness import Harness, HarnessConfig
 from dream.mcp import McpClientManager
 from dream.observability import JsonlTracer, TraceWriter
 from dream.permissions import SessionLimits
+from dream.repl._ansi import (
+    BOLD as _BOLD,
+)
+from dream.repl._ansi import (
+    CYAN as _CYAN,
+)
+from dream.repl._ansi import (
+    DIM as _DIM,
+)
+from dream.repl._ansi import (
+    GREEN as _GREEN,
+)
+from dream.repl._ansi import (
+    MAGENTA as _MAGENTA,
+)
+from dream.repl._ansi import (
+    RED as _RED,
+)
+from dream.repl._ansi import (
+    YELLOW as _YELLOW,
+)
+from dream.repl._ansi import c as _c
+from dream.repl._ansi import flatten as _flatten
+from dream.repl._ansi import use_colour as _use_colour
 from dream.repl._events import EventSink
 from dream.repl._mcp import mcp_paths, setup_mcp_session
 from dream.repl._runtime_info import render_runtime_info
@@ -138,31 +162,10 @@ def build_default_harness(
     # task storage / sidecars (#43); hardcoding ``Path.home()`` would write task
     # artifacts under ~/.dream even when the operator redirected the home root.
     paths = DreamPaths.resolve(working_dir, env=env).ensure()
-    # Task tools (Spec 07): one BackgroundTaskManager per harness, shared across
-    # sessions in this REPL so task IDs / archives stay consistent. The cron
-    # registry lives at the in-repo convention (``.dream/cron/registry.json``);
-    # the exec-plans root is the parent of ``exec_plans_active`` since the FSM
-    # appends the state segment itself via :func:`plan_dir`.
-    task_manager = BackgroundTaskManager(tasks_dir=paths.tasks_dir)
-    cron_registry_path = paths.dream_dir / "cron" / "registry.json"
-    task_context = TaskSessionContext(
-        manager=task_manager,
-        cron_registry_path=cron_registry_path,
-        plans_root=paths.exec_plans_active.parent,
-    )
-    # Spec 07 trigger surface: ensure the four default cron kinds exist on
-    # disk (``.harness/cron/*.toml``) and that any present manifest is
-    # registered in the durable registry. Both calls are idempotent so
-    # operator edits to either the manifest or the registry survive
-    # restart.
-    cron_service.bootstrap_default_manifests(working_dir)
-    cron_service.ensure_registry_seeded(
-        cron_registry_path,
-        load_cron_manifests(Path(working_dir) / CRON_MANIFEST_DIR),
-    )
+    task_manager, task_context = _bootstrap_task_and_cron(working_dir, paths)
     # Spec 13C policy-assembly warnings (e.g. stale tier promotions) are
     # operator-facing security signals; surface them once at session startup
-    # rather than discarding them inside ``_factory`` (#47). They derive solely
+    # rather than discarding them inside the factory (#47). They derive solely
     # from ``.harness/tool-tier-overrides.toml`` (paths) and are independent of
     # session/role, so one assembly here covers every session in this REPL.
     if policy_warning_sink is not None:
@@ -188,111 +191,23 @@ def build_default_harness(
     runtime_info = render_runtime_info(env=env, working_dir=working_dir)
 
     def _factory(session_id: str, options: SessionOptions) -> QueryEngine:
-        # Render the registry into OpenAI ``tools`` wire shape per session (cheap;
-        # a handful of tools) so tools registered after build — MCP adapters /
-        # resource + auth tools — are visible to the model. The engine's
-        # TurnStreamer Protocol has no tools parameter (only messages), so we
-        # smuggle the schema through ``httpx_chat_completion_stream``'s
-        # ``extra_params`` — splatted verbatim into every request body.
-        tools = tool_registry.list_tools()
-        tools_wire: list[dict[str, Any]] = [
-            {
-                "type": "function",
-                "function": {
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": t.input_schema(),
-                },
-            }
-            for t in tools
-        ]
-        # Built per session too, so the available-tool set the `skill` tool
-        # checks ``tools_required`` against includes late (MCP) registrations.
-        skill_context = (
-            SkillContext(
-                registry=skill_registry,
-                available_tools=frozenset(t.name for t in tools),
-                event_sink=skill_event_sink,
-            )
-            if skill_registry is not None
-            else None
-        )
-        # System prompt assembly order: the governance standing orders FIRST
-        # (the constitution outranks everything; Spec 13F AC #21-22, re-extracted
-        # every session start), then runtime info (host facts the model must
-        # trust), the skill catalogue (capabilities), and the caller-supplied
-        # prompt (task framing). Each block survives if the next is empty.
-        standing_orders = render_standing_orders(
-            extract_standing_orders(paths.repo / "docs" / "design-docs" / "core-beliefs.md")
-        )
-        parts = [standing_orders] if standing_orders else []
-        parts.append(runtime_info)
-        if catalogue:
-            parts.append(catalogue)
-        if options.system_prompt:
-            parts.append(options.system_prompt)
-        system_prompt = "\n\n".join(parts)
-        streamer = OpenAIChatStreamer(
-            stream_chat_completion=httpx_chat_completion_stream(
-                api_key=api_key,
-                base_url=base_url,
-                extra_params={"tools": tools_wire, "tool_choice": "auto"}
-                if tools_wire
-                else None,
-            ),
-            model=options.model or model,
-            system_prompt=system_prompt,
-        )
-        # OTel-shaped trace (Spec 12a): one durable JSONL per session under the
-        # task sidecar. The session_id doubles as the sidecar dir key in the REPL.
-        tracer = JsonlTracer(
-            # Reuse the env-resolved ``paths`` so the trace log honours
-            # ``DREAM_HOME`` like task storage does (#43).
-            TraceWriter(paths.trace_log(session_id)),
-            session_id=session_id,
-            task_id=session_id,
-        )
-        # Spec 13C: gate every tool call against the sandbox policy assembled
-        # from the registry's declared tiers + operator .harness config. Stale
-        # promotions etc. surface as warnings (data); not emitted here yet.
-        # Spec 10-H: when the caller stamped a RoleManifest on
-        # ``options.metadata[ROLE_MANIFEST_METADATA_KEY]`` (the runner does
-        # this in ``open_role_session``), intersect with the active sandbox
-        # tier and pass the result to *both* the dispatcher (hard refusal
-        # before the gate) and the gate itself (defensive double-lock).
-        manifest = options.metadata.get(ROLE_MANIFEST_METADATA_KEY)
-        role_allowed: frozenset[str] | None = None
-        if isinstance(manifest, RoleManifest):
-            role_allowed = compute_session_role_allowlist(
-                tool_registry, paths=paths, cwd=working_dir, manifest=manifest
-            )
-        # SECURITY: do NOT feed ``role_allowed`` into the gate's ``tool_allow``.
-        # ``tool_allow`` is an allow-list override (it lets a tool bypass the
-        # tool-deny list), so passing role tools there would *widen* them rather
-        # than restrict them. Role enforcement is a hard "must be in set" deny in
-        # the dispatcher (``role_allowed_tools`` below); the gate then applies its
-        # full pipeline (path/command deny, tier, trust) to every role-allowed
-        # tool. See ``compute_session_role_allowlist``'s docstring for the
-        # rationale.
-        permission_gate, _gate_warnings = make_permission_gate(
-            tool_registry, paths=paths, cwd=working_dir
-        )
-        return build_query_engine(
-            streamer=streamer,
-            registry=tool_registry,
-            session_id=session_id,
+        return _build_session_engine(
+            session_id,
+            options,
+            tool_registry=tool_registry,
+            paths=paths,
             working_dir=working_dir,
-            max_turns=options.max_turns or max_turns,
-            permission_gate=permission_gate,
-            role_allowed_tools=role_allowed,
-            limits=SessionLimits(),
-            context_metadata=_build_context_metadata(
-                skill_context=skill_context, task_context=task_context
-            ),
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+            max_turns=max_turns,
+            catalogue=catalogue,
+            runtime_info=runtime_info,
+            skill_registry=skill_registry,
+            skill_event_sink=skill_event_sink,
+            task_context=task_context,
             compactor=compactor,
-            compaction_capabilities=capabilities,
-            tracer=tracer,
-            model=options.model or model,
+            capabilities=capabilities,
         )
 
     # Stash the task manager on the harness config so the REPL can register
@@ -307,14 +222,183 @@ def build_default_harness(
     return Harness(config)
 
 
-def _build_context_metadata(
-    *, skill_context: SkillContext | None, task_context: TaskSessionContext
-) -> dict[str, Any]:
-    """Merge skill + task contexts into the dispatcher's ``context_metadata``."""
-    metadata: dict[str, Any] = {TASK_CONTEXT_KEY: task_context}
+def _bootstrap_task_and_cron(
+    working_dir: Path, paths: DreamPaths
+) -> tuple[BackgroundTaskManager, TaskSessionContext]:
+    """Build the per-harness task manager + cron context, seeding cron on disk.
+
+    Task tools (Spec 07): one BackgroundTaskManager per harness, shared across
+    sessions in this REPL so task IDs / archives stay consistent. The cron
+    registry lives at the in-repo convention (``.dream/cron/registry.json``);
+    the exec-plans root is the parent of ``exec_plans_active`` since the FSM
+    appends the state segment itself via :func:`plan_dir`. The two cron
+    bootstrap calls are idempotent so operator edits to either the manifest or
+    the registry survive restart.
+    """
+    task_manager = BackgroundTaskManager(tasks_dir=paths.tasks_dir)
+    cron_registry_path = paths.dream_dir / "cron" / "registry.json"
+    task_context = TaskSessionContext(
+        manager=task_manager,
+        cron_registry_path=cron_registry_path,
+        plans_root=paths.exec_plans_active.parent,
+    )
+    cron_service.bootstrap_default_manifests(working_dir)
+    cron_service.ensure_registry_seeded(
+        cron_registry_path,
+        load_cron_manifests(Path(working_dir) / CRON_MANIFEST_DIR),
+    )
+    return task_manager, task_context
+
+
+def _assemble_system_prompt(
+    *, paths: DreamPaths, runtime_info: str, catalogue: str, system_prompt: str | None
+) -> str:
+    """Assemble the per-session system prompt from its four ordered blocks.
+
+    Order: the governance standing orders FIRST (the constitution outranks
+    everything; Spec 13F AC #21-22, re-extracted every session start), then
+    runtime info (host facts the model must trust), the skill catalogue
+    (capabilities), and the caller-supplied prompt (task framing). Each block
+    survives if the next is empty.
+    """
+    standing_orders = render_standing_orders(
+        extract_standing_orders(paths.repo / "docs" / "design-docs" / "core-beliefs.md")
+    )
+    parts = [standing_orders] if standing_orders else []
+    parts.append(runtime_info)
+    if catalogue:
+        parts.append(catalogue)
+    if system_prompt:
+        parts.append(system_prompt)
+    return "\n\n".join(parts)
+
+
+def _build_session_engine(
+    session_id: str,
+    options: SessionOptions,
+    *,
+    tool_registry: ToolRegistry,
+    paths: DreamPaths,
+    working_dir: Path,
+    api_key: str,
+    base_url: str,
+    model: str,
+    max_turns: int,
+    catalogue: str,
+    runtime_info: str,
+    skill_registry: SkillRegistry | None,
+    skill_event_sink: SkillEventSink | None,
+    task_context: TaskSessionContext,
+    compactor: AutoCompactState,
+    capabilities: ProviderCapabilities,
+) -> QueryEngine:
+    """Construct one session's ``QueryEngine`` from explicit, pre-resolved deps.
+
+    Lifted out of ``build_default_harness``'s nested ``_factory`` so the build
+    reads as a plan; everything per-session (tool wire schema, skill context,
+    prompt, permission gate, role allow-list) is computed lazily here so tools
+    registered after ``build_default_harness`` (MCP adapters etc.) are visible.
+    """
+    # Render the registry into OpenAI ``tools`` wire shape per session (cheap;
+    # a handful of tools) so tools registered after build — MCP adapters /
+    # resource + auth tools — are visible to the model. The engine's
+    # TurnStreamer Protocol has no tools parameter (only messages), so we
+    # smuggle the schema through ``httpx_chat_completion_stream``'s
+    # ``extra_params`` — splatted verbatim into every request body.
+    tools = tool_registry.list_tools()
+    tools_wire: list[dict[str, Any]] = [
+        {
+            "type": "function",
+            "function": {
+                "name": t.name,
+                "description": t.description,
+                "parameters": t.input_schema(),
+            },
+        }
+        for t in tools
+    ]
+    # Built per session too, so the available-tool set the `skill` tool
+    # checks ``tools_required`` against includes late (MCP) registrations.
+    skill_context = (
+        SkillContext(
+            registry=skill_registry,
+            available_tools=frozenset(t.name for t in tools),
+            event_sink=skill_event_sink,
+        )
+        if skill_registry is not None
+        else None
+    )
+    system_prompt = _assemble_system_prompt(
+        paths=paths,
+        runtime_info=runtime_info,
+        catalogue=catalogue,
+        system_prompt=options.system_prompt,
+    )
+    streamer = OpenAIChatStreamer(
+        stream_chat_completion=httpx_chat_completion_stream(
+            api_key=api_key,
+            base_url=base_url,
+            extra_params={"tools": tools_wire, "tool_choice": "auto"}
+            if tools_wire
+            else None,
+        ),
+        model=options.model or model,
+        system_prompt=system_prompt,
+    )
+    # OTel-shaped trace (Spec 12a): one durable JSONL per session under the
+    # task sidecar. The session_id doubles as the sidecar dir key in the REPL.
+    tracer = JsonlTracer(
+        # Reuse the env-resolved ``paths`` so the trace log honours
+        # ``DREAM_HOME`` like task storage does (#43).
+        TraceWriter(paths.trace_log(session_id)),
+        session_id=session_id,
+        task_id=session_id,
+    )
+    # Spec 13C: gate every tool call against the sandbox policy assembled
+    # from the registry's declared tiers + operator .harness config. Stale
+    # promotions etc. surface as warnings (data); not emitted here yet.
+    # Spec 10-H: when the caller stamped a RoleManifest on
+    # ``options.metadata[ROLE_MANIFEST_METADATA_KEY]`` (the runner does
+    # this in ``open_role_session``), intersect with the active sandbox
+    # tier and pass the result to *both* the dispatcher (hard refusal
+    # before the gate) and the gate itself (defensive double-lock).
+    manifest = options.metadata.get(ROLE_MANIFEST_METADATA_KEY)
+    role_allowed: frozenset[str] | None = None
+    if isinstance(manifest, RoleManifest):
+        role_allowed = compute_session_role_allowlist(
+            tool_registry, paths=paths, cwd=working_dir, manifest=manifest
+        )
+    # SECURITY: do NOT feed ``role_allowed`` into the gate's ``tool_allow``.
+    # ``tool_allow`` is an allow-list override (it lets a tool bypass the
+    # tool-deny list), so passing role tools there would *widen* them rather
+    # than restrict them. Role enforcement is a hard "must be in set" deny in
+    # the dispatcher (``role_allowed_tools`` below); the gate then applies its
+    # full pipeline (path/command deny, tier, trust) to every role-allowed
+    # tool. See ``compute_session_role_allowlist``'s docstring for the
+    # rationale.
+    permission_gate, _gate_warnings = make_permission_gate(
+        tool_registry, paths=paths, cwd=working_dir
+    )
+    # Dispatcher context_metadata: skill + task contexts keyed for the
+    # `skill` / task tools to fetch out of the dispatcher.
+    context_metadata: dict[str, Any] = {TASK_CONTEXT_KEY: task_context}
     if skill_context is not None:
-        metadata[SKILL_CONTEXT_KEY] = skill_context
-    return metadata
+        context_metadata[SKILL_CONTEXT_KEY] = skill_context
+    return build_query_engine(
+        streamer=streamer,
+        registry=tool_registry,
+        session_id=session_id,
+        working_dir=working_dir,
+        max_turns=options.max_turns or max_turns,
+        permission_gate=permission_gate,
+        role_allowed_tools=role_allowed,
+        limits=SessionLimits(),
+        context_metadata=context_metadata,
+        compactor=compactor,
+        compaction_capabilities=capabilities,
+        tracer=tracer,
+        model=options.model or model,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -325,34 +409,14 @@ def _build_context_metadata(
 # inject ``io.StringIO`` (no ``isatty``), so they continue to see plain text
 # and the strict-equality checks in test_session_repl.py keep passing.
 
-_RESET = "\x1b[0m"
-_DIM = "\x1b[2m"
-_BOLD = "\x1b[1m"
-_RED = "\x1b[31m"
-_GREEN = "\x1b[32m"
-_YELLOW = "\x1b[33m"
-_CYAN = "\x1b[36m"
-_MAGENTA = "\x1b[35m"
+# ANSI constants + the TTY gate / wrap / flatten primitives are imported at
+# module top from the shared :mod:`dream.repl._ansi` module (aliased under the
+# ``_NAME`` spelling every renderer already uses). The REPL gate does *not*
+# honour ``NO_COLOR`` (only a real ``isatty`` toggles colour) \u2014 preserved via
+# the default ``respect_no_color=False``.
 
 _TOOL_RESULT_LIMIT = 160
 _TOOL_INPUT_LIMIT = 200
-
-
-def _use_colour(output: TextIO) -> bool:
-    isatty = getattr(output, "isatty", None)
-    return bool(isatty and isatty())
-
-
-def _c(code: str, text: str, *, use: bool) -> str:
-    """Wrap ``text`` in ``code`` + reset, or return as-is when ``use`` is False."""
-    if not use or not code:
-        return text
-    return f"{code}{text}{_RESET}"
-
-
-def _flatten(s: str) -> str:
-    """Collapse newlines/tabs so a tool blob renders on one tidy line."""
-    return s.replace("\r", "").replace("\n", " \u23ce ").replace("\t", "  ")
 
 
 # ---------------------------------------------------------------------------
@@ -443,88 +507,120 @@ def handle_event(ev: Event, *, sink: EventSink, output: TextIO) -> None:
     the REPL #3 watch-panel colour table can route it alongside the
     Spec 04 context-log events.
 
-    ``TextDelta`` is a raw passthrough by contract — never decorated — so
-    streaming model prose stays clean and ``out.getvalue() == ev.text``
-    in tests.
+    Dispatches on the event's concrete type via :data:`_EVENT_RENDERERS`;
+    each renderer writes the styled line and mirrors the event to the sink.
+    Unmapped event types (orchestration internals) are dropped silently.
+    ``TextDelta`` is a raw passthrough by contract — never decorated.
     """
-    use = _use_colour(output)
-    if isinstance(ev, TextDelta):
-        output.write(ev.text)
-        output.flush()
-        sink.emit("session.text_delta", text=ev.text)
-    elif isinstance(ev, ToolUseStart):
-        args_repr = _flatten(repr(ev.input))
-        if len(args_repr) > _TOOL_INPUT_LIMIT:
-            args_repr = args_repr[:_TOOL_INPUT_LIMIT] + "\u2026"
-        output.write(
-            "\n"
-            + _c(_CYAN, "  \u25b8 ", use=use)
-            + _c(_BOLD, ev.name, use=use)
-            + "  "
-            + _c(_DIM, args_repr, use=use)
-            + "\n"
+    renderer = _EVENT_RENDERERS.get(type(ev))
+    if renderer is None:
+        return
+    renderer(ev, sink=sink, output=output, use=_use_colour(output))
+
+
+def _render_text_delta(ev: TextDelta, *, sink: EventSink, output: TextIO, use: bool) -> None:
+    # Raw passthrough by contract \u2014 never decorated \u2014 so streaming prose stays
+    # clean and ``out.getvalue() == ev.text`` in tests.
+    output.write(ev.text)
+    output.flush()
+    sink.emit("session.text_delta", text=ev.text)
+
+
+def _render_tool_use_start(
+    ev: ToolUseStart, *, sink: EventSink, output: TextIO, use: bool
+) -> None:
+    args_repr = _flatten(repr(ev.input))
+    if len(args_repr) > _TOOL_INPUT_LIMIT:
+        args_repr = args_repr[:_TOOL_INPUT_LIMIT] + "\u2026"
+    output.write(
+        "\n"
+        + _c(_CYAN, "  \u25b8 ", use=use)
+        + _c(_BOLD, ev.name, use=use)
+        + "  "
+        + _c(_DIM, args_repr, use=use)
+        + "\n"
+    )
+    sink.emit(
+        "session.tool_use_start",
+        tool_use_id=ev.tool_use_id,
+        name=ev.name,
+        input=ev.input,
+    )
+
+
+def _render_tool_use_result(
+    ev: ToolUseResult, *, sink: EventSink, output: TextIO, use: bool
+) -> None:
+    full_len = len(ev.content)
+    body = ev.content if full_len <= _TOOL_RESULT_LIMIT else ev.content[:_TOOL_RESULT_LIMIT]
+    snippet = _flatten(body)
+    if full_len > _TOOL_RESULT_LIMIT:
+        snippet += "\u2026"
+    suffix = (
+        _c(_DIM, f"  (+{full_len - _TOOL_RESULT_LIMIT} chars)", use=use)
+        if full_len > _TOOL_RESULT_LIMIT
+        else ""
+    )
+    if ev.is_error:
+        head = _c(_RED, "  \u2717 " + ev.name + " failed", use=use)
+    else:
+        head = _c(_GREEN, "  \u2713", use=use) + " " + _c(_DIM, ev.name, use=use)
+    output.write(f"{head}  {_c(_DIM, snippet, use=use)}{suffix}\n")
+    sink.emit(
+        "session.tool_use_result",
+        tool_use_id=ev.tool_use_id,
+        name=ev.name,
+        is_error=ev.is_error,
+        content_chars=len(ev.content),
+    )
+
+
+def _render_turn_complete(
+    ev: TurnComplete, *, sink: EventSink, output: TextIO, use: bool
+) -> None:
+    usage_str = " ".join(f"{k}={v}" for k, v in ev.usage.items())
+    line = f"\u2500\u2500 turn \u00b7 {ev.stop_reason}"
+    if usage_str:
+        line += f" \u00b7 {usage_str}"
+    line += " \u2500\u2500"
+    output.write("\n" + _c(_DIM, line, use=use) + "\n")
+    sink.emit("session.turn_complete", stop_reason=ev.stop_reason, usage=dict(ev.usage))
+
+
+def _render_compacted(ev: Compacted, *, sink: EventSink, output: TextIO, use: bool) -> None:
+    output.write(
+        _c(
+            _CYAN,
+            f"\u25c6 compacted \u00b7 removed {ev.removed_messages} msgs "
+            f"\u00b7 {ev.summary_tokens} tokens",
+            use=use,
         )
-        sink.emit(
-            "session.tool_use_start",
-            tool_use_id=ev.tool_use_id,
-            name=ev.name,
-            input=ev.input,
-        )
-    elif isinstance(ev, ToolUseResult):
-        full_len = len(ev.content)
-        body = ev.content if full_len <= _TOOL_RESULT_LIMIT else ev.content[:_TOOL_RESULT_LIMIT]
-        snippet = _flatten(body)
-        if full_len > _TOOL_RESULT_LIMIT:
-            snippet += "\u2026"
-        suffix = (
-            _c(_DIM, f"  (+{full_len - _TOOL_RESULT_LIMIT} chars)", use=use)
-            if full_len > _TOOL_RESULT_LIMIT
-            else ""
-        )
-        if ev.is_error:
-            head = _c(_RED, "  \u2717 " + ev.name + " failed", use=use)
-        else:
-            head = _c(_GREEN, "  \u2713", use=use) + " " + _c(_DIM, ev.name, use=use)
-        output.write(f"{head}  {_c(_DIM, snippet, use=use)}{suffix}\n")
-        sink.emit(
-            "session.tool_use_result",
-            tool_use_id=ev.tool_use_id,
-            name=ev.name,
-            is_error=ev.is_error,
-            content_chars=len(ev.content),
-        )
-    elif isinstance(ev, TurnComplete):
-        usage_str = " ".join(f"{k}={v}" for k, v in ev.usage.items())
-        line = f"\u2500\u2500 turn \u00b7 {ev.stop_reason}"
-        if usage_str:
-            line += f" \u00b7 {usage_str}"
-        line += " \u2500\u2500"
-        output.write("\n" + _c(_DIM, line, use=use) + "\n")
-        sink.emit(
-            "session.turn_complete",
-            stop_reason=ev.stop_reason,
-            usage=dict(ev.usage),
-        )
-    elif isinstance(ev, Compacted):
-        output.write(
-            _c(
-                _CYAN,
-                f"\u25c6 compacted \u00b7 removed {ev.removed_messages} msgs "
-                f"\u00b7 {ev.summary_tokens} tokens",
-                use=use,
-            )
-            + "\n"
-        )
-        sink.emit(
-            "context.compaction.completed",
-            removed_messages=ev.removed_messages,
-            summary_tokens=ev.summary_tokens,
-        )
-    elif isinstance(ev, Error):
-        output.write(
-            _c(_RED, f"\u2717 error \u00b7 {ev.code} \u00b7 {ev.message}", use=use) + "\n"
-        )
-        sink.emit("session.error", code=ev.code, message=ev.message)
+        + "\n"
+    )
+    sink.emit(
+        "context.compaction.completed",
+        removed_messages=ev.removed_messages,
+        summary_tokens=ev.summary_tokens,
+    )
+
+
+def _render_error(ev: Error, *, sink: EventSink, output: TextIO, use: bool) -> None:
+    output.write(
+        _c(_RED, f"\u2717 error \u00b7 {ev.code} \u00b7 {ev.message}", use=use) + "\n"
+    )
+    sink.emit("session.error", code=ev.code, message=ev.message)
+
+
+# Public event type \u2192 its renderer. Unmapped event types are dropped silently
+# (the prior ``if/elif`` ladder had no ``else`` branch either).
+_EVENT_RENDERERS: dict[type[Event], Callable[..., None]] = {
+    TextDelta: _render_text_delta,
+    ToolUseStart: _render_tool_use_start,
+    ToolUseResult: _render_tool_use_result,
+    TurnComplete: _render_turn_complete,
+    Compacted: _render_compacted,
+    Error: _render_error,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -620,6 +716,188 @@ def _cmd_mcp(
         )
 
 
+@dataclass
+class _SlashCtx:
+    """Everything a session slash-command handler may need (built per call)."""
+
+    arg: str
+    session: Session
+    sink: EventSink
+    output: TextIO
+    use: bool
+    skill_registry: SkillRegistry | None
+    mcp_manager: McpClientManager | None
+
+
+def _slash_skills(ctx: _SlashCtx) -> bool:
+    _cmd_skills(ctx.skill_registry, output=ctx.output, use=ctx.use)
+    ctx.sink.emit("session.skills_listed")
+    return True
+
+
+def _slash_skill(ctx: _SlashCtx) -> bool:
+    _cmd_skill(ctx.arg, ctx.skill_registry, sink=ctx.sink, output=ctx.output, use=ctx.use)
+    return True
+
+
+def _slash_mcp(ctx: _SlashCtx) -> bool:
+    _cmd_mcp(ctx.mcp_manager, output=ctx.output, use=ctx.use)
+    ctx.sink.emit("session.mcp_listed")
+    return True
+
+
+def _slash_help(ctx: _SlashCtx) -> bool:
+    commands = [
+        ("/help", "this list"),
+        ("/info", "session id, model, running cost"),
+        ("/util", "context utilisation % + cost"),
+        ("/compact", "force a Spec 04 microcompact now"),
+        ("/skills", "list available skills (frontmatter)"),
+        ("/skill <name>", "load a skill body (operator)"),
+        ("/mcp", "list MCP servers + connection status"),
+        ("/reset", "clear transcript (keep engine + cost)"),
+        ("/quit", "leave the REPL"),
+    ]
+    out, use = ctx.output, ctx.use
+    out.write(_c(_CYAN, "commands", use=use) + "\n")
+    for name, desc in commands:
+        out.write("  " + _c(_BOLD, f"{name:<10}", use=use) + _c(_DIM, desc, use=use) + "\n")
+    out.write(_c(_DIM, "anything else is sent to the model.", use=use) + "\n")
+    return True
+
+
+def _slash_info(ctx: _SlashCtx) -> bool:
+    session, use = ctx.session, ctx.use
+    ctx.output.write(
+        _c(_CYAN, "session", use=use) + "\n"
+        + "  " + _c(_DIM, "id    ", use=use) + session.id + "\n"
+        + "  " + _c(_DIM, "model ", use=use)
+        + (session.options.model or "<default>") + "\n"
+        + "  " + _c(_DIM, "cost  ", use=use)
+        + f"in={session.cost.input_tokens} out={session.cost.output_tokens}\n"
+    )
+    ctx.sink.emit("session.info", session_id=session.id)
+    return True
+
+
+def _slash_util(ctx: _SlashCtx) -> bool:
+    session, out, use = ctx.session, ctx.output, ctx.use
+    # Read capabilities off the bound engine via the public accessor; if absent
+    # we still render a usable line (utilisation falls back to 0.0).
+    settings = session.compaction_settings()
+    capabilities = settings.capabilities if settings is not None else None
+    transcript = session.transcript
+    pct = utilisation(transcript, capabilities) * 100.0
+    cost = session.cost
+    # Pressure-aware colouring: green < 50%, yellow 50-80%, red > 80%.
+    if pct >= 80:
+        tone = _RED
+    elif pct >= 50:
+        tone = _YELLOW
+    else:
+        tone = _GREEN
+    bar_width = 20
+    filled = max(0, min(bar_width, round(pct / 100.0 * bar_width)))
+    bar = "\u2588" * filled + "\u2591" * (bar_width - filled)
+    out.write(
+        _c(tone, f"util {pct:5.1f}%", use=use)
+        + "  "
+        + _c(tone, bar, use=use)
+        + "  "
+        + _c(_DIM, f"messages={len(transcript)}", use=use)
+        + "  "
+        + _c(_DIM, f"cost in={cost.input_tokens} out={cost.output_tokens}", use=use)
+        + "\n"
+    )
+    ctx.sink.emit(
+        "session.util",
+        session_id=session.id,
+        utilisation=pct / 100.0,
+        messages=len(transcript),
+        input_tokens=cost.input_tokens,
+        output_tokens=cost.output_tokens,
+    )
+    return True
+
+
+def _slash_compact(ctx: _SlashCtx) -> bool:
+    session, out, use, sink = ctx.session, ctx.output, ctx.use, ctx.sink
+    settings = session.compaction_settings()
+    if settings is None or settings.compactor is None:
+        out.write(
+            _c(_YELLOW, "\u25cb compact \u00b7 no compactor wired on this engine", use=use)
+            + "\n"
+        )
+        sink.emit("session.compact_skipped", reason="no_compactor")
+        return True
+    capabilities = settings.capabilities
+    transcript = session.transcript
+    pre_count = len(transcript)
+    pre_tokens = estimate_conversation_tokens(transcript)
+    new_transcript, result = auto_compact_if_needed(
+        transcript,
+        capabilities=capabilities,
+        state=settings.compactor,
+        trigger="manual",
+        threshold=settings.threshold,
+        preserve_recent=settings.preserve_recent,
+        force=True,
+    )
+    transcript[:] = new_transcript
+    removed = max(0, pre_count - len(new_transcript))
+    post_tokens = estimate_conversation_tokens(new_transcript)
+    # ``force=True`` means ``result`` is effectively never ``None``, so we
+    # cannot use it to detect a no-op. Instead compare the real pre/post
+    # deltas: a compaction that reclaimed neither messages nor tokens did
+    # nothing (e.g. transcript already minimal / nothing compactable).
+    if result is None or (removed == 0 and post_tokens >= pre_tokens):
+        out.write(_c(_DIM, "\u25cb compact \u00b7 nothing to compact", use=use) + "\n")
+        sink.emit("session.compact_skipped", reason="noop")
+        return True
+    post_util = utilisation(new_transcript, capabilities)
+    out.write(
+        _c(
+            _CYAN,
+            f"\u25c6 compact \u00b7 tier={result.tier} "
+            f"removed={removed} util_after={post_util * 100.0:.1f}%",
+            use=use,
+        )
+        + "\n"
+    )
+    sink.emit(
+        "context.compaction.completed",
+        tier=result.tier,
+        removed_messages=removed,
+        resulting_utilisation=post_util,
+    )
+    return True
+
+
+def _slash_reset(ctx: _SlashCtx) -> bool:
+    # The next send starts from a clean slate while keeping the engine and
+    # cost counters intact.
+    ctx.session.transcript.clear()
+    ctx.output.write(_c(_CYAN, "\u21bb transcript cleared", use=ctx.use) + "\n")
+    ctx.sink.emit("session.reset", session_id=ctx.session.id)
+    return True
+
+
+# Command \u2192 handler. ``/quit`` / ``/exit`` are handled inline in
+# ``_handle_slash`` because they alone return False (leave the loop); every
+# handler here returns True (keep looping). ``/?`` is an alias of ``/help``.
+_SLASH_COMMANDS: dict[str, Callable[[_SlashCtx], bool]] = {
+    "/skills": _slash_skills,
+    "/skill": _slash_skill,
+    "/mcp": _slash_mcp,
+    "/help": _slash_help,
+    "/?": _slash_help,
+    "/info": _slash_info,
+    "/util": _slash_util,
+    "/compact": _slash_compact,
+    "/reset": _slash_reset,
+}
+
+
 def _handle_slash(
     line: str,
     *,
@@ -636,155 +914,25 @@ def _handle_slash(
     arg = parts[1].strip() if len(parts) > 1 else ""
     if cmd in ("/quit", "/exit"):
         return False
-    if cmd == "/skills":
-        _cmd_skills(skill_registry, output=output, use=use)
-        sink.emit("session.skills_listed")
-        return True
-    if cmd == "/skill":
-        _cmd_skill(arg, skill_registry, sink=sink, output=output, use=use)
-        return True
-    if cmd == "/mcp":
-        _cmd_mcp(mcp_manager, output=output, use=use)
-        sink.emit("session.mcp_listed")
-        return True
-    if cmd in ("/help", "/?"):
-        commands = [
-            ("/help", "this list"),
-            ("/info", "session id, model, running cost"),
-            ("/util", "context utilisation % + cost"),
-            ("/compact", "force a Spec 04 microcompact now"),
-            ("/skills", "list available skills (frontmatter)"),
-            ("/skill <name>", "load a skill body (operator)"),
-            ("/mcp", "list MCP servers + connection status"),
-            ("/reset", "clear transcript (keep engine + cost)"),
-            ("/quit", "leave the REPL"),
-        ]
-        output.write(_c(_CYAN, "commands", use=use) + "\n")
-        for name, desc in commands:
-            output.write(
-                "  "
-                + _c(_BOLD, f"{name:<10}", use=use)
-                + _c(_DIM, desc, use=use)
-                + "\n"
-            )
-        output.write(_c(_DIM, "anything else is sent to the model.", use=use) + "\n")
-        return True
-    if cmd == "/info":
+    handler = _SLASH_COMMANDS.get(cmd)
+    if handler is None:
         output.write(
-            _c(_CYAN, "session", use=use) + "\n"
-            + "  " + _c(_DIM, "id    ", use=use) + session.id + "\n"
-            + "  " + _c(_DIM, "model ", use=use)
-            + (session.options.model or "<default>") + "\n"
-            + "  " + _c(_DIM, "cost  ", use=use)
-            + f"in={session.cost.input_tokens} out={session.cost.output_tokens}\n"
-        )
-        sink.emit("session.info", session_id=session.id)
-        return True
-    if cmd == "/util":
-        # Read capabilities off the bound engine; if absent we still
-        # render a usable line (utilisation falls back to 0.0).
-        engine = session._engine
-        capabilities = getattr(engine, "compaction_capabilities", None) if engine else None
-        pct = utilisation(session._transcript, capabilities) * 100.0
-        cost = session.cost
-        # Pressure-aware colouring: green < 50%, yellow 50-80%, red > 80%.
-        if pct >= 80:
-            tone = _RED
-        elif pct >= 50:
-            tone = _YELLOW
-        else:
-            tone = _GREEN
-        bar_width = 20
-        filled = max(0, min(bar_width, round(pct / 100.0 * bar_width)))
-        bar = "\u2588" * filled + "\u2591" * (bar_width - filled)
-        output.write(
-            _c(tone, f"util {pct:5.1f}%", use=use)
-            + "  "
-            + _c(tone, bar, use=use)
-            + "  "
-            + _c(_DIM, f"messages={len(session._transcript)}", use=use)
-            + "  "
-            + _c(_DIM, f"cost in={cost.input_tokens} out={cost.output_tokens}", use=use)
+            _c(_YELLOW, f"unknown command {cmd!r}", use=use)
+            + _c(_DIM, " \u00b7 /help for list", use=use)
             + "\n"
         )
-        sink.emit(
-            "session.util",
-            session_id=session.id,
-            utilisation=pct / 100.0,
-            messages=len(session._transcript),
-            input_tokens=cost.input_tokens,
-            output_tokens=cost.output_tokens,
-        )
         return True
-    if cmd == "/compact":
-        engine = session._engine
-        compactor = getattr(engine, "compactor", None) if engine else None
-        if engine is None or compactor is None:
-            output.write(
-                _c(_YELLOW, "\u25cb compact \u00b7 no compactor wired on this engine", use=use)
-                + "\n"
-            )
-            sink.emit("session.compact_skipped", reason="no_compactor")
-            return True
-        capabilities = engine.compaction_capabilities
-        threshold = engine.compaction_threshold
-        preserve_recent = engine.compaction_preserve_recent
-        pre_count = len(session._transcript)
-        pre_tokens = estimate_conversation_tokens(session._transcript)
-        new_transcript, result = auto_compact_if_needed(
-            session._transcript,
-            capabilities=capabilities,
-            state=compactor,
-            trigger="manual",
-            threshold=threshold,
-            preserve_recent=preserve_recent,
-            force=True,
+    return handler(
+        _SlashCtx(
+            arg=arg,
+            session=session,
+            sink=sink,
+            output=output,
+            use=use,
+            skill_registry=skill_registry,
+            mcp_manager=mcp_manager,
         )
-        session._transcript[:] = new_transcript
-        removed = max(0, pre_count - len(new_transcript))
-        post_tokens = estimate_conversation_tokens(new_transcript)
-        # ``force=True`` means ``result`` is effectively never ``None``, so we
-        # cannot use it to detect a no-op. Instead compare the real pre/post
-        # deltas: a compaction that reclaimed neither messages nor tokens did
-        # nothing (e.g. transcript already minimal / nothing compactable).
-        if result is None or (removed == 0 and post_tokens >= pre_tokens):
-            output.write(
-                _c(_DIM, "\u25cb compact \u00b7 nothing to compact", use=use) + "\n"
-            )
-            sink.emit("session.compact_skipped", reason="noop")
-            return True
-        post_util = utilisation(new_transcript, capabilities)
-        output.write(
-            _c(
-                _CYAN,
-                f"\u25c6 compact \u00b7 tier={result.tier} "
-                f"removed={removed} util_after={post_util * 100.0:.1f}%",
-                use=use,
-            )
-            + "\n"
-        )
-        sink.emit(
-            "context.compaction.completed",
-            tier=result.tier,
-            removed_messages=removed,
-            resulting_utilisation=post_util,
-        )
-        return True
-    if cmd == "/reset":
-        # Spec 05 Session has no public reset hook yet, so we just drop
-        # the in-memory transcript via the private attribute. The next
-        # send starts from a clean slate while keeping the engine and
-        # cost counters intact.
-        session._transcript.clear()
-        output.write(_c(_CYAN, "\u21bb transcript cleared", use=use) + "\n")
-        sink.emit("session.reset", session_id=session.id)
-        return True
-    output.write(
-        _c(_YELLOW, f"unknown command {cmd!r}", use=use)
-        + _c(_DIM, " \u00b7 /help for list", use=use)
-        + "\n"
     )
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -1049,7 +1197,10 @@ def run_session_repl(
         finally:
             if cron_task is not None:
                 cron_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
+                # Awaiting a just-cancelled task raises ``CancelledError``; that
+                # is the only expected outcome here, so suppress only it (a real
+                # bug in the tick loop should still surface, not be swallowed).
+                with contextlib.suppress(asyncio.CancelledError):
                     await cron_task
             for un in unsubs:
                 un()

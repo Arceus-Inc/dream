@@ -94,13 +94,43 @@ async def run_planner(
     spec_path = planner_spec_path(worktree_root, task_id)
     ledger_path = planner_ledger_path(worktree_root, task_id)
 
-    # Serialize the runs-once guard with the artefact writes: a plain
-    # exists()-then-write leaves a TOCTOU window where two concurrent
-    # run_planner calls both pass the check and both overwrite the
-    # artefacts. The per-task lock makes "check + claim + write" atomic, so
-    # the second caller observes the artefacts and is refused. The lockfile
-    # lives under ``.dream`` (not ``exec-plans/active``) so it never pollutes
-    # the artefact folder (criterion #3).
+    await _write_artefacts(
+        task_id=task_id,
+        intent=intent,
+        worktree_root=worktree_root,
+        planner=planner,
+        spec_path=spec_path,
+        ledger_path=ledger_path,
+    )
+
+    root = Path(worktree_root)
+    spec_rel = spec_path.relative_to(root).as_posix()
+    ledger_rel = ledger_path.relative_to(root).as_posix()
+
+    return PlannerResult(
+        task_id=task_id,
+        spec_path=spec_path,
+        ledger_path=ledger_path,
+        events=_build_events(task_id, spec_rel=spec_rel, ledger_rel=ledger_rel),
+    )
+
+
+async def _write_artefacts(
+    *,
+    task_id: str,
+    intent: str,
+    worktree_root: str | Path,
+    planner: PlannerCallable,
+    spec_path: Path,
+    ledger_path: Path,
+) -> None:
+    """Run the planner once under a per-task lock and commit both artefacts.
+
+    The lock makes "check runs-once + claim + write" atomic, closing the
+    TOCTOU window a plain ``exists()``-then-write would leave open. The
+    lockfile lives under ``.dream`` (not ``exec-plans/active``) so it never
+    pollutes the artefact folder (criterion #3).
+    """
     safe_id = _checked_task_id(task_id)
     lock_path = Path(worktree_root) / ".dream" / "planner" / f"{safe_id}.run.lock"
     with exclusive_file_lock(lock_path):
@@ -117,10 +147,11 @@ async def run_planner(
         atomic_write_text(spec_path, output.spec_markdown)
         ledger.save(ledger_path)
 
-    root = Path(worktree_root)
-    spec_rel = spec_path.relative_to(root).as_posix()
-    ledger_rel = ledger_path.relative_to(root).as_posix()
 
+def _build_events(
+    task_id: str, *, spec_rel: str, ledger_rel: str
+) -> tuple[dict[str, Any], ...]:
+    """The ordered stream payloads: ``planner.run.completed`` then handoff."""
     completed = {
         "type": "planner.run.completed",
         "ts": _now_iso(),
@@ -136,10 +167,4 @@ async def run_planner(
             HandoffArtefact(kind="ledger", path=ledger_rel),
         ],
     )
-
-    return PlannerResult(
-        task_id=task_id,
-        spec_path=spec_path,
-        ledger_path=ledger_path,
-        events=(completed, handoff),
-    )
+    return (completed, handoff)

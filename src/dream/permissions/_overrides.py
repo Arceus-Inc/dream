@@ -49,7 +49,13 @@ def parse_tier_overrides(text: str, *, clock: Clock) -> TierOverrides:
             raise TierOverrideError(f"'[{name}]' must be a table, got {type(table).__name__}")
         required[name] = _tier_required(name, table)
         promoted_at = table.get("promoted_at")
-        if promoted_at is not None and _is_stale(name, promoted_at, now_ms):
+        if promoted_at is None:
+            continue
+        try:
+            stale = _is_stale(promoted_at, now_ms)
+        except _PromotedAtError as exc:
+            raise TierOverrideError(f"'[{name}]' {exc}") from exc
+        if stale:
             warnings.append(
                 f"tool {name!r} tier promotion is stale "
                 f"(promoted {promoted_at}, older than 365 days)"
@@ -74,21 +80,23 @@ def _tier_required(name: str, table: dict[str, Any]) -> SandboxTier:
         raise TierOverrideError(f"'[{name}]': {exc}") from exc
 
 
-def _is_stale(name: str, promoted_at: Any, now_ms: int) -> bool:
-    moment = _to_datetime(name, promoted_at)
+class _PromotedAtError(ValueError):
+    """A bad ``promoted_at`` value; the caller prefixes it with the ``[name]``."""
+
+
+def _is_stale(promoted_at: Any, now_ms: int) -> bool:
+    moment = _to_datetime(promoted_at)
     return now_ms - int(moment.timestamp() * 1000) > STALE_AFTER_MS
 
 
-def _to_datetime(name: str, value: Any) -> datetime:
+def _to_datetime(value: Any) -> datetime:
     if isinstance(value, datetime):
         moment = value
     elif isinstance(value, str):
         try:
             moment = datetime.fromisoformat(value)
         except ValueError as exc:
-            raise TierOverrideError(
-                f"'[{name}]' invalid promoted_at {value!r}: {exc}"
-            ) from exc
+            raise _PromotedAtError(f"invalid promoted_at {value!r}: {exc}") from exc
     else:
-        raise TierOverrideError(f"'[{name}]' promoted_at must be a datetime or ISO string")
+        raise _PromotedAtError("promoted_at must be a datetime or ISO string")
     return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)

@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -71,6 +72,9 @@ class TeamMember:
     status: Literal["active", "idle", "stopped"] = "active"
 
     def to_dict(self) -> dict[str, Any]:
+        # Round-trips the 16 fields below; backend_type is a BackendType
+        # literal, status is "active"|"idle"|"stopped", subscriptions and
+        # permissions are list[str], the rest are scalars or null.
         return {
             "agent_id": self.agent_id,
             "name": self.name,
@@ -125,6 +129,11 @@ class TeamFile:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        # On-disk team.json shape:
+        #   {"name": str, "description": str, "created_at": float,
+        #    "lead_agent_id": str, "lead_session_id": str | None,
+        #    "members": {agent_id: <TeamMember.to_dict()>},
+        #    "metadata": dict[str, Any]}
         return {
             "name": self.name,
             "description": self.description,
@@ -275,41 +284,50 @@ class BackendRegistry:
     def get_executor(self, backend: BackendType) -> TeammateExecutor:
         if backend in self._instances:
             return self._instances[backend]
-        ex: TeammateExecutor
-        if backend == "in_process":
-            if self._in_process_factory is None:
-                raise ValueError(
-                    "in_process executor requested but no factory was registered "
-                    "(use BackendRegistry.set_in_process_factory)"
-                )
-            ex = InProcessExecutor(
-                worktree_root=self._worktree_root,
-                leader_id=self._leader_id,
-                factory=self._in_process_factory,
-            )
-        elif backend == "subprocess":
-            if self._task_manager is None:
-                raise ValueError(
-                    "subprocess executor requested but no BackgroundTaskManager "
-                    "was provided to BackendRegistry"
-                )
-            kw: dict[str, Any] = {
-                "worktree_root": self._worktree_root,
-                "leader_id": self._leader_id,
-                "task_manager": self._task_manager,
-            }
-            if self._argv_builder is not None:
-                kw["argv_builder"] = self._argv_builder
-            ex = SubprocessExecutor(**kw)
-        elif backend == "remote":
-            ex = RemoteExecutor(
-                worktree_root=self._worktree_root,
-                leader_id=self._leader_id,
-            )
-        else:
+        builders: dict[BackendType, Callable[[], TeammateExecutor]] = {
+            "in_process": self._build_in_process,
+            "subprocess": self._build_subprocess,
+            "remote": self._build_remote,
+        }
+        builder = builders.get(backend)
+        if builder is None:
             raise ValueError(
                 f"backend {backend!r} not available in v1 "
                 "(pane backends are deferred to a later slice)"
             )
+        ex = builder()
         self._instances[backend] = ex
         return ex
+
+    def _build_in_process(self) -> TeammateExecutor:
+        if self._in_process_factory is None:
+            raise ValueError(
+                "in_process executor requested but no factory was registered "
+                "(use BackendRegistry.set_in_process_factory)"
+            )
+        return InProcessExecutor(
+            worktree_root=self._worktree_root,
+            leader_id=self._leader_id,
+            factory=self._in_process_factory,
+        )
+
+    def _build_subprocess(self) -> TeammateExecutor:
+        if self._task_manager is None:
+            raise ValueError(
+                "subprocess executor requested but no BackgroundTaskManager "
+                "was provided to BackendRegistry"
+            )
+        kw: dict[str, Any] = {
+            "worktree_root": self._worktree_root,
+            "leader_id": self._leader_id,
+            "task_manager": self._task_manager,
+        }
+        if self._argv_builder is not None:
+            kw["argv_builder"] = self._argv_builder
+        return SubprocessExecutor(**kw)
+
+    def _build_remote(self) -> TeammateExecutor:
+        return RemoteExecutor(
+            worktree_root=self._worktree_root,
+            leader_id=self._leader_id,
+        )

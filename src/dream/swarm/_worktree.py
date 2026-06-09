@@ -13,6 +13,7 @@ import json
 import re
 import shutil
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -178,7 +179,6 @@ class WorktreeManager:
         make the uniqueness check atomic under the per-slug lock.
         """
         wt = slug if isinstance(slug, WorktreeSlug) else WorktreeSlug(slug)
-        repo = self._paths.repo
         self.base_dir.mkdir(parents=True, exist_ok=True)
         path = self.base_dir / wt.flat
 
@@ -189,38 +189,55 @@ class WorktreeManager:
         with exclusive_file_lock(self._lock_path(wt.flat)):
             # An existing valid worktree: fast-resume, or refuse if exist_ok=False.
             if path.exists() and run_git(["rev-parse", "--git-dir"], cwd=path)[0] == 0:
-                if not exist_ok:
-                    raise FileExistsError(
-                        f"worktree for slug {wt.value!r} already exists"
-                    )
-                agent, created = self._read_meta(wt.flat)
-                return WorktreeInfo(
-                    slug=wt.value,
-                    path=path,
-                    branch=wt.branch,
-                    original_path=repo,
-                    created_at=created if created is not None else path.stat().st_mtime,
-                    agent_id=agent,
-                )
-
-            # -B resets an orphan branch left by a prior remove rather than colliding.
-            code, _, stderr = run_git(
-                ["worktree", "add", "-B", wt.branch, str(path), start_point], cwd=repo
+                return self._resume_existing(wt, path, exist_ok=exist_ok)
+            return self._create_fresh(
+                wt, path, start_point=start_point, agent_id=agent_id
             )
-            if code != 0:
-                raise RuntimeError(f"git worktree add failed: {stderr}")
 
-            _symlink_common_dirs(repo, path)
-            created_at = time.time()
-            self._write_meta(wt.flat, agent_id=agent_id, created_at=created_at)
-            return WorktreeInfo(
-                slug=wt.value,
-                path=path,
-                branch=wt.branch,
-                original_path=repo,
-                created_at=created_at,
-                agent_id=agent_id,
-            )
+    def _resume_existing(
+        self, wt: WorktreeSlug, path: Path, *, exist_ok: bool
+    ) -> WorktreeInfo:
+        """Fast-resume an already-present valid worktree (or refuse it)."""
+        if not exist_ok:
+            raise FileExistsError(f"worktree for slug {wt.value!r} already exists")
+        agent, created = self._read_meta(wt.flat)
+        return WorktreeInfo(
+            slug=wt.value,
+            path=path,
+            branch=wt.branch,
+            original_path=self._paths.repo,
+            created_at=created if created is not None else path.stat().st_mtime,
+            agent_id=agent,
+        )
+
+    def _create_fresh(
+        self,
+        wt: WorktreeSlug,
+        path: Path,
+        *,
+        start_point: str,
+        agent_id: str | None,
+    ) -> WorktreeInfo:
+        """Run ``git worktree add`` and persist symlinks + meta for a new tree."""
+        repo = self._paths.repo
+        # -B resets an orphan branch left by a prior remove rather than colliding.
+        code, _, stderr = run_git(
+            ["worktree", "add", "-B", wt.branch, str(path), start_point], cwd=repo
+        )
+        if code != 0:
+            raise RuntimeError(f"git worktree add failed: {stderr}")
+
+        _symlink_common_dirs(repo, path)
+        created_at = time.time()
+        self._write_meta(wt.flat, agent_id=agent_id, created_at=created_at)
+        return WorktreeInfo(
+            slug=wt.value,
+            path=path,
+            branch=wt.branch,
+            original_path=repo,
+            created_at=created_at,
+            agent_id=agent_id,
+        )
 
     def remove_worktree(self, slug: str | WorktreeSlug) -> bool:
         """Remove a worktree (symlinks first). Returns False if it was absent."""
@@ -247,30 +264,36 @@ class WorktreeManager:
 
     def list_worktrees(self) -> list[WorktreeInfo]:
         """Return info for every valid worktree under ``base_dir``."""
+        return list(self._iter_worktrees())
+
+    def _iter_worktrees(self) -> Iterator[WorktreeInfo]:
+        """Yield :class:`WorktreeInfo` for each valid worktree, in name order."""
         if not self.base_dir.exists():
-            return []
-        out: list[WorktreeInfo] = []
+            return
         for child in sorted(self.base_dir.iterdir()):
-            if not child.is_dir():
-                continue
-            if run_git(["rev-parse", "--git-dir"], cwd=child)[0] != 0:
-                continue
-            rc, branch_out, _ = run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=child)
-            branch = branch_out if rc == 0 else "unknown"
-            rc2, common, _ = run_git(["rev-parse", "--git-common-dir"], cwd=child)
-            original = Path(common).resolve().parent if rc2 == 0 and common else child
-            agent, created = self._read_meta(child.name)
-            out.append(
-                WorktreeInfo(
-                    slug=child.name.replace("+", "/"),
-                    path=child,
-                    branch=branch,
-                    original_path=original,
-                    created_at=created if created is not None else child.stat().st_mtime,
-                    agent_id=agent,
-                )
-            )
-        return out
+            info = self._worktree_info_for(child)
+            if info is not None:
+                yield info
+
+    def _worktree_info_for(self, child: Path) -> WorktreeInfo | None:
+        """Describe one ``base_dir`` child, or ``None`` if it isn't a worktree."""
+        if not child.is_dir():
+            return None
+        if run_git(["rev-parse", "--git-dir"], cwd=child)[0] != 0:
+            return None
+        rc, branch_out, _ = run_git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=child)
+        branch = branch_out if rc == 0 else "unknown"
+        rc2, common, _ = run_git(["rev-parse", "--git-common-dir"], cwd=child)
+        original = Path(common).resolve().parent if rc2 == 0 and common else child
+        agent, created = self._read_meta(child.name)
+        return WorktreeInfo(
+            slug=child.name.replace("+", "/"),
+            path=child,
+            branch=branch,
+            original_path=original,
+            created_at=created if created is not None else child.stat().st_mtime,
+            agent_id=agent,
+        )
 
     def cleanup_stale(self, active_agent_ids: set[str] | None = None) -> list[str]:
         """Remove agent-owned worktrees whose agent is not in ``active_agent_ids``.
@@ -278,7 +301,7 @@ class WorktreeManager:
         ``None`` treats *every* agent-owned worktree as stale (full sweep).
         """
         removed: list[str] = []
-        for info in self.list_worktrees():
+        for info in self._iter_worktrees():
             if info.agent_id is None:
                 continue
             if active_agent_ids is not None and info.agent_id in active_agent_ids:

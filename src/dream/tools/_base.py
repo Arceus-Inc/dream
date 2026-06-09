@@ -98,6 +98,21 @@ class Observation:
     artifacts: tuple[str, ...]
 
 
+# Recognized ``ToolResult.metadata`` keys (the load-bearing dict every tool
+# builds by hand). Example shape:
+#   {"warning": bool,                 # → "warning" status
+#    "summary": str,                  # explicit one-line summary
+#    "returncode": int | None,        # \
+#    "lines_changed": int,            #  } numeric facts folded into the summary
+#    "bytes_written": int,            # /
+#    "files_matched": int,            # /
+#    "root_cause": str,               # \
+#    "safe_retry": str,               #  } Spec 05 three-part recovery contract
+#    "stop_condition": str,           # /
+#    "next_actions": list[str],       # extra recovery hints
+#    "artifacts": list[str],          # produced/affected paths
+#    "offload_ref": str}              # sidecar pointer for spilled content
+# All keys are optional; unrecognized keys are ignored by observation derivation.
 def derive_observation(result: ToolResult) -> Observation:
     """Translate a ``ToolResult`` into an engine-internal ``Observation``.
 

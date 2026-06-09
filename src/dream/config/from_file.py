@@ -21,6 +21,7 @@ on demand. It does not import vendor SDKs.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -211,8 +212,6 @@ class Settings(BaseModel):
         merged map if even that name is missing — better than crashing during
         diagnostic commands.
         """
-        import os
-
         profiles = self.merged_profiles()
         chosen = (
             (name or "").strip()

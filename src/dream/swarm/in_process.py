@@ -49,6 +49,34 @@ def _depth_event(*, depth: int, agent_id: str) -> dict[str, Any]:
     }
 
 
+def _depth_guard(
+    config: TeammateSpawnConfig,
+    agent_id: str,
+    backend_type: BackendType,
+    *,
+    emit: EventSink,
+) -> SpawnResult | None:
+    """Refuse a spawn whose depth would exceed the cap, else return ``None``.
+
+    On refusal it emits one ``subagent.depth_exceeded`` event and returns the
+    failed :class:`SpawnResult` the executor should hand back; shared by both
+    the in-process and subprocess spawn paths.
+    """
+    if config.depth <= MAX_SUBAGENT_DEPTH:
+        return None
+    emit(_depth_event(depth=config.depth, agent_id=agent_id))
+    return SpawnResult(
+        task_id="",
+        agent_id=agent_id,
+        backend_type=backend_type,
+        success=False,
+        error=(
+            f"exceeded subagent depth: depth={config.depth} > "
+            f"max={MAX_SUBAGENT_DEPTH}"
+        ),
+    )
+
+
 @dataclass
 class InProcessExecutor:
     """Spawn each teammate as an ``asyncio.Task`` in the parent loop.
@@ -78,18 +106,9 @@ class InProcessExecutor:
             name=config.name, team=config.team
         ).agent_id
 
-        if config.depth > MAX_SUBAGENT_DEPTH:
-            self._emit(_depth_event(depth=config.depth, agent_id=agent_id))
-            return SpawnResult(
-                task_id="",
-                agent_id=agent_id,
-                backend_type="in_process",
-                success=False,
-                error=(
-                    f"exceeded subagent depth: depth={config.depth} > "
-                    f"max={MAX_SUBAGENT_DEPTH}"
-                ),
-            )
+        refused = _depth_guard(config, agent_id, "in_process", emit=self._emit)
+        if refused is not None:
+            return refused
 
         task_id = f"in_process_teammate-{uuid4().hex[:8]}"
         inbox = leader_inbox_dir(self.worktree_root, self.leader_id)
@@ -101,7 +120,13 @@ class InProcessExecutor:
             try:
                 result = await self.factory(config)
                 summary = result if isinstance(result, str) else str(result)
-            except BaseException as exc:
+            except asyncio.CancelledError:
+                # Record the cancellation, then re-raise so the task is
+                # observed as cancelled rather than masked as a failure.
+                status = "failed"
+                summary = "CancelledError"
+                raise
+            except Exception as exc:
                 status = "failed"
                 summary = f"{type(exc).__name__}: {exc}"
             finally:

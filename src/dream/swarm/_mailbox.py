@@ -18,7 +18,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from dream.utils.fs import atomic_write_text
 
@@ -42,15 +42,7 @@ MessageType = Literal[
     "shutdown",
 ]
 
-_VALID_MESSAGE_TYPES: frozenset[str] = frozenset(
-    {
-        "user_message",
-        "permission_request",
-        "permission_response",
-        "task_notification",
-        "shutdown",
-    }
-)
+_VALID_MESSAGE_TYPES: frozenset[str] = frozenset(get_args(MessageType))
 
 _VALID_TASK_STATUSES: frozenset[str] = frozenset({"completed", "failed", "killed"})
 
@@ -63,6 +55,15 @@ class MailboxMessage:
     type: str  # narrowed to MessageType at construction by from_dict/factories
     sender: str
     recipient: str
+    # Shape depends on ``type`` (see the make_* factories):
+    #   user_message        -> {"content": str}
+    #   task_notification   -> {"task_id": str, "status": str, "summary": str,
+    #                           "result"?: str, "usage"?: dict}
+    #   permission_request  -> {"request_id": str, "tool_name": str,
+    #                           "tool_input": dict, "description": str}
+    #   permission_response -> {"request_id": str, "allowed": bool,
+    #                           "reason": str, "allow_once": bool}
+    #   shutdown            -> {}
     payload: dict[str, Any]
     timestamp: float
 
@@ -234,17 +235,23 @@ class Mailbox:
 
     # read ------------------------------------------------------------
 
-    def read_all(self) -> list[MailboxMessage]:
-        """Return every well-formed message, oldest-first by timestamp."""
+    def _scan(self) -> list[tuple[Path, MailboxMessage | None]]:
+        """Return ``(path, message)`` for every message file, sorted by name.
+
+        ``message`` is ``None`` for a file that failed to load (corrupt /
+        unreadable); callers decide whether to surface or remove those.
+        """
         if not self.inbox_dir.is_dir():
             return []
-        messages: list[MailboxMessage] = []
-        for path in sorted(self.inbox_dir.iterdir()):
-            if not _is_message_file(path):
-                continue
-            msg = _try_load(path)
-            if msg is not None:
-                messages.append(msg)
+        return [
+            (path, _try_load(path))
+            for path in sorted(self.inbox_dir.iterdir())
+            if _is_message_file(path)
+        ]
+
+    def read_all(self) -> list[MailboxMessage]:
+        """Return every well-formed message, oldest-first by timestamp."""
+        messages = [msg for _, msg in self._scan() if msg is not None]
         # Sort by the timestamp field, not just the filename, so a future
         # caller that bypassed the filename convention still gets ordered
         # delivery.
@@ -253,19 +260,10 @@ class Mailbox:
 
     def drain(self) -> list[MailboxMessage]:
         """Read all messages then delete the underlying files."""
-        if not self.inbox_dir.is_dir():
-            return []
-        messages: list[MailboxMessage] = []
-        to_remove: list[Path] = []
-        for path in sorted(self.inbox_dir.iterdir()):
-            if not _is_message_file(path):
-                continue
-            msg = _try_load(path)
-            if msg is not None:
-                messages.append(msg)
-            to_remove.append(path)  # remove corrupted files too, so they don't pile up
+        scanned = self._scan()
+        messages = [msg for _, msg in scanned if msg is not None]
         messages.sort(key=lambda m: m.timestamp)
-        for path in to_remove:
+        for path, _ in scanned:  # remove corrupted files too, so they don't pile up
             # Best-effort: a peer that already removed it is fine.
             with contextlib.suppress(OSError):
                 path.unlink()

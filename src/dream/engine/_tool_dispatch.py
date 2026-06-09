@@ -48,6 +48,7 @@ from pydantic import ValidationError
 
 from dream.permissions import Outcome, PermissionDecision, PermissionRequest
 from dream.services.tool_outputs import offload_tool_output
+from dream.tools._base import BaseTool
 from dream.tools._context import ToolExecutionContext
 from dream.tools._registry import ToolRegistry
 
@@ -102,6 +103,9 @@ class EngineToolDispatcher:
     context_metadata: dict[str, Any] = field(default_factory=dict)
 
     async def dispatch(self, name: str, input: dict[str, Any]) -> tuple[str, bool]:
+        # ``input`` is the raw tool-call argument map straight off the model's
+        # ToolUseBlock (e.g. {"path": "src/x.py", "content": "..."}); it is
+        # validated against ``tool.input_model`` before any side-effecting work.
         if self.role_allowed_tools is not None and name not in self.role_allowed_tools:
             return self._role_refused(name)
 
@@ -109,10 +113,9 @@ class EngineToolDispatcher:
         if tool is None:
             return self._unknown(name)
 
-        try:
-            tool.input_model.model_validate(input)
-        except ValidationError as exc:
-            return self._schema_invalid(tool_name=name, tool=tool, exc=exc)
+        validation_error = self._validate_input(name, tool, input)
+        if validation_error is not None:
+            return validation_error
 
         is_read_only = tool.is_read_only_for(input)
         if self.permission_gate is not None:
@@ -127,6 +130,41 @@ class EngineToolDispatcher:
             scratch_dir=self.scratch_dir,
             metadata=dict(self.context_metadata),  # copy: a tool can't leak into the next call
         )
+        result, elapsed = await self._run_with_timeout(name, tool, input, ctx, is_read_only)
+        if isinstance(result, tuple):
+            # A synthetic timeout result (already recorded) rather than a ToolResult.
+            return result
+        return self._offload_and_record(name, result, is_read_only=is_read_only, elapsed=elapsed)
+
+    def _validate_input(
+        self, name: str, tool: BaseTool, input: dict[str, Any]
+    ) -> tuple[str, bool] | None:
+        """Validate ``input`` against the tool's pydantic model.
+
+        Returns a typed-error result on failure (the dispatch contract's 3-part
+        envelope, no execute), or ``None`` when the input is well-formed.
+        """
+        try:
+            tool.input_model.model_validate(input)
+        except ValidationError as exc:
+            return self._schema_invalid(tool_name=name, tool=tool, exc=exc)
+        return None
+
+    async def _run_with_timeout(
+        self,
+        name: str,
+        tool: BaseTool,
+        input: dict[str, Any],
+        ctx: ToolExecutionContext,
+        is_read_only: bool,
+    ) -> tuple[Any, float]:
+        """Execute the tool under its declared timeout.
+
+        Returns ``(result, elapsed)`` on success. On a *deadline* expiry returns
+        the synthetic timeout envelope (a ``tuple[str, bool]``, already recorded)
+        in the first slot; a ``TimeoutError`` raised by the tool *itself*
+        propagates unchanged per the dispatch contract (#27).
+        """
         timeout = tool.declaration.timeout_seconds
         t0 = time.monotonic()
         # Wrap execution in an explicit task so we can tell *which* call
@@ -146,12 +184,22 @@ class EngineToolDispatcher:
             # deadline expiry -- re-raise it for the engine loop to handle.
             if exec_task.cancelled():
                 elapsed = time.monotonic() - t0
-                return self._timeout(
-                    tool_name=name, timeout=timeout, is_read_only=is_read_only, elapsed=elapsed
+                return (
+                    self._timeout(
+                        tool_name=name,
+                        timeout=timeout,
+                        is_read_only=is_read_only,
+                        elapsed=elapsed,
+                    ),
+                    elapsed,
                 )
             raise
-        elapsed = time.monotonic() - t0
+        return result, time.monotonic() - t0
 
+    def _offload_and_record(
+        self, name: str, result: Any, *, is_read_only: bool, elapsed: float
+    ) -> tuple[str, bool]:
+        """Offload an oversized payload, emit the dispatch record, return inline."""
         scratch = self.scratch_dir or (self.working_dir / ".dream" / "scratch")
         inline, pointer = offload_tool_output(
             result.content,
@@ -170,7 +218,7 @@ class EngineToolDispatcher:
         return inline, result.is_error
 
     def _permission_request(
-        self, name: str, tool: Any, input: dict[str, Any], is_read_only: bool
+        self, name: str, tool: BaseTool, input: dict[str, Any], is_read_only: bool
     ) -> PermissionRequest:
         """Build the gate request from the tool's per-call effects.
 
@@ -214,7 +262,7 @@ class EngineToolDispatcher:
         return content, True
 
     def _schema_invalid(
-        self, *, tool_name: str, tool: Any, exc: ValidationError
+        self, *, tool_name: str, tool: BaseTool, exc: ValidationError
     ) -> tuple[str, bool]:
         content = (
             f"Invalid input for {tool_name}: {exc}\n"

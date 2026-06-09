@@ -18,9 +18,10 @@ from pydantic import BaseModel
 
 from dream.contracts.tool import ToolResult
 from dream.tasks._cron import CronJob, load_cron_jobs
-from dream.tasks._session import read_task_context
 from dream.tools._base import BaseTool, ToolDeclaration
 from dream.tools._context import ToolExecutionContext
+from dream.tools.builtin._errors import tool_error as _err
+from dream.tools.builtin._task_context import require_task_context
 
 
 class CronListInput(BaseModel):
@@ -38,14 +39,14 @@ class CronListTool(BaseTool):
     async def execute(self, input: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
         CronListInput.model_validate(input)
 
-        task_ctx = read_task_context(ctx.metadata)
-        if task_ctx is None:
-            return _err(
-                "Cron tools are not available in this session.",
-                root_cause="no task session context was wired",
-                safe_retry="run inside a session that enables task tools",
-                stop_condition="do not retry without task wiring",
-            )
+        task_ctx = require_task_context(
+            ctx.metadata,
+            content="Cron tools are not available in this session.",
+            root_cause="no task session context was wired",
+            safe_retry="run inside a session that enables task tools",
+        )
+        if isinstance(task_ctx, ToolResult):
+            return task_ctx
 
         registry = task_ctx.cron_registry_path
         if registry is None:
@@ -81,18 +82,6 @@ def _render(job: CronJob) -> str:
     return (
         f"[{enabled}] {job.name}  {job.schedule}{tz}\n"
         f"     last: {last_run}{last_status}  next: {next_run}"
-    )
-
-
-def _err(content: str, *, root_cause: str, safe_retry: str, stop_condition: str) -> ToolResult:
-    return ToolResult(
-        content=content,
-        is_error=True,
-        metadata={
-            "root_cause": root_cause,
-            "safe_retry": safe_retry,
-            "stop_condition": stop_condition,
-        },
     )
 
 

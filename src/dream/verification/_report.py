@@ -28,6 +28,12 @@ def write_report(report: VerificationReport, path: str | Path, *, scratch_dir: P
 def _serialise_step(
     step: RepoVerificationStep, scratch_dir: Path, index: int
 ) -> dict[str, Any]:
+    # Returned shape (one element of the report's "steps" list):
+    #   {"command": str, "name": str, "status": str, "returncode": int,
+    #    "stdout": str, "stderr": str,
+    #    "stdout_offloaded_to"?: str, "stderr_offloaded_to"?: str}
+    # The ``*_offloaded_to`` keys are present only when that stream was
+    # offloaded (oversized) per the #04 offload contract.
     stdout, stdout_ptr = offload_tool_output(
         step.stdout, scratch_dir=scratch_dir, tool_use_id=f"verif-{index}-out", tool_name="verification"
     )

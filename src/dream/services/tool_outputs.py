@@ -154,18 +154,20 @@ def offload_tool_output(
     preview = content[:preview_limit]
     omitted = max(0, len(content) - len(preview))
     original_size_bytes = len(content.encode("utf-8"))
-    inline = (
-        "[Tool output truncated]\n"
-        f"Tool: {tool_name}\n"
-        f"Tool use id: {tool_use_id}\n"
-        f"Original size: {original_size_bytes} bytes\n"
-        f"Full output saved to: {filename}\n"
-        f"Inline preview: first {len(preview)} chars"
-    )
+    preview_line = f"Inline preview: first {len(preview)} chars"
     if omitted:
-        inline += f" ({omitted} chars omitted)"
+        preview_line += f" ({omitted} chars omitted)"
+    parts: list[str] = [
+        "[Tool output truncated]",
+        f"Tool: {tool_name}",
+        f"Tool use id: {tool_use_id}",
+        f"Original size: {original_size_bytes} bytes",
+        f"Full output saved to: {filename}",
+        preview_line,
+    ]
     if preview:
-        inline += f"\n\nPreview:\n{preview}"
+        parts.append(f"\nPreview:\n{preview}")
+    inline = "\n".join(parts)
 
     pointer = OffloadPointer(
         offloaded_to=filename,

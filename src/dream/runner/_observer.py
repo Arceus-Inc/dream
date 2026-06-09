@@ -45,10 +45,41 @@ Event kinds emitted today (additions are non-breaking):
 
 from __future__ import annotations
 
-import os
 import sys
 from dataclasses import dataclass, field
 from typing import Any, Protocol, TextIO, runtime_checkable
+
+# The ANSI constants and the TTY gate live in one shared module
+# (:mod:`dream.repl._ansi`) that the interactive REPL imports too; aliased here
+# under the module-private ``_NAME`` spelling every handler already uses.
+from dream.repl._ansi import (
+    BLUE as _BLUE,
+)
+from dream.repl._ansi import (
+    BOLD as _BOLD,
+)
+from dream.repl._ansi import (
+    CYAN as _CYAN,
+)
+from dream.repl._ansi import (
+    DIM as _DIM,
+)
+from dream.repl._ansi import (
+    GREEN as _GREEN,
+)
+from dream.repl._ansi import (
+    MAGENTA as _MAGENTA,
+)
+from dream.repl._ansi import (
+    RED as _RED,
+)
+from dream.repl._ansi import (
+    RESET as _RESET,
+)
+from dream.repl._ansi import (
+    YELLOW as _YELLOW,
+)
+from dream.repl._ansi import use_colour as _shared_use_colour
 
 __all__ = [
     "RunTaskObserver",
@@ -75,16 +106,6 @@ class RunTaskObserver(Protocol):
 
 # --- visual styling (TTY-gated; StringIO and pipes get plain text) ----------
 
-_RESET = "\x1b[0m"
-_DIM = "\x1b[2m"
-_BOLD = "\x1b[1m"
-_RED = "\x1b[31m"
-_GREEN = "\x1b[32m"
-_YELLOW = "\x1b[33m"
-_BLUE = "\x1b[34m"
-_MAGENTA = "\x1b[35m"
-_CYAN = "\x1b[36m"
-
 _ROLE_COLOUR: dict[str, str] = {
     "planner": _CYAN,
     "generator": _GREEN,
@@ -104,12 +125,10 @@ def _use_colour(stream: TextIO) -> bool:
     """Only emit ANSI when the stream is a real terminal.
 
     StringIO/pipes/redirected files return False so test snapshots and
-    machine-consumed logs stay plain text.
+    machine-consumed logs stay plain text. ``NO_COLOR`` forces plain text
+    even on a TTY.
     """
-    if os.environ.get("NO_COLOR"):
-        return False
-    isatty = getattr(stream, "isatty", None)
-    return bool(isatty and isatty())
+    return _shared_use_colour(stream, respect_no_color=True)
 
 
 def _truncate(text: str, *, limit: int = 160) -> str:
@@ -202,6 +221,15 @@ class StdioObserver:
         return f"{code}{text}{_RESET}"
 
     def on_event(self, event: dict[str, Any]) -> None:
+        # ``event`` always carries a ``"kind"`` str discriminator; the
+        # remaining keys are fixed per kind (see the module docstring for the
+        # full table). Examples:
+        #   {"kind": "sprint.started", "sprint_number": 1,
+        #    "step_id": "s1", "step_description": "…"}
+        #   {"kind": "role.tool.start", "role": "generator",
+        #    "tool": "read_file", "input": {"path": "x"}}
+        #   {"kind": "evaluator.completed", "outcome": "pass",
+        #    "score": 0.9, "notes": "…", "sprint_number": 1}
         kind = event.get("kind", "?")
         handler = _HANDLERS.get(kind, _format_default)
         line = handler(event, self)
@@ -238,6 +266,15 @@ class _CapturingObserver:
 
 _INDENT_ROLE = "  "
 _INDENT_TOOL = "    "
+
+
+def _outcome_glyph(outcome: str) -> str:
+    """Map an evaluation outcome to its display glyph (✓ pass / ✗ fail / ▲ else)."""
+    if outcome == "pass":
+        return "✓"
+    if outcome == "fail":
+        return "✗"
+    return "▲"
 
 
 def _format_default(event: dict[str, Any], _obs: StdioObserver) -> str:
@@ -284,7 +321,7 @@ def _on_sprint_started(event: dict[str, Any], obs: StdioObserver) -> str:
 def _on_sprint_completed(event: dict[str, Any], obs: StdioObserver) -> str:
     outcome = event.get("outcome")
     if outcome:
-        glyph = "✓" if outcome == "pass" else ("✗" if outcome == "fail" else "▲")
+        glyph = _outcome_glyph(outcome)
         colour = _OUTCOME_COLOUR.get(outcome, "")
         suffix = obs._c(colour, f"outcome={outcome}")
     else:
@@ -340,7 +377,7 @@ def _on_evaluator_started(event: dict[str, Any], obs: StdioObserver) -> str:
 
 def _on_evaluator_completed(event: dict[str, Any], obs: StdioObserver) -> str:
     outcome = str(event.get("outcome") or "")
-    glyph = "✓" if outcome == "pass" else ("✗" if outcome == "fail" else "▲")
+    glyph = _outcome_glyph(outcome)
     colour = _OUTCOME_COLOUR.get(outcome, _YELLOW)
     notes = event.get("notes") or ""
     notes_part = f" notes={_truncate(notes)!r}" if notes else ""

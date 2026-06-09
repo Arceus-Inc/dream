@@ -48,7 +48,10 @@ from dream.tasks._cron import (
     upsert_cron_job,
 )
 from dream.tasks._cron_session import CRON_RUNS_ROOT, spawn_cron_session
-from dream.tasks._manager import BackgroundTaskManager
+from dream.tasks._manager import (
+    BackgroundTaskManager,
+    register_one_shot_completion,
+)
 from dream.tasks._types import TaskRecord
 from dream.utils.fs import atomic_write_text
 
@@ -65,9 +68,6 @@ DEFAULT_POLL_SECONDS = 30
 minute-granular cron expressions on time, large enough that the registry
 file lock isn't being grabbed constantly."""
 
-_TERMINAL_STATUSES = frozenset({"completed", "failed", "killed"})
-
-
 def _record_completion_outcome(
     *,
     manager: BackgroundTaskManager,
@@ -82,32 +82,12 @@ def _record_completion_outcome(
     spawned task) updates the row via :func:`mark_job_run`, then unregisters
     itself so the listener set doesn't grow across ticks.
     """
-    unregister: dict[str, object] = {}
-    fired: dict[str, bool] = {"done": False}
 
     def _stamp(task: TaskRecord) -> None:
-        if fired["done"]:
-            return
-        fired["done"] = True
         success = task.status == "completed" and task.return_code == 0
-        try:
-            mark_job_run(registry_path, name, success=success)
-        finally:
-            fn = unregister.get("fn")
-            if callable(fn):
-                fn()
+        mark_job_run(registry_path, name, success=success)
 
-    def _on_terminal(task: TaskRecord) -> None:
-        if task.id != task_id or task.status not in _TERMINAL_STATUSES:
-            return
-        _stamp(task)
-
-    unregister["fn"] = manager.register_completion_listener(_on_terminal)
-    # Close the spawn/register race: if the task already reached a terminal
-    # state before this listener was attached, stamp from its current record.
-    current = manager.get_task(task_id)
-    if current is not None and current.status in _TERMINAL_STATUSES:
-        _stamp(current)
+    register_one_shot_completion(manager, task_id, _stamp)
 
 
 def _manifest_dir(working_dir: Path) -> Path:

@@ -14,9 +14,10 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from dream.contracts.tool import ToolResult
-from dream.tasks._session import read_task_context
 from dream.tools._base import BaseTool, ToolDeclaration
 from dream.tools._context import ToolExecutionContext
+from dream.tools.builtin._errors import tool_error as _err
+from dream.tools.builtin._task_context import require_task_context
 
 
 class TaskStopInput(BaseModel):
@@ -36,14 +37,9 @@ class TaskStopTool(BaseTool):
     async def execute(self, input: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
         args = TaskStopInput.model_validate(input)
 
-        task_ctx = read_task_context(ctx.metadata)
-        if task_ctx is None:
-            return _err(
-                "Background tasks are not available in this session.",
-                root_cause="no task manager was wired into the execution context",
-                safe_retry="run inside a session that enables background tasks",
-                stop_condition="do not retry without task wiring",
-            )
+        task_ctx = require_task_context(ctx.metadata)
+        if isinstance(task_ctx, ToolResult):
+            return task_ctx
 
         try:
             task = await task_ctx.manager.stop_task(args.task_id)
@@ -64,18 +60,6 @@ class TaskStopTool(BaseTool):
                 "summary": f"stopped task {task.id}",
             },
         )
-
-
-def _err(content: str, *, root_cause: str, safe_retry: str, stop_condition: str) -> ToolResult:
-    return ToolResult(
-        content=content,
-        is_error=True,
-        metadata={
-            "root_cause": root_cause,
-            "safe_retry": safe_retry,
-            "stop_condition": stop_condition,
-        },
-    )
 
 
 __all__ = ["TaskStopInput", "TaskStopTool"]
