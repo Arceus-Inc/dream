@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 from dream.contracts.tool import ToolResult
 from dream.tools._base import BaseTool, ToolDeclaration, ToolEffects
 from dream.tools._context import ToolExecutionContext
+from dream.tools._paths import PathEscapesRoot, resolve_within
 
 _OUTPUT_CAP = 12_000
 _READ_REMAINING_TIMEOUT = 2.0
@@ -130,7 +131,29 @@ class BashTool(BaseTool):
 
     async def execute(self, input: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
         args = BashInput.model_validate(input)
-        cwd = Path(args.cwd).expanduser() if args.cwd else ctx.working_dir
+        # Confine an operator/model-supplied cwd to the working directory: a
+        # relative cwd (``.``, ``sub``) is joined onto ``ctx.working_dir`` and an
+        # absolute or ``..`` path that escapes it is refused. Resolving against
+        # the *process* cwd let a worker pass ``cwd="."`` and operate on the host
+        # repo instead of its worktree (sandbox escape).
+        if args.cwd:
+            try:
+                cwd = resolve_within(ctx.working_dir, args.cwd)
+            except PathEscapesRoot as exc:
+                return ToolResult(
+                    content=f"Path outside the working directory: {args.cwd}",
+                    is_error=True,
+                    metadata={
+                        "command": args.command,
+                        "returncode": None,
+                        "timed_out": False,
+                        "root_cause": str(exc),
+                        "safe_retry": "pass a cwd within the working directory, or omit it",
+                        "stop_condition": "do not retry with the same out-of-tree cwd",
+                    },
+                )
+        else:
+            cwd = ctx.working_dir
 
         if _looks_like_interactive_scaffold(args.command):
             return ToolResult(
