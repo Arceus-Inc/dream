@@ -33,19 +33,19 @@ def test_planner_default_tools_are_read_only_triplet() -> None:
     m = default_role_manifest("planner")
     assert m.tools is not None
     tools = set(m.tools)
-    # file_read + git + (mcp/observability reads) — exact set is the contract;
+    # read_file + git + (mcp/observability reads) — exact set is the contract;
     # writers must NOT appear here.
-    assert "file_read" in tools
+    assert "read_file" in tools
     assert "git" in tools
-    assert "file_write" not in tools
-    assert "file_edit" not in tools
+    assert "write_file" not in tools
+    assert "edit_file" not in tools
     assert "bash" not in tools
 
 
 def test_planner_default_disallowed_tools_lists_all_writers() -> None:
     m = default_role_manifest("planner")
     disallowed = set(m.disallowed_tools)
-    assert {"file_write", "file_edit", "bash"} <= disallowed
+    assert {"write_file", "edit_file", "bash"} <= disallowed
 
 
 def test_planner_default_permission_mode_is_plan() -> None:
@@ -74,12 +74,44 @@ def test_evaluator_default_tools_are_read_only_plus_no_writers() -> None:
     m = default_role_manifest("evaluator")
     assert m.tools is not None
     tools = set(m.tools)
-    assert "file_read" in tools
-    assert "file_write" not in tools
-    assert "file_edit" not in tools
+    assert "read_file" in tools
+    assert "write_file" not in tools
+    assert "edit_file" not in tools
     assert "bash" not in tools
 
 
 def test_evaluator_default_disallowed_lists_writers() -> None:
     m = default_role_manifest("evaluator")
-    assert {"file_write", "file_edit", "bash"} <= set(m.disallowed_tools)
+    assert {"write_file", "edit_file", "bash"} <= set(m.disallowed_tools)
+
+
+# --- registry alignment (names must match real registered tools) ------------
+
+
+def test_default_manifest_tool_names_exist_in_default_registry() -> None:
+    # Regression: the read-only triplet referenced ``file_read`` while the
+    # registered tool is ``read_file``; ``compute_minimum_toolset`` silently
+    # drops unknown names, so planner/evaluator lost file reading entirely and
+    # collapsed to ``{git, query_logs}``. Every name a default manifest lists
+    # (tools + disallowed_tools) must be a real registered tool name.
+    from dream.roles import compute_minimum_toolset
+    from dream.tools.builtin import default_registry
+
+    registry = default_registry()
+    registered = {t.name for t in registry.list_tools()}
+    declarations = {t.name: t.declaration for t in registry.list_tools()}
+
+    from dream.permissions import SandboxTier
+
+    for role in ("planner", "evaluator"):
+        m = default_role_manifest(role)  # type: ignore[arg-type]
+        # Names referenced by the manifest must exist in the registry.
+        for name in (m.tools or ()):
+            assert name in registered, f"{role}: unknown tool name {name!r}"
+        for name in m.disallowed_tools:
+            assert name in registered, f"{role}: unknown disallowed name {name!r}"
+        # The effective toolset must actually grant file reading.
+        effective = compute_minimum_toolset(
+            m, sandbox_tier=SandboxTier.REPO_WRITE, declarations=declarations
+        )
+        assert "read_file" in effective, f"{role} cannot read files: {sorted(effective)}"

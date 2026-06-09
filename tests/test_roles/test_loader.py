@@ -19,7 +19,7 @@ def test_loader_returns_bundled_default_when_no_overlay(tmp_path: Path) -> None:
     m = load_role_manifest("planner", harness_dir=tmp_path / ".harness")
     assert m.name == "planner"
     assert m.tools is not None
-    assert "file_read" in m.tools
+    assert "read_file" in m.tools
 
 
 # --- overlay wins per-field --------------------------------------------------
@@ -42,7 +42,7 @@ def test_overlay_replaces_named_fields(tmp_path: Path) -> None:
     # Untouched fields keep the bundled defaults.
     assert m.name == "planner"
     assert m.permission_mode == "plan"
-    assert m.tools is not None and "file_read" in m.tools
+    assert m.tools is not None and "read_file" in m.tools
 
 
 def test_overlay_may_extend_disallowed_tools(tmp_path: Path) -> None:
