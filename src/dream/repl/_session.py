@@ -266,8 +266,16 @@ def build_default_harness(
             role_allowed = compute_session_role_allowlist(
                 tool_registry, paths=paths, cwd=working_dir, manifest=manifest
             )
+        # SECURITY: do NOT feed ``role_allowed`` into the gate's ``tool_allow``.
+        # ``tool_allow`` is an allow-list override (it lets a tool bypass the
+        # tool-deny list), so passing role tools there would *widen* them rather
+        # than restrict them. Role enforcement is a hard "must be in set" deny in
+        # the dispatcher (``role_allowed_tools`` below); the gate then applies its
+        # full pipeline (path/command deny, tier, trust) to every role-allowed
+        # tool. See ``compute_session_role_allowlist``'s docstring for the
+        # rationale.
         permission_gate, _gate_warnings = make_permission_gate(
-            tool_registry, paths=paths, cwd=working_dir, tool_allow=role_allowed
+            tool_registry, paths=paths, cwd=working_dir
         )
         return build_query_engine(
             streamer=streamer,
