@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import io
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -91,6 +92,26 @@ def _find_env_local() -> Path | None:
     return None
 
 
+def _git_init_worktree(worktree: Path) -> None:
+    """Make ``worktree`` a real git repo with one empty commit.
+
+    The evaluator role's tool manifest is locked to ``git`` + ``query_logs``,
+    so without an initialised repo it cannot inspect anything the generator
+    writes and every sprint ends ``needs-changes`` / ``fail``. An empty
+    initial commit gives ``git diff HEAD`` / ``git status -s`` something
+    meaningful to report as the generator adds files.
+    """
+    def _run(*args: str) -> None:
+        subprocess.run(
+            ["git", *args], cwd=worktree, check=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    _run("init", "-q", "-b", "main")
+    _run("config", "user.email", "demo@dream.local")
+    _run("config", "user.name", "dream-demo")
+    _run("commit", "--allow-empty", "-q", "-m", "init")
+
+
 async def main() -> None:
     intent = sys.argv[1] if len(sys.argv) > 1 else _DEFAULT_INTENT
 
@@ -114,18 +135,20 @@ async def main() -> None:
 
     # Worktree under a tmp dir so repeated runs don't litter the repo.
     worktree = Path(tempfile.mkdtemp(prefix="dream-demo-"))
-    print(f"[demo] worktree: {worktree}", flush=True)
+    _git_init_worktree(worktree)
+    print(f"[demo] worktree: {worktree} (git-initialised)", flush=True)
     print(f"[demo] model:    {env['DREAM_SMOKE_MODEL']} @ {env['DREAM_SMOKE_BASE_URL']}", flush=True)
     print(f"[demo] intent:   {intent}", flush=True)
     print("[demo] --- starting run_task; live walkthrough follows ---", flush=True)
 
     harness = build_default_harness(env=env, working_dir=worktree)
 
+    max_sprints = int(os.environ.get("DREAM_DEMO_MAX_SPRINTS", "6"))
     async with harness:
         result = await harness.run_task(
             intent=intent,
             observer=StdioObserver(sys.stdout),
-            max_sprints=3,
+            max_sprints=max_sprints,
         )
 
     print("[demo] --- done ---", flush=True)
