@@ -155,6 +155,60 @@ async def test_wake_rejected_without_streamer(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_job_wall_clock_budget_enforced(tmp_path: Path) -> None:
+    harness = _harness(tmp_path)
+
+    async def slow_run_task(**kwargs: Any) -> str:
+        await asyncio.sleep(60)
+        return "never"
+
+    harness.run_task = slow_run_task  # type: ignore[method-assign]
+    config = RuntimeConfig(channel_poll_seconds=0.02, job_timeout_seconds=0.1)
+    async with Runtime(harness, config) as rt:
+        command = SubmitTaskCommand(intent="slow", task_id="t-slow")
+        CommandInbox(rt.inbox_path).submit(command)
+        await _ack_for(rt, command.id)
+        for _ in range(200):
+            if "runtime.job.failed" in _event_types(rt.events_path):
+                break
+            await asyncio.sleep(0.02)
+    events = [
+        json.loads(line)
+        for line in rt.events_path.read_text(encoding="utf-8").splitlines()
+    ]
+    failed = [e for e in events if e["type"] == "runtime.job.failed"]
+    assert failed and "budget" in failed[0]["error"]
+
+
+@pytest.mark.asyncio
+async def test_failed_job_retried_then_succeeds(tmp_path: Path) -> None:
+    harness = _harness(tmp_path)
+    attempts = 0
+
+    async def flaky_run_task(**kwargs: Any) -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("transient")
+        return "done"
+
+    harness.run_task = flaky_run_task  # type: ignore[method-assign]
+    config = RuntimeConfig(channel_poll_seconds=0.02, job_max_retries=1)
+    async with Runtime(harness, config) as rt:
+        command = SubmitTaskCommand(intent="flaky", task_id="t-flaky")
+        CommandInbox(rt.inbox_path).submit(command)
+        await _ack_for(rt, command.id)
+        for _ in range(200):
+            if "runtime.job.finished" in _event_types(rt.events_path):
+                break
+            await asyncio.sleep(0.02)
+    types = _event_types(rt.events_path)
+    assert "runtime.job.retry" in types
+    assert "runtime.job.finished" in types
+    assert attempts == 2
+
+
+@pytest.mark.asyncio
 async def test_shutdown_cancels_inflight_jobs(tmp_path: Path) -> None:
     harness = _harness(tmp_path)
     started = asyncio.Event()

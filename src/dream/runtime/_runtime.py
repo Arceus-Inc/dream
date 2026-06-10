@@ -24,6 +24,7 @@ from dream.channels import (
     WakeCommand,
 )
 from dream.config.paths import DreamPaths
+from dream.coordination import Claim
 from dream.errors import DreamError
 from dream.harness import Harness, _mint_task_id
 from dream.observability import EventSink
@@ -31,6 +32,7 @@ from dream.runtime._boot import BootReport, run_boot_gates
 from dream.runtime._channel import channel_loop
 from dream.runtime._supervisor import supervise_loop
 from dream.runtime._wake_scheduler import wake_scheduler_loop
+from dream.runtime._watchdog import watchdog_loop
 from dream.services.cron import cron_tick_loop
 from dream.tasks import BackgroundTaskManager, TaskRecord
 from dream.utils.file_lock import try_exclusive_file_lock
@@ -89,6 +91,14 @@ class RuntimeConfig:
     # Rotate the events JSONL once it would exceed this size (one prior
     # generation kept as ``events.jsonl.1``). None disables rotation.
     events_max_bytes: int | None = 10_000_000
+    # Liveness watchdog (spec 10p5): how often to walk the coordination
+    # board for expired leases. None disables the watchdog loop.
+    watchdog_poll_seconds: float | None = 30.0
+    # Job budgets (spec 15 P3 §3): wall-clock cap per submitted job
+    # (None = uncapped) and how many times a *failed* job is retried.
+    # A timeout is a budget decision, never retried.
+    job_timeout_seconds: float | None = None
+    job_max_retries: int = 0
 
 
 class Runtime:
@@ -111,10 +121,12 @@ class Runtime:
         paths: DreamPaths | None = None,
         boot_report: BootReport | None = None,
         wake_run_handler: Callable[[HeartbeatDecision], Awaitable[None]] | None = None,
+        stale_claim_handler: Callable[[Claim], Awaitable[None]] | None = None,
     ) -> None:
         self._harness = harness
         self._config = config or RuntimeConfig()
         self._wake_run_handler = wake_run_handler
+        self._stale_claim_handler = stale_claim_handler
         # ``paths`` lets a frontend that resolved storage roots itself (the
         # REPL honours a caller-supplied env mapping) hand them over instead
         # of the runtime re-deriving and diverging. ``boot_report`` likewise:
@@ -306,7 +318,24 @@ class Runtime:
         idle = self._config.wake_idle_minutes
         if streamer_factory is not None and idle is not None:
             self._spawn("wake", self._wake_factory(streamer_factory, idle, sink), sink)
+        if self._config.watchdog_poll_seconds is not None:
+            self._spawn("watchdog", self._watchdog_factory(sink), sink)
         self._spawn("channel", self._channel_factory(sink), sink)
+
+    def _watchdog_factory(self, sink: EventSink) -> Callable[[], Awaitable[None]]:
+        poll_seconds = self._config.watchdog_poll_seconds
+        assert poll_seconds is not None
+        board_path = self._paths.coordination_board
+
+        def factory() -> Awaitable[None]:
+            return watchdog_loop(
+                board_path=board_path,
+                emit=sink.emit,
+                on_stale=self._stale_claim_handler,
+                poll_seconds=poll_seconds,
+            )
+
+        return factory
 
     def _channel_factory(self, sink: EventSink) -> Callable[[], Awaitable[None]]:
         inbox = CommandInbox(self.inbox_path)
@@ -372,6 +401,9 @@ class Runtime:
         sink = self._sink
         assert sink is not None  # jobs only spawn after start()
 
+        timeout = self._config.job_timeout_seconds
+        max_retries = self._config.job_max_retries
+
         async def run() -> None:
             if command.max_sprints is None:
                 await self._harness.run_task(task_id=task_id, intent=command.intent)
@@ -382,16 +414,44 @@ class Runtime:
                 max_sprints=command.max_sprints,
             )
 
-        async def job() -> None:
-            try:
+        async def run_within_budget() -> None:
+            if timeout is None:
                 await run()
-            except asyncio.CancelledError:
-                sink.emit("runtime.job.cancelled", task_id=task_id)
-                raise
-            except Exception as exc:
-                sink.emit("runtime.job.failed", task_id=task_id, error=repr(exc))
-            else:
-                sink.emit("runtime.job.finished", task_id=task_id)
+                return
+            async with asyncio.timeout(timeout):
+                await run()
+
+        async def job() -> None:
+            # Retry only plain failures — a timeout is a budget decision
+            # (retrying it would double the spend), and cancellation is an
+            # operator/shutdown decision.
+            for attempt in range(max_retries + 1):
+                try:
+                    await run_within_budget()
+                except asyncio.CancelledError:
+                    sink.emit("runtime.job.cancelled", task_id=task_id)
+                    raise
+                except TimeoutError:
+                    sink.emit(
+                        "runtime.job.failed",
+                        task_id=task_id,
+                        error=f"wall-clock budget exceeded ({timeout}s)",
+                    )
+                    return
+                except Exception as exc:
+                    if attempt < max_retries:
+                        sink.emit(
+                            "runtime.job.retry",
+                            task_id=task_id,
+                            attempt=attempt + 1,
+                            error=repr(exc),
+                        )
+                        continue
+                    sink.emit("runtime.job.failed", task_id=task_id, error=repr(exc))
+                    return
+                else:
+                    sink.emit("runtime.job.finished", task_id=task_id)
+                    return
 
         self._jobs[task_id] = asyncio.create_task(job(), name=f"dream-job-{task_id}")
 

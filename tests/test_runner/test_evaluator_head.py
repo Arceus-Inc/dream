@@ -147,10 +147,10 @@ def _contract(
         "widget renders",
         "widget passes axe",
     ),
-    verification_steps: tuple[dict[str, str], ...] = (
-        {"kind": "test", "command": "pytest tests/widget"},
-        {"kind": "lint", "command": "ruff check src/widget"},
-    ),
+    # Empty by default: these head tests pin parsing/prompt behaviour. A
+    # non-empty default would make the spec-15 oracle execute the commands
+    # for real in every test (see test_oracle.py for that behaviour).
+    verification_steps: tuple[dict[str, str], ...] = (),
     scope_includes: tuple[str, ...] = ("src/widget/",),
     scope_excludes: tuple[str, ...] = ("src/legacy/",),
     evaluator_enabled: bool = True,
@@ -481,8 +481,10 @@ async def test_intent_includes_verification_steps() -> None:
         1,
         _contract(
             verification_steps=(
-                {"kind": "test", "command": "pytest tests/foo"},
-                {"kind": "eval", "command": "axe http://localhost"},
+                # echo keeps the oracle green + fast while the prompt still
+                # carries the literal step text the assertions pin.
+                {"kind": "test", "command": "echo pytest tests/foo"},
+                {"kind": "eval", "command": "echo axe http://localhost"},
             )
         ),
         _step(),

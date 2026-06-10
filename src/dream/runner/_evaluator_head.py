@@ -29,9 +29,11 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from dream.runner._oracle import OracleResult, run_oracle
 from dream.sprint import EvaluationRecord
 
 if TYPE_CHECKING:
@@ -47,7 +49,9 @@ __all__ = [
 ]
 
 
-DEFAULT_EVALUATOR_VERSION = "head-v1"
+# v2: the oracle block (spec 15 P3) changed the prompt and added the
+# oracle-red → needs-changes downgrade; v1 verdicts judged without evidence.
+DEFAULT_EVALUATOR_VERSION = "head-v2"
 
 
 class EvaluatorHeadParseError(RuntimeError):
@@ -138,12 +142,20 @@ def _format_contract_block(contract: SprintContract) -> str:
 
 
 def _build_intent(
-    *, task_id: str, sprint_number: int, contract: SprintContract, step: LedgerStep
+    *,
+    task_id: str,
+    sprint_number: int,
+    contract: SprintContract,
+    step: LedgerStep,
+    oracle: OracleResult | None = None,
 ) -> str:
+    contract_block = _format_contract_block(contract)
+    if oracle is not None:
+        contract_block = f"{contract_block}\n\n{oracle.render_block()}"
     return EVALUATOR_INSTRUCTION_TEMPLATE.format(
         task_id=task_id,
         sprint_number=sprint_number,
-        contract_block=_format_contract_block(contract),
+        contract_block=contract_block,
         step_id=step.id,
         step_description=step.description,
         example=_VERDICT_EXAMPLE,
@@ -232,16 +244,22 @@ def make_evaluator_head(
     harness_dir: Path | None = None,
     evaluator_version: str = DEFAULT_EVALUATOR_VERSION,
     observer: RunTaskObserver | None = None,
+    worktree_root: Path | None = None,
+    oracle_timeout_seconds: float = 300.0,
 ) -> Callable[
     [str, int, SprintContract, LedgerStep],
     Awaitable[EvaluationRecord],
 ]:
     """Build an :data:`EvaluatorRun` driven by :meth:`Harness.run_role`.
 
-    The returned coroutine asks the evaluator LLM for a strict
-    ``<verdict>{JSON}</verdict>`` envelope, parses the reply, and yields
-    an :class:`EvaluationRecord` ready for
-    :func:`dream.sprint.record_evaluation` to commit.
+    The returned coroutine first executes the contract's verification
+    steps as real subprocesses (the oracle, spec 15 P3 — run in
+    ``worktree_root``, defaulting to the harness working dir), injects
+    the structured results into the verdict prompt, then asks the
+    evaluator LLM for a strict ``<verdict>{JSON}</verdict>`` envelope.
+    The evaluator judges *evidence*: when verification steps exist, a
+    model ``pass`` over a red oracle is downgraded to ``needs-changes``
+    with the failing commands as carry items.
 
     ``harness_dir`` is forwarded so per-task role overlays in
     ``{harness_dir}/roles/evaluator.toml`` are honoured.
@@ -250,6 +268,9 @@ def make_evaluator_head(
     produces; bump it when the prompt or parser changes in a way that
     invalidates prior verdicts.
     """
+    oracle_cwd = (
+        worktree_root if worktree_root is not None else harness.config.working_dir
+    )
 
     async def evaluator(
         task_id: str,
@@ -257,22 +278,45 @@ def make_evaluator_head(
         contract: SprintContract,
         step: LedgerStep,
     ) -> EvaluationRecord:
+        oracle = await run_oracle(
+            contract, cwd=oracle_cwd, timeout_seconds=oracle_timeout_seconds
+        )
         prompt = _build_intent(
             task_id=task_id,
             sprint_number=sprint_number,
             contract=contract,
             step=step,
+            oracle=oracle,
         )
         result = await harness.run_role(
             "evaluator", prompt, harness_dir=harness_dir, observer=observer
         )
         data = _extract_verdict_json(result.final_text)
-        return _coerce_record(
+        record = _coerce_record(
             task_id=task_id,
             sprint_number=sprint_number,
             step_id=step.id,
             evaluator_version=evaluator_version,
             data=data,
         )
+        return _enforce_oracle(record, oracle)
 
     return evaluator
+
+
+def _enforce_oracle(
+    record: EvaluationRecord, oracle: OracleResult | None
+) -> EvaluationRecord:
+    """The hard gate: a red oracle invalidates a model ``pass``.
+
+    On any non-green oracle the failing commands ride along as carry
+    items so the generator sees the concrete failures next sprint.
+    """
+    if oracle is None or oracle.green:
+        return record
+    items = record.items + oracle.failure_items()
+    if record.outcome != "pass":
+        return replace(record, items=items)
+    note = "oracle override: model said pass but executed verification steps failed"
+    notes = f"{record.notes} [{note}]" if record.notes else note
+    return replace(record, outcome="needs-changes", items=items, notes=notes)

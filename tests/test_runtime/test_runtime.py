@@ -129,12 +129,13 @@ async def test_cron_loop_supervised_when_registry_configured(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
-async def test_only_channel_loop_without_subsystems(tmp_path: Path) -> None:
+async def test_default_loops_without_subsystems(tmp_path: Path) -> None:
     # No task manager → no cron; no wake streamer → no wake. The command
-    # channel is always on — it's how the runtime is steered from outside.
+    # channel (how the runtime is steered) and the liveness watchdog (the
+    # board may appear once a swarm runs) are always on.
     rt = Runtime(_harness(tmp_path))
     async with rt:
-        assert rt.running_loops == ("channel",)
+        assert set(rt.running_loops) == {"watchdog", "channel"}
 
 
 @pytest.mark.asyncio

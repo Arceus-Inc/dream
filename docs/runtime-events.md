@@ -40,8 +40,15 @@ types and unknown payload keys: the catalogue only grows.
 | type | payload | meaning |
 |---|---|---|
 | `runtime.job.finished` | `task_id` | a submitted `run_task` sprint loop completed |
-| `runtime.job.failed` | `task_id`, `error` | the job raised |
+| `runtime.job.failed` | `task_id`, `error` | the job raised, exhausted its retries, or hit its wall-clock budget |
+| `runtime.job.retry` | `task_id`, `attempt`, `error` | a failed job is being retried (`RuntimeConfig.job_max_retries`) |
 | `runtime.job.cancelled` | `task_id` | cancelled by command or shutdown |
+
+## Liveness watchdog (spec 10p5)
+
+| type | payload | meaning |
+|---|---|---|
+| `runtime.watchdog.stale_claim` | `task_id`, `state`, `claimed_by`, `lease_expires_at_ms`, `expired_for_ms` | a claimed/executing board row whose lease expired — the owning runner died or wedged; emitted once per lease epoch |
 
 ## Wake cycle (spec 06.5, forwarded by the scheduler / wake command)
 

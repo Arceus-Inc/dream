@@ -221,6 +221,7 @@ class Harness:
                 intent=intent,
                 harness_dir=harness_dir,
                 observer=observer,
+                worktree_root=root,
             )
         )
 
@@ -260,6 +261,7 @@ class Harness:
         intent: str,
         harness_dir: Path | None,
         observer: RunTaskObserver | None,
+        worktree_root: Path | None = None,
     ) -> tuple[
         PlannerCallable,
         GeneratorExecute,
@@ -312,7 +314,12 @@ class Harness:
             )
         if evaluator_run is None:
             evaluator_run = make_evaluator_head(
-                self, harness_dir=harness_dir, observer=observer
+                self,
+                harness_dir=harness_dir,
+                observer=observer,
+                # The oracle (spec 15 P3) runs verification steps in the same
+                # tree the generator wrote to.
+                worktree_root=worktree_root,
             )
         return (
             planner,
