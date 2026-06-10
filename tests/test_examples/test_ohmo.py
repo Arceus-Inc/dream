@@ -208,13 +208,45 @@ def test_persona_carries_the_conventions() -> None:
 
 def test_bootstrap_workspace_is_idempotent(tmp_path: Path) -> None:
     heartbeat = bootstrap_workspace(tmp_path)
-    assert heartbeat.read_text(encoding="utf-8") == OHMO_HEARTBEAT_PROMPT
+    body = heartbeat.read_text(encoding="utf-8")
+    assert body.startswith(OHMO_HEARTBEAT_PROMPT)
+    assert "WORKSPACE STATE" in body
     sandbox = tmp_path / ".harness" / "sandbox.toml"
     assert "repo-write+net-allowlist" in sandbox.read_text(encoding="utf-8")
     index = tmp_path / "docs" / "research" / "INDEX.md"
     index.write_text("# customised\n", encoding="utf-8")
     bootstrap_workspace(tmp_path)  # second run must not clobber
     assert index.read_text(encoding="utf-8") == "# customised\n"
+
+
+def test_bootstrap_promotes_research_tools(tmp_path: Path) -> None:
+    # Spec 13B trust ramp: per-repo tools stay read-only until promoted;
+    # bootstrap stamps the promotions so the tools work on first wake.
+    bootstrap_workspace(tmp_path)
+    overrides = (tmp_path / ".harness" / "tool-tier-overrides.toml").read_text(
+        encoding="utf-8"
+    )
+    for name in ("arxiv_search", "save_research_brief", "reading_queue"):
+        assert f"[{name}]" in overrides
+    assert 'tier_required = "repo-write+net-allowlist"' in overrides
+    assert "promoted_at" in overrides
+
+
+def test_refresh_heartbeat_sees_queue_and_briefs(tmp_path: Path) -> None:
+    import json as _json
+
+    from ohmo.agent import refresh_heartbeat_prompt
+
+    bootstrap_workspace(tmp_path)
+    queue = tmp_path / "docs" / "research" / "queue.json"
+    queue.write_text(_json.dumps(["2405.21060 mamba-2"]), encoding="utf-8")
+    (tmp_path / "docs" / "research" / "briefs" / "old.md").write_text(
+        "x", encoding="utf-8"
+    )
+    body = refresh_heartbeat_prompt(tmp_path).read_text(encoding="utf-8")
+    assert "reading queue: 1 item(s)" in body
+    assert "2405.21060 mamba-2" in body
+    assert "briefs written so far: 1" in body
 
 
 def test_research_tools_bundle() -> None:

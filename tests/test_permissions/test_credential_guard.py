@@ -90,3 +90,36 @@ def test_symlink_into_credential_dir_is_caught(tmp_path: Path) -> None:
 def test_builtins_nonempty_and_include_harness_store() -> None:
     assert BUILTIN_CREDENTIAL_PATTERNS
     assert any("mcp-credentials.toml" in p for p in BUILTIN_CREDENTIAL_PATTERNS)
+
+
+# --- governance-policy files (spec 13B trust ramp; found live by ohmo) -------
+
+
+@pytest.mark.parametrize(
+    "policy_file",
+    [
+        "sandbox.toml",
+        "tool-tier-overrides.toml",
+        "net-allowlist.toml",
+        "plugins-enabled.toml",
+        "lurkr-ignore.toml",
+    ],
+)
+def test_harness_policy_files_are_guarded(tmp_path: Path, policy_file: str) -> None:
+    """An agent must not edit its own permissions.
+
+    Observed live: a session denied by the trust ramp read the deny
+    message ("promote in tool-tier-overrides") and used write_file to
+    self-promote its tools in ``.harness/tool-tier-overrides.toml``.
+    Every file the permission pipeline reads policy from is guarded —
+    only the operator (outside a session) may change them.
+    """
+    assert is_credential_path(tmp_path / ".harness" / policy_file, tmp_path)
+
+
+def test_other_harness_files_stay_writable(tmp_path: Path) -> None:
+    # The guard covers policy inputs, not the whole .harness dir — role
+    # overlays, cron manifests etc. remain legitimate agent surfaces.
+    assert not is_credential_path(
+        tmp_path / ".harness" / "cron" / "research.toml", tmp_path
+    )

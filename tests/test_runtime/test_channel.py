@@ -145,6 +145,85 @@ async def test_cancel_unknown_task_rejected(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_wake_command_uses_prompt_override(tmp_path: Path) -> None:
+    # The persona's heartbeat prompt must drive MANUAL wakes too, not just
+    # the idle scheduler — both paths read RuntimeConfig.wake_prompt_path.
+    from dream.runtime import _runtime as runtime_mod
+    from dream.wake import WakeOutcome
+
+    seen: list[Any] = []
+
+    async def fake_cycle(streamer: Any, **kwargs: Any) -> WakeOutcome:
+        seen.append(kwargs.get("prompt_override_path"))
+        return WakeOutcome(decision=None, dropped_reason="test")
+
+    harness = _harness(tmp_path, wake_streamer_factory=lambda: object())
+    override = tmp_path / "heartbeat.md"
+    config = RuntimeConfig(channel_poll_seconds=0.02, wake_prompt_path=override)
+    rt = Runtime(harness, config)
+    original = runtime_mod.run_wake_cycle
+    runtime_mod.run_wake_cycle = fake_cycle  # type: ignore[assignment]
+    try:
+        async with rt:
+            wake = WakeCommand()
+            CommandInbox(rt.inbox_path).submit(wake)
+            await _ack_for(rt, wake.id)
+    finally:
+        runtime_mod.run_wake_cycle = original  # type: ignore[assignment]
+    assert seen == [override]
+
+
+@pytest.mark.asyncio
+async def test_wake_command_run_decision_invokes_handler(tmp_path: Path) -> None:
+    # A manual wake whose heartbeat decides `run` must execute the decided
+    # tasks through the wake_run_handler, exactly like a scheduled wake.
+    from datetime import UTC, datetime
+
+    from dream.runtime import _runtime as runtime_mod
+    from dream.wake import HeartbeatDecision, ManualWake, WakeOutcome
+
+    decision = HeartbeatDecision(
+        decided_at=datetime.now(UTC),
+        action="run",
+        tasks=("brief the queued paper",),
+        reason="queue has work",
+        wake_source=ManualWake(),
+        forced=False,
+        outcome="decided",
+    )
+
+    async def fake_cycle(streamer: Any, **kwargs: Any) -> WakeOutcome:
+        return WakeOutcome(decision=decision)
+
+    handled: list[HeartbeatDecision] = []
+    done = asyncio.Event()
+
+    async def handler(d: HeartbeatDecision) -> None:
+        handled.append(d)
+        done.set()
+
+    harness = _harness(tmp_path, wake_streamer_factory=lambda: object())
+    rt = Runtime(
+        harness,
+        RuntimeConfig(channel_poll_seconds=0.02),
+        wake_run_handler=handler,
+    )
+    original = runtime_mod.run_wake_cycle
+    runtime_mod.run_wake_cycle = fake_cycle  # type: ignore[assignment]
+    try:
+        async with rt:
+            wake = WakeCommand()
+            CommandInbox(rt.inbox_path).submit(wake)
+            ack = await _ack_for(rt, wake.id)
+            assert ack.status == "ok"
+            assert "1 task" in ack.summary
+            await asyncio.wait_for(done.wait(), timeout=5)
+    finally:
+        runtime_mod.run_wake_cycle = original  # type: ignore[assignment]
+    assert [d.tasks for d in handled] == [("brief the queued paper",)]
+
+
+@pytest.mark.asyncio
 async def test_wake_rejected_without_streamer(tmp_path: Path) -> None:
     async with Runtime(_harness(tmp_path), _FAST) as rt:
         wake = WakeCommand()

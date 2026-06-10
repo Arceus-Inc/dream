@@ -38,6 +38,16 @@ BUILTIN_CREDENTIAL_PATTERNS: tuple[str, ...] = (
     "**/id_ed25519",
     "**/*.pem",
     "**/.harness/mcp-credentials.toml",
+    # Governance-policy inputs (Spec 13B/13C): every file the permission
+    # pipeline reads policy from. An agent editing these edits its own
+    # permissions — observed live: a session denied by the trust ramp used
+    # write_file to self-promote its tools in tool-tier-overrides.toml.
+    # Only the operator, outside a session, may change them.
+    "**/.harness/sandbox.toml",
+    "**/.harness/tool-tier-overrides.toml",
+    "**/.harness/net-allowlist.toml",
+    "**/.harness/plugins-enabled.toml",
+    "**/.harness/lurkr-ignore.toml",
 )
 
 

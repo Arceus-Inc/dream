@@ -145,6 +145,7 @@ class Runtime:
         self._loops: dict[str, asyncio.Task[None]] = {}
         self._jobs: dict[str, asyncio.Task[None]] = {}
         self._workers: list[asyncio.Task[None]] = []
+        self._wake_runs: list[asyncio.Task[None]] = []
         self._unsubs: list[Callable[[], None]] = []
         self._stop_requested = asyncio.Event()
         self._started = False
@@ -285,6 +286,10 @@ class Runtime:
             worker.cancel()
         if self._workers:
             await asyncio.gather(*self._workers, return_exceptions=True)
+        for wake_run in self._wake_runs:
+            wake_run.cancel()
+        if self._wake_runs:
+            await asyncio.gather(*self._wake_runs, return_exceptions=True)
         for unsub in self._unsubs:
             with contextlib.suppress(Exception):
                 unsub()
@@ -538,6 +543,7 @@ class Runtime:
             wake_source=ManualWake(),
             coordination_dir=self._paths.coordination_dir,
             config=self._config.heartbeat,
+            prompt_override_path=self._config.wake_prompt_path,
             on_event=forward,
         )
         if outcome.decision is None:
@@ -546,9 +552,23 @@ class Runtime:
                 summary=f"wake dropped: {outcome.dropped_reason}",
             )
         decision = outcome.decision
+        summary = f"wake decided {decision.action}: {decision.reason}"
+        # A `run` decision is executed exactly like a scheduled wake's: the
+        # handler runs as a tracked background task (it may drive sessions
+        # for minutes) so the command ack returns promptly.
+        if decision.action == "run" and self._wake_run_handler is not None:
+            handler = self._wake_run_handler
+
+            async def execute() -> None:
+                await handler(decision)
+
+            self._wake_runs.append(
+                asyncio.create_task(execute(), name="dream-wake-run")
+            )
+            summary += f" — executing {len(decision.tasks)} task(s) in background"
         return Ack(
             status="ok",
-            summary=f"wake decided {decision.action}: {decision.reason}",
+            summary=summary,
             artifacts=(str(self.events_path),),
         )
 
