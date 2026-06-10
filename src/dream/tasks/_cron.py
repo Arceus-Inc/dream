@@ -334,6 +334,12 @@ class CronManifest(BaseModel):
     # task; "next-wake" queues a note the wake scheduler delivers on the
     # next heartbeat (the timed-note pattern).
     target: Literal["spawn", "next-wake"] = "spawn"
+    # Missed-tick policy (spec 15 hardening 3, Quartz taxonomy):
+    # "fire_once" merges missed firings into one immediate run (the right
+    # default for most agent jobs); "skip" drops a firing that is stale
+    # beyond the grace window — for freshness-critical work where a late
+    # run is worse than a gap.
+    misfire: Literal["fire_once", "skip"] = "fire_once"
 
     @field_validator("schedule")
     @classmethod

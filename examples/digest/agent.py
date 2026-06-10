@@ -100,6 +100,7 @@ _CRON_MANIFEST_TOML = """\
 name = "{name}"
 enabled = true
 schedule = "{schedule}"
+misfire = "skip"
 description = "Rolling self-evolution AI digest (spawns agent.py --once)."
 """
 

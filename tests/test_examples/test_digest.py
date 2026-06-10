@@ -168,6 +168,9 @@ def test_bootstrap_writes_two_hourly_manifest_and_promotions(tmp_path: Path) -> 
     )
     assert manifest.name == CRON_JOB_NAME
     assert manifest.schedule == "0 */2 * * *"
+    # Freshness-critical: a digest covering "the last 2 hours" must not
+    # fire hours late after downtime — drop stale firings instead.
+    assert manifest.misfire == "skip"
     overrides = (tmp_path / ".harness" / "tool-tier-overrides.toml").read_text(
         encoding="utf-8"
     )

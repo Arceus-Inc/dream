@@ -625,3 +625,105 @@ async def test_next_wake_without_sink_falls_back_to_spawn(tmp_path: Path) -> Non
         except asyncio.CancelledError:
             pass
     assert read_cron_run_records(tmp_path / CRON_RUNS_ROOT, "nudge")
+
+
+def _seed_backdated(
+    tmp_path: Path, manifest_toml: str, *, name: str, late_seconds: int
+) -> Path:
+    """Write one manifest, seed the registry, backdate next_run by ``late_seconds``."""
+    manifest_dir = tmp_path / CRON_MANIFEST_DIR
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    (manifest_dir / f"{name}.toml").write_text(manifest_toml, encoding="utf-8")
+    registry = _registry_path(tmp_path)
+    cron_service.ensure_registry_seeded(registry, load_cron_manifests(manifest_dir))
+    save_cron_jobs(
+        registry,
+        [
+            j.model_copy(
+                update={"next_run": datetime.now(UTC) - timedelta(seconds=late_seconds)}
+            )
+            for j in load_cron_jobs(registry)
+        ],
+    )
+    return registry
+
+
+async def _tick_until(
+    registry: Path, tmp_path: Path, name: str, *, manager: BackgroundTaskManager
+) -> None:
+    loop_task = asyncio.create_task(
+        cron_service.cron_tick_loop(
+            manager=manager,
+            working_dir=tmp_path,
+            registry_path=registry,
+            poll_seconds=0,
+        )
+    )
+    try:
+        for _ in range(100):
+            await asyncio.sleep(0.05)
+            if read_cron_run_records(tmp_path / CRON_RUNS_ROOT, name):
+                break
+    finally:
+        loop_task.cancel()
+        try:
+            await loop_task
+        except asyncio.CancelledError:
+            pass
+
+
+@pytest.mark.asyncio
+async def test_misfire_skip_drops_stale_firing(tmp_path: Path) -> None:
+    """A skip-policy job whose scheduled time is long past must NOT run —
+    freshness-critical work (a '2-hour window' digest) is wrong when stale.
+    The non-run is still observable and next_run advances."""
+    registry = _seed_backdated(
+        tmp_path,
+        'name = "fresh"\nschedule = "* * * * *"\nenabled = true\nmisfire = "skip"\n',
+        name="fresh",
+        late_seconds=3_600,  # an hour late — far beyond the grace window
+    )
+    manager = BackgroundTaskManager(tasks_dir=tmp_path / ".dream" / "tasks")
+    await _tick_until(registry, tmp_path, "fresh", manager=manager)
+
+    records = read_cron_run_records(tmp_path / CRON_RUNS_ROOT, "fresh")
+    assert records and records[-1].outcome == "skipped"
+    assert records[-1].failure_reason == "misfire"
+    assert manager.list_tasks() == []  # nothing spawned
+    job = get_cron_job(registry, "fresh")
+    assert job is not None and job.next_run is not None
+    assert job.next_run > datetime.now(UTC) - timedelta(seconds=1)
+
+
+@pytest.mark.asyncio
+async def test_misfire_skip_fires_within_grace(tmp_path: Path) -> None:
+    registry = _seed_backdated(
+        tmp_path,
+        'name = "fresh"\nschedule = "* * * * *"\nenabled = true\nmisfire = "skip"\n',
+        name="fresh",
+        late_seconds=5,  # just fired — well inside the grace window
+    )
+    manager = BackgroundTaskManager(tasks_dir=tmp_path / ".dream" / "tasks")
+    await _tick_until(registry, tmp_path, "fresh", manager=manager)
+    records = read_cron_run_records(tmp_path / CRON_RUNS_ROOT, "fresh")
+    assert records and records[-1].outcome != "skipped"
+
+
+@pytest.mark.asyncio
+async def test_misfire_default_fire_once_runs_stale_firings(tmp_path: Path) -> None:
+    registry = _seed_backdated(
+        tmp_path,
+        'name = "merge"\nschedule = "* * * * *"\nenabled = true\n',
+        name="merge",
+        late_seconds=3_600,
+    )
+    manager = BackgroundTaskManager(tasks_dir=tmp_path / ".dream" / "tasks")
+    await _tick_until(registry, tmp_path, "merge", manager=manager)
+    records = read_cron_run_records(tmp_path / CRON_RUNS_ROOT, "merge")
+    assert records and records[-1].outcome != "skipped"
+
+
+def test_manifest_misfire_field_parses_and_defaults() -> None:
+    fresh = CronManifest(name="a", schedule="* * * * *", misfire="skip")
+    assert fresh.misfire == "skip"
+    assert CronManifest(name="b", schedule="* * * * *").misfire == "fire_once"
