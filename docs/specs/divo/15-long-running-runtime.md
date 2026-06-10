@@ -1,6 +1,12 @@
 # 15 — Long-Running Runtime (the harness becomes a daemon)
 
-> Status: PLAN (2026-06-10). Synthesizes the state of all 27 `src/dream/*` packages,
+> Status: IMPLEMENTED (2026-06-10) — P0 `dream.build_harness`, P1 `dream.runtime` +
+> `dream.daemon` + REPL inversion, P2 `dream.channels` + `dream.ctl` + event catalogue
+> (`docs/runtime-events.md`), P3 oracle + watchdog + budgets/retries, P4 hooks/plugins/
+> memory/sandbox, P5 supervised swarm workers. Remaining follow-ups: P3 token/$ budget
+> plumbing (wall-clock + sprints shipped), left-over spec 02 rolling pass-rate (lands
+> with the dream-eval benchmark harness), docker sandbox backend (gated seam shipped).
+> Originally synthesized from the state of all 27 `src/dream/*` packages,
 > the spec 00–14 series, the left-over specs, the live findings from the SWE-bench
 > eval work, and the `/tmp/OpenHarness` reference taxonomy.
 

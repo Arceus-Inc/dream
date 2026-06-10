@@ -33,7 +33,10 @@ from dream.runtime._channel import channel_loop
 from dream.runtime._supervisor import supervise_loop
 from dream.runtime._wake_scheduler import wake_scheduler_loop
 from dream.runtime._watchdog import watchdog_loop
+from dream.runtime._workers import WorkerSupervisor
 from dream.services.cron import cron_tick_loop
+from dream.swarm import TeamRegistry
+from dream.swarm._spawn import TeammateExecutor, TeammateSpawnConfig
 from dream.tasks import BackgroundTaskManager, TaskRecord
 from dream.utils.file_lock import try_exclusive_file_lock
 from dream.wake import (
@@ -138,6 +141,7 @@ class Runtime:
         self._exit_stack = contextlib.ExitStack()
         self._loops: dict[str, asyncio.Task[None]] = {}
         self._jobs: dict[str, asyncio.Task[None]] = {}
+        self._workers: list[asyncio.Task[None]] = []
         self._unsubs: list[Callable[[], None]] = []
         self._stop_requested = asyncio.Event()
         self._started = False
@@ -215,6 +219,41 @@ class Runtime:
             self._exit_stack.close()
             raise
 
+    def start_worker(
+        self,
+        config: TeammateSpawnConfig,
+        *,
+        executor: TeammateExecutor,
+        max_restarts: int = 3,
+        registry: TeamRegistry | None = None,
+    ) -> asyncio.Task[None]:
+        """Spawn a swarm teammate as a supervised child (spec 15 P5).
+
+        Worker lifecycle events (``runtime.worker.*``) go to the runtime
+        event stream; the worker is cancelled (and its child stopped) on
+        runtime shutdown. Requires a harness with a task manager and a
+        started runtime.
+        """
+        sink = self._sink
+        manager = self._harness.config.task_manager
+        if sink is None or not self._started:
+            raise RuntimeError("start_worker requires a started runtime")
+        if manager is None:
+            raise RuntimeError("start_worker requires a harness task manager")
+        supervisor = WorkerSupervisor(
+            executor=executor,
+            task_manager=manager,
+            emit=sink.emit,
+            registry=registry,
+            max_restarts=max_restarts,
+        )
+        task = asyncio.create_task(
+            supervisor.run_worker(config),
+            name=f"dream-worker-{config.team}-{config.name}",
+        )
+        self._workers.append(task)
+        return task
+
     async def run_forever(self) -> None:
         """Block until :meth:`request_stop` (or task cancellation)."""
         await self._stop_requested.wait()
@@ -239,6 +278,10 @@ class Runtime:
             job.cancel()
         if self._jobs:
             await asyncio.gather(*self._jobs.values(), return_exceptions=True)
+        for worker in self._workers:
+            worker.cancel()
+        if self._workers:
+            await asyncio.gather(*self._workers, return_exceptions=True)
         for unsub in self._unsubs:
             with contextlib.suppress(Exception):
                 unsub()

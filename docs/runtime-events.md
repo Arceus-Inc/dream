@@ -44,6 +44,17 @@ types and unknown payload keys: the catalogue only grows.
 | `runtime.job.retry` | `task_id`, `attempt`, `error` | a failed job is being retried (`RuntimeConfig.job_max_retries`) |
 | `runtime.job.cancelled` | `task_id` | cancelled by command or shutdown |
 
+## Supervised swarm workers (spec 15 P5)
+
+| type | payload | meaning |
+|---|---|---|
+| `runtime.worker.started` | `agent_id`, `task_id`, `team`, `restarts` | a teammate child process spawned (restarts counts prior crashes) |
+| `runtime.worker.finished` | `agent_id`, `task_id` | the worker exited cleanly (rc=0) |
+| `runtime.worker.exited` | `agent_id`, `status`, `return_code`, `restarts` | the worker failed/was killed; will restart if under the cap |
+| `runtime.worker.spawn_failed` | `name`, `team`, `error` | the executor refused or failed the spawn (includes bridge refusals) |
+| `runtime.worker.cancelled` | `agent_id` | supervision cancelled (shutdown); child stopped |
+| `runtime.worker.abandoned` | `name`, `team`, `restarts` | restart ceiling hit; the worker will NOT be respawned |
+
 ## Liveness watchdog (spec 10p5)
 
 | type | payload | meaning |
