@@ -1,29 +1,47 @@
-"""research_claw — idea → experimentally tested paper, on the dream runtime.
+"""research_claw — a cron-driven paper-factory agent on the dream runtime.
 
-Builds one harness (researcher persona, the builtin tools + arxiv_search +
-run_experiment + save_artifact) and drives the six-stage pipeline. Each
-stage is its own session so context stays fresh; the orchestrator runs the
-experiment authoritatively between stages 3 and 4.
+No orchestrator. The dream Runtime's cron loop fires every N hours and
+spawns ``--once`` as a supervised background task. Each ``--once``:
 
-This is a one-shot construct (not a daemon): ``run_paper(idea)`` returns
-when ``paper.md`` is written. Exit codes: 0 ok, 1 no paper produced,
-2 bad input / missing credentials.
+1. pops the next idea from the ``ideas.md`` queue (you append ideas;
+   the agent works them off),
+2. hands it to ONE autonomous researcher session that owns its whole
+   workflow (arxiv_search, write_file, run_experiment, save_artifact)
+   and writes everything under ``papers/{stamp}-{slug}/``,
+3. afterwards the harness re-runs ``experiment.py`` itself — the oracle
+   — records ``results.json``, and stamps the verdict into
+   ``papers/INDEX.md``.
+
+Exit codes: 0 ok (including an empty queue — a quiet cron no-op),
+1 session produced no paper, 2 bad input / missing credentials,
+3 boot blocked, 4 already running.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
+import json
 import os
+import re
+import signal
 import sys
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TextIO
 
-from dream import build_harness
-from dream.events import Error, ToolUseResult
-from dream.harness import Harness
+from dream import (
+    Runtime,
+    RuntimeBootBlockedError,
+    RuntimeBusyError,
+    RuntimeConfig,
+    build_harness,
+)
+from dream.events import Error
 from dream.session import SessionOptions
+from dream.tasks._cron import CronManifest, load_cron_jobs, save_cron_jobs
 from dream.tools._registry import ToolSource
 from dream.tools.builtin import default_registry
 
@@ -33,22 +51,20 @@ if __name__ == "__main__" and not __package__:  # pragma: no cover
 from ohmo.agent import resolve_credentials
 from ohmo.tools import ArxivSearchTool
 
-from research_claw.personas import RESEARCHER_PERSONA, stage_instruction
-from research_claw.pipeline import PaperResult, StageContext, run_pipeline
-from research_claw.tools import RunExperimentTool, SaveArtifactTool
+from research_claw.personas import RESEARCHER_PERSONA, paper_instruction
+from research_claw.tools import RunExperimentTool, SaveArtifactTool, run_experiment_file
 
 EXIT_OK = 0
 EXIT_NO_PAPER = 1
 EXIT_BAD_INPUT = 2
+EXIT_BOOT_BLOCKED = 3
+EXIT_ALREADY_RUNNING = 4
 
-_STAGE_MAX_TURNS = {
-    "scope": 6,
-    "related_work": 8,
-    "experiment": 20,  # the iterate-until-green loop needs room
-    "analysis": 8,
-    "paper": 10,
-    "review": 8,
-}
+CRON_JOB_NAME = "paper-factory"
+IDEAS_FILE = "ideas.md"
+IDEAS_DONE_FILE = "ideas_done.md"
+PAPERS_DIR = "papers"
+SESSION_MAX_TURNS = 40
 
 _SANDBOX_TOML = """\
 # research_claw posture: repo-write+net-allowlist so arxiv_search (tier 2)
@@ -61,7 +77,7 @@ _TIER_OVERRIDES_TOML = """\
 tier_required = "repo-write+net-allowlist"
 promoted_by = "research-claw-bootstrap"
 promoted_at = "{today}"
-reason = "pinned-host arXiv search for the related-work stage"
+reason = "pinned-host arXiv search for the related-work survey"
 
 [run_experiment]
 tier_required = "repo-write"
@@ -76,22 +92,90 @@ promoted_at = "{today}"
 reason = "writes research artifacts (problem/paper/...) in the workspace"
 """
 
+_CRON_MANIFEST_TOML = """\
+name = "{name}"
+enabled = true
+schedule = "{schedule}"
+description = "Pop one idea from ideas.md and produce a tested paper."
+"""
+
+_IDEAS_SEED = """\
+# research_claw idea queue — one idea per line; lines starting with '#'
+# are ignored. The paper factory pops the TOP idea each cron firing.
+"""
+
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="research_claw",
-        description="Turn a research idea into an experimentally tested paper.",
+        description="Cron-driven paper factory: ideas.md in, tested papers out.",
     )
-    parser.add_argument("--idea", required=True, help="the research idea, in a sentence")
     parser.add_argument("--workspace", type=Path, default=Path.cwd() / "paper-lab")
+    parser.add_argument(
+        "--every-hours",
+        type=int,
+        default=6,
+        choices=range(1, 25),
+        metavar="1-24",
+        help="cron cadence (default: every %(default)s hours, first fire now)",
+    )
+    parser.add_argument(
+        "--idea",
+        default=None,
+        help="(--once only) work this idea instead of popping the queue",
+    )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="produce one paper now and exit (what cron spawns)",
+    )
     return parser.parse_args(argv)
 
 
-def bootstrap_workspace(workspace: Path) -> None:
-    """Lay down the sandbox posture + tool promotions; idempotent."""
-    from datetime import datetime
+# ---------------------------------------------------------------------------
+# Idea queue
+# ---------------------------------------------------------------------------
 
-    workspace.mkdir(parents=True, exist_ok=True)
+
+def pop_next_idea(workspace: Path) -> str | None:
+    """Remove and return the first queued idea; None when the queue is empty."""
+    queue_path = workspace / IDEAS_FILE
+    if not queue_path.exists():
+        return None
+    lines = queue_path.read_text(encoding="utf-8").splitlines()
+    for index, line in enumerate(lines):
+        idea = line.strip()
+        if idea and not idea.startswith("#"):
+            remaining = lines[:index] + lines[index + 1 :]
+            queue_path.write_text("\n".join(remaining) + "\n", encoding="utf-8")
+            return idea.removeprefix("- ").strip()
+    return None
+
+
+def mark_idea_done(workspace: Path, *, idea: str, paper_dir: str, verdict: str) -> None:
+    done = workspace / IDEAS_DONE_FILE
+    stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    with done.open("a", encoding="utf-8") as fh:
+        fh.write(f"- [{stamp}] {verdict}: {idea} -> {paper_dir}/\n")
+
+
+def paper_slug(idea: str) -> str:
+    words = re.findall(r"[a-z0-9]+", idea.lower())[:5]
+    return "-".join(words) or "paper"
+
+
+def run_stamp() -> str:
+    return datetime.now().strftime("%Y-%m-%dT%H-%M")
+
+
+# ---------------------------------------------------------------------------
+# Workspace bootstrap + cron wiring
+# ---------------------------------------------------------------------------
+
+
+def bootstrap_workspace(workspace: Path, *, every_hours: int = 6) -> None:
+    """Lay down posture, promotions, the cron manifest, and the idea queue."""
+    (workspace / PAPERS_DIR).mkdir(parents=True, exist_ok=True)
     harness_dir = workspace / ".harness"
     harness_dir.mkdir(parents=True, exist_ok=True)
     sandbox = harness_dir / "sandbox.toml"
@@ -100,68 +184,145 @@ def bootstrap_workspace(workspace: Path) -> None:
     overrides = harness_dir / "tool-tier-overrides.toml"
     if not overrides.exists():
         today = datetime.now().strftime("%Y-%m-%d")
-        overrides.write_text(
-            _TIER_OVERRIDES_TOML.format(today=today), encoding="utf-8"
+        overrides.write_text(_TIER_OVERRIDES_TOML.format(today=today), encoding="utf-8")
+    manifest = harness_dir / "cron" / f"{CRON_JOB_NAME}.toml"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    if not manifest.exists():
+        manifest.write_text(
+            _CRON_MANIFEST_TOML.format(
+                name=CRON_JOB_NAME, schedule=f"0 */{every_hours} * * *"
+            ),
+            encoding="utf-8",
         )
+    ideas = workspace / IDEAS_FILE
+    if not ideas.exists():
+        ideas.write_text(_IDEAS_SEED, encoding="utf-8")
 
 
-def _build_harness(
+def make_cron_argv_builder(*, workspace: Path) -> Callable[[CronManifest], list[str]]:
+    """Map the ``paper-factory`` manifest to this script's ``--once`` mode."""
+    agent_path = Path(__file__).resolve()
+
+    def argv_for(manifest: CronManifest) -> list[str]:
+        if manifest.name == CRON_JOB_NAME:
+            return [
+                sys.executable,
+                str(agent_path),
+                "--once",
+                "--workspace",
+                str(workspace),
+            ]
+        return [sys.executable, "-c", f"print('cron:{manifest.name} fired')"]
+
+    return argv_for
+
+
+def fire_now(registry_path: Path) -> None:
+    """Backdate the factory job so the first paper starts immediately."""
+    jobs = load_cron_jobs(registry_path)
+    save_cron_jobs(
+        registry_path,
+        [
+            job.model_copy(update={"next_run": datetime.now(UTC)})
+            if job.name == CRON_JOB_NAME
+            else job
+            for job in jobs
+        ],
+    )
+
+
+# ---------------------------------------------------------------------------
+# One paper (--once)
+# ---------------------------------------------------------------------------
+
+# Drives one researcher session for `instruction`. Injectable for tests.
+SessionRunner = Callable[[str], Awaitable[None]]
+
+
+def _make_real_session_runner(
     *, model: str, api_key: str, base_url: str, workspace: Path, env: Mapping[str, str]
-) -> Harness:
+) -> SessionRunner:
     registry = default_registry()
     for tool in (ArxivSearchTool(), RunExperimentTool(), SaveArtifactTool()):
         registry.register(tool, source=ToolSource.PER_REPO)
-    return build_harness(
+    harness = build_harness(
         model=model,
         api_key=api_key,
         base_url=base_url,
         working_dir=workspace,
+        max_turns=SESSION_MAX_TURNS,
         registry=registry,
         env=env,
     )
 
-
-def make_stage_runner(
-    harness: Harness, *, on_event=None
-):
-    """A real LLM-backed stage runner: one persona session per stage."""
-
-    async def run_stage(stage_name: str, ctx: StageContext) -> None:
+    async def run_session(instruction: str) -> None:
         session = await harness.start_session(
             SessionOptions(
-                system_prompt=RESEARCHER_PERSONA,
-                max_turns=_STAGE_MAX_TURNS.get(stage_name, 10),
+                system_prompt=RESEARCHER_PERSONA, max_turns=SESSION_MAX_TURNS
             )
         )
-        prompt = stage_instruction(
-            stage_name,
-            idea=ctx.idea,
-            results=ctx.results,
-            experiment_verified=ctx.experiment_verified,
-        )
-        async for event in session.send(prompt):
-            if isinstance(event, ToolUseResult) and on_event is not None:
-                on_event(stage_name, event)
-            elif isinstance(event, Error):
-                raise RuntimeError(f"stage {stage_name} error: {event}")
+        async for event in session.send(instruction):
+            if isinstance(event, Error):
+                raise RuntimeError(f"researcher session error: {event}")
 
-    return run_stage
+    return run_session
 
 
-async def run_paper(
+async def _oracle(workspace: Path, paper_dir: str) -> tuple[bool, str]:
+    """Re-run the paper's experiment authoritatively; return (verified, verdict).
+
+    Writes ``results.json`` next to the paper. Verified means: the script
+    exists, ran green under the harness's own sandbox run, and printed a
+    metrics JSON — the same bar the in-session run_experiment sets, but
+    measured by the harness, not claimed by the model.
+    """
+    experiment_rel = f"{paper_dir}/experiment.py"
+    paper_exists = (workspace / paper_dir / "paper.md").exists()
+    if not (workspace / experiment_rel).is_file():
+        results = {"ran": False, "returncode": None, "metrics": None,
+                   "note": "no experiment.py was produced"}
+        verified = False
+    else:
+        run = await run_experiment_file(workspace, experiment_rel)
+        results = {
+            "ran": True,
+            "returncode": run.returncode,
+            "timed_out": run.timed_out,
+            "metrics": run.metrics,
+            "stdout_tail": run.stdout_tail,
+            "stderr_tail": run.stderr_tail,
+        }
+        verified = run.green and run.metrics is not None
+    (workspace / paper_dir / "results.json").parent.mkdir(parents=True, exist_ok=True)
+    (workspace / paper_dir / "results.json").write_text(
+        json.dumps(results, indent=2), encoding="utf-8"
+    )
+    if not paper_exists:
+        return False, "NO-PAPER"
+    return verified, "VERIFIED" if verified else "UNVERIFIED"
+
+
+def _index_add(workspace: Path, *, idea: str, paper_dir: str, verdict: str) -> None:
+    index = workspace / PAPERS_DIR / "INDEX.md"
+    if not index.exists():
+        index.write_text("# Papers\n\n", encoding="utf-8")
+    with index.open("a", encoding="utf-8") as fh:
+        fh.write(f"- {verdict} — [{idea}]({paper_dir.removeprefix(PAPERS_DIR + '/')}/paper.md)\n")
+
+
+async def run_once(
     *,
-    idea: str,
     workspace: Path,
     env: Mapping[str, str] | None = None,
+    idea: str | None = None,
     stderr: TextIO | None = None,
     stdout: TextIO | None = None,
+    run_session: SessionRunner | None = None,
+    stamp: str | None = None,
 ) -> int:
-    """Drive the full pipeline for ``idea``; return an exit code."""
+    """Pop one idea (or take ``idea``), run one researcher session, verify."""
     err = stderr if stderr is not None else sys.stderr
     out = stdout if stdout is not None else sys.stdout
-    if not idea or not idea.strip():
-        err.write("a non-empty --idea is required\n")
-        return EXIT_BAD_INPUT
     resolved_env = dict(env if env is not None else os.environ)
     credentials = resolve_credentials(resolved_env)
     if isinstance(credentials, list):
@@ -170,47 +331,104 @@ async def run_paper(
     model, api_key, base_url = credentials
 
     bootstrap_workspace(workspace)
-    harness = _build_harness(
+    chosen = idea.strip() if idea and idea.strip() else pop_next_idea(workspace)
+    if not chosen:
+        out.write("idea queue is empty — nothing to do this cycle\n")
+        return EXIT_OK
+
+    paper_dir = f"{PAPERS_DIR}/{stamp or run_stamp()}-{paper_slug(chosen)}"
+    (workspace / paper_dir).mkdir(parents=True, exist_ok=True)
+    runner = run_session or _make_real_session_runner(
         model=model,
         api_key=api_key,
         base_url=base_url,
         workspace=workspace,
         env=resolved_env,
     )
-
-    def _log(stage: str, event: ToolUseResult) -> None:
-        out.write(f"[{stage}] tool result\n")
-        out.flush()
-
-    result: PaperResult = await run_pipeline(
-        idea=idea,
-        workspace=workspace,
-        run_stage=make_stage_runner(harness, on_event=_log),
-    )
-    _report(result, workspace, out=out)
-    return EXIT_OK if result.ok else EXIT_NO_PAPER
-
-
-def _report(result: PaperResult, workspace: Path, *, out: TextIO) -> None:
-    out.write("\n=== research_claw complete ===\n")
-    out.write(f"stages run:   {', '.join(result.stages_run)}\n")
-    out.write(
-        "experiment:   "
-        + ("VERIFIED (ran green with metrics)\n" if result.experiment_verified
-           else "UNVERIFIED (see results.json / Limitations)\n")
-    )
-    if result.missing_artifacts:
-        out.write(f"missing:      {', '.join(result.missing_artifacts)}\n")
-    if result.paper_path is not None:
-        out.write(f"paper:        {result.paper_path}\n")
-    else:
-        out.write("paper:        NOT produced\n")
+    out.write(f"working idea: {chosen}\npaper dir:    {paper_dir}/\n")
     out.flush()
+    try:
+        await runner(paper_instruction(idea=chosen, paper_dir=paper_dir))
+    except Exception as exc:
+        err.write(f"researcher session failed: {exc}\n")
+        # Fall through: the oracle still records what (if anything) was left.
+
+    _verified, verdict = await _oracle(workspace, paper_dir)
+    _index_add(workspace, idea=chosen, paper_dir=paper_dir, verdict=verdict)
+    mark_idea_done(workspace, idea=chosen, paper_dir=paper_dir, verdict=verdict)
+    out.write(f"verdict:      {verdict}\n")
+    out.flush()
+    return EXIT_OK if verdict != "NO-PAPER" else EXIT_NO_PAPER
+
+
+# ---------------------------------------------------------------------------
+# The daemon
+# ---------------------------------------------------------------------------
+
+
+async def run_daemon(
+    *,
+    workspace: Path,
+    env: Mapping[str, str] | None = None,
+    every_hours: int = 6,
+    stderr: TextIO | None = None,
+    install_signal_handlers: bool = True,
+    on_started=None,
+) -> int:
+    """Long-running mode: cron pops one idea every N hours, starting now."""
+    err = stderr if stderr is not None else sys.stderr
+    resolved_env = dict(env if env is not None else os.environ)
+    credentials = resolve_credentials(resolved_env)
+    if isinstance(credentials, list):
+        err.write("missing required env vars: " + ", ".join(credentials) + "\n")
+        return EXIT_BAD_INPUT
+    model, api_key, base_url = credentials
+
+    bootstrap_workspace(workspace, every_hours=every_hours)
+    harness = build_harness(
+        model=model,
+        api_key=api_key,
+        base_url=base_url,
+        working_dir=workspace,
+        env=resolved_env,
+    )
+    registry_path = harness.config.cron_registry_path
+    if registry_path is not None:
+        fire_now(registry_path)
+    runtime = Runtime(
+        harness,
+        RuntimeConfig(agent_id="research-claw"),
+        cron_argv_builder=make_cron_argv_builder(workspace=workspace),
+    )
+    if install_signal_handlers:  # pragma: no cover - signals untestable in pytest
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            with contextlib.suppress(NotImplementedError):
+                loop.add_signal_handler(sig, runtime.request_stop)
+    try:
+        async with runtime:
+            if on_started is not None:
+                on_started(runtime)
+            await runtime.run_forever()
+    except RuntimeBootBlockedError as exc:
+        err.write(f"blocked: {exc}\n")
+        return EXIT_BOOT_BLOCKED
+    except RuntimeBusyError as exc:
+        err.write(f"already running: {exc}\n")
+        return EXIT_ALREADY_RUNNING
+    return EXIT_OK
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    return asyncio.run(run_paper(idea=args.idea, workspace=args.workspace))
+    if args.once:
+        return asyncio.run(run_once(workspace=args.workspace, idea=args.idea))
+    if args.idea:
+        sys.stderr.write("--idea only applies with --once\n")
+        return EXIT_BAD_INPUT
+    return asyncio.run(
+        run_daemon(workspace=args.workspace, every_hours=args.every_hours)
+    )
 
 
 if __name__ == "__main__":

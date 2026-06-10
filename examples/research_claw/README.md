@@ -1,73 +1,73 @@
-# research_claw — a mini AutoResearchClaw on the dream runtime
+# research_claw — a cron-driven paper factory on the dream runtime
 
-Turn one research **idea** into a complete, **experimentally tested** paper.
-A pared-down port of [AutoResearchClaw](https://github.com/aiming-lab/AutoResearchClaw)
-(23 stages → 6) that keeps the part that matters: **the experiment really runs.**
+Drop research ideas into a queue; every N hours a **single autonomous
+researcher agent** takes the top one all the way to a complete,
+**experimentally tested** paper. Inspired by
+[AutoResearchClaw](https://github.com/aiming-lab/AutoResearchClaw), built
+entirely on dream's public SDK.
 
-## The pipeline
+No orchestrator: the agent owns its own workflow inside one session. The
+harness does only what a harness should —
 
-A deterministic orchestrator runs six stages in order; each is its own focused
-session (fresh context). Between stage 3 and 4 the orchestrator executes the
-generated code *itself* — the authoritative **oracle** run, captured to
-`results.json` — so the analysis and paper stages reason over real measured
-numbers, not the model's claim that the code ran.
+| harness responsibility | dream mechanism |
+|---|---|
+| fire every N hours, first fire **now**, survive restarts | cron manifest + `fire_now()` backdating |
+| run each paper as a supervised, drained background task | runtime cron loop + `cron_argv_builder` → `--once` |
+| give the agent its action space | `arxiv_search`, `write_file`/`read_file`, `run_experiment` (dream `SubprocessSandbox`), `save_artifact` — tier-gated + trust-promoted |
+| **verify the deliverable** | after the session, the harness re-runs `experiment.py` itself (the oracle), records `results.json`, stamps VERIFIED / UNVERIFIED / NO-PAPER into `papers/INDEX.md` |
 
-| # | Stage | Artifact | Maps to AutoResearchClaw |
-|---|---|---|---|
-| 1 | scope | `problem.md` (problem + testable hypothesis + success metric) | Phase A (1-2) |
-| 2 | related_work | `related_work.md` (via real `arxiv_search`) | Phase B (3-6) |
-| 3 | experiment | `experiment.py` (writes code, runs it, iterates until green) | Phases C-D (7-11) |
-| — | **oracle** | `results.json` (orchestrator runs it authoritatively) | Phase E (12-13) |
-| 4 | analysis | `analysis.md` (interpret the real metrics) | Phase F (14-15) |
-| 5 | paper | `paper.md` (full paper citing the measured numbers verbatim) | Phase G (16-19) |
-| 6 | review | `review.md` (peer review checks number fidelity + honesty) | Phase H (20-23) |
-
-What comes from dream: `build_harness`, the `SubprocessSandbox` (the real,
-tree-killed executor — spec-15 P4), the sandbox-tier + trust-ramp governance,
-and the session loop. `research_claw` adds the stages, the personas, the
-`run_experiment` oracle tool, and `save_artifact`.
-
-**Honesty by construction.** If the experiment never goes green, the run is not
-aborted — `results.json` records the failure, `experiment_verified` is false,
-and the paper stage is *required* to state this in Limitations and not claim
-experimental support it doesn't have (AutoResearchClaw's proceed/pivot).
+The agent is told the audit will happen ("invented numbers will be caught")
+and that an experiment it can't make green must be disclosed in Limitations.
 
 ## Run it
 
 ```bash
 export DREAM_API_KEY=sk-...        # any OpenAI-compatible endpoint
 export DREAM_MODEL=gpt-4.1
-./examples/research_claw/run.sh \
-  "Nesterov momentum reaches a target loss in fewer iterations than plain GD on a convex quadratic" \
-  ~/paper-lab
-# or:
-python examples/research_claw/agent.py --idea "..." --workspace ~/paper-lab
+
+./examples/research_claw/run.sh ~/paper-lab 6      # daemon: a paper every 6h
+echo "your research idea" >> ~/paper-lab/ideas.md  # queue ideas any time
 ```
 
-Keep ideas **small and CPU-cheap** — the experiment must run in seconds with
-stdlib/numpy. Numerical-optimization, algorithmic, and statistical claims work
-well; anything needing GPUs or large datasets does not (by design — this is the
-mini version).
-
-## What you get (a real run)
-
-For the momentum idea above, the agent wrote a convex quadratic (κ=100),
-measured **GD = 434 iterations** vs **Nesterov = 61** to reach 1e-6 relative loss
-(7.1× faster, hypothesis supported), and the paper reported exactly those
-numbers. The review stage independently re-checked every figure against
-`results.json` and returned *Revise* (single-instance scope) — a genuine,
-honest peer review, not a rubber stamp.
+Each firing pops the top idea and produces:
 
 ```
-=== research_claw complete ===
-stages run:   scope, related_work, experiment, analysis, paper, review
-experiment:   VERIFIED (ran green with metrics)
-paper:        ~/paper-lab/paper.md
+papers/{stamp}-{slug}/
+  problem.md  related_work.md  experiment.py  analysis.md  paper.md  review.md
+  results.json        # the oracle's authoritative re-run
+papers/INDEX.md       # one verdict line per paper
+ideas_done.md         # the worked-off queue log
 ```
+
+One paper right now, skipping the queue:
+
+```bash
+./examples/research_claw/run.sh --once "Nesterov momentum beats GD on a convex quadratic" ~/paper-lab
+```
+
+Watch it: `python -m dream.ctl --working-dir ~/paper-lab status|events`.
+Keep ideas **small and CPU-cheap** (stdlib/numpy, seconds) — that's the mini in
+mini-AutoResearchClaw.
+
+## A real run
+
+Queued *"Bubble sort's swap count on reversed input is exactly n(n-1)/2 —
+verify empirically across sizes"*; the daemon's first cron fire popped it and
+the agent — unprompted — tested both reversed inputs up to n=400 **and** the
+stronger invariant (swap count = inversion count) on 200 random permutations:
+
+```
+metrics: {"reversed_tested": 400, "reversed_failures": 0,
+          "random_trials": 200, "inv_mismatches": 0, "hypothesis_supported": true}
+ideas_done.md: - [2026-06-10 17:10] VERIFIED: Bubble sort's swap count ... -> papers/...
+review.md: Verdict: accept
+```
+
+The paper's Results section reports the oracle's metrics verbatim.
 
 ## Tests
 
-`uv run pytest tests/test_examples/test_research_claw.py` — metrics parsing,
-the `run_experiment` oracle against the real sandbox (green / red / missing /
-escape), artifact mechanics, and the full orchestrator (verified + unverified
-paths) with injected fake stages. Offline.
+`uv run pytest tests/test_examples/test_research_claw.py` — the experiment
+tools against the real sandbox, the idea queue, bootstrap (cron manifest +
+promotions), the cron argv payload, and `run_once` with an injected session
+(verified / unverified / no-paper / crash / empty-queue paths). Offline.
