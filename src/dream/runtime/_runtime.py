@@ -87,6 +87,9 @@ class RuntimeConfig:
     events_path: Path | None = None
     cron_poll_seconds: int | None = None
     wake_idle_minutes: int | None = None
+    # Operator/persona override for the heartbeat prompt the wake cycle
+    # sends; None uses the bundled default.
+    wake_prompt_path: Path | None = None
     heartbeat: HeartbeatConfig = field(default_factory=HeartbeatConfig)
     channel_poll_seconds: float = 1.0
     drain_timeout_seconds: float = 10.0
@@ -584,6 +587,7 @@ class Runtime:
                 heartbeat_config=self._config.heartbeat,
                 emit=sink.emit,
                 on_run=self._wake_run_handler,
+                prompt_override_path=self._config.wake_prompt_path,
             )
 
         return factory

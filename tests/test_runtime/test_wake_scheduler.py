@@ -139,6 +139,34 @@ async def test_dropped_cycle_is_tolerated(tmp_path: Any) -> None:
 
 
 @pytest.mark.asyncio
+async def test_prompt_override_forwarded_to_cycle(tmp_path: Any) -> None:
+    # A consumer agent (e.g. a persona daemon) ships its own heartbeat
+    # prompt; the scheduler must hand the override path to every cycle.
+    seen_paths: list[Any] = []
+
+    async def fake_cycle(streamer: Any, **kwargs: Any) -> WakeOutcome:
+        seen_paths.append(kwargs.get("prompt_override_path"))
+        return WakeOutcome(decision=_decision("skip"))
+
+    emit = _Recorder()
+    override = tmp_path / "heartbeat.md"
+    with pytest.raises(_StopLoop):
+        await wake_scheduler_loop(
+            streamer_factory=lambda: object(),
+            agent_id="default",
+            coordination_dir=tmp_path,
+            idle_minutes=1,
+            heartbeat_config=HeartbeatConfig(),
+            emit=emit,
+            on_run=None,
+            prompt_override_path=override,
+            sleep=_sleeper(max_ticks=1),
+            run_cycle=fake_cycle,
+        )
+    assert seen_paths == [override]
+
+
+@pytest.mark.asyncio
 async def test_wake_events_forwarded_to_emit(tmp_path: Any) -> None:
     async def fake_cycle(streamer: Any, **kwargs: Any) -> WakeOutcome:
         kwargs["on_event"]("heartbeat.decision.run", {"agent_id": "default"})

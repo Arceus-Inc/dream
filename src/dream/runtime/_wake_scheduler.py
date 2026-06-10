@@ -54,6 +54,7 @@ async def wake_scheduler_loop(
     heartbeat_config: HeartbeatConfig,
     emit: EmitFn,
     on_run: Callable[[HeartbeatDecision], Awaitable[None]] | None = None,
+    prompt_override_path: Path | None = None,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     run_cycle: RunCycleFn = _default_run_cycle,
 ) -> None:
@@ -76,6 +77,7 @@ async def wake_scheduler_loop(
             wake_source=IdleTimerWake(idle_minutes=idle_minutes),
             coordination_dir=coordination_dir,
             config=heartbeat_config,
+            prompt_override_path=prompt_override_path,
             on_event=_forward,
         )
         decision = outcome.decision
