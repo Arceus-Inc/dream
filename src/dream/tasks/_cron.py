@@ -29,7 +29,7 @@ import tomllib
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from croniter import croniter  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, field_validator
@@ -330,6 +330,10 @@ class CronManifest(BaseModel):
     description: str | None = None
     entry_prompt: str | None = None
     max_session_minutes: int | None = None
+    # Where a firing goes (spec 15 hardening 2): "spawn" runs a detached
+    # task; "next-wake" queues a note the wake scheduler delivers on the
+    # next heartbeat (the timed-note pattern).
+    target: Literal["spawn", "next-wake"] = "spawn"
 
     @field_validator("schedule")
     @classmethod

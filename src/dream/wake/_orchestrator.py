@@ -129,6 +129,7 @@ async def run_wake_cycle(
     coordination_dir: Path,
     config: HeartbeatConfig = _DEFAULT_CONFIG,
     prompt_override_path: Path | None = None,
+    extra_context: str | None = None,
     on_event: EventEmitter | None = None,
     now: Callable[[], datetime] = _default_now,
 ) -> WakeOutcome:
@@ -171,6 +172,7 @@ async def run_wake_cycle(
             prompt_override_path=prompt_override_path,
             forced=is_forced,
             forced_skip_streak=prior_state.skip_streak,
+            extra_context=extra_context,
             now=now,
         )
 

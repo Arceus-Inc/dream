@@ -233,12 +233,18 @@ async def cron_tick_loop(
     registry_path: str | Path,
     poll_seconds: int = DEFAULT_POLL_SECONDS,
     argv_for: Callable[[CronManifest], list[str]] = _default_cron_argv,
+    note_sink: Callable[[CronManifest], None] | None = None,
 ) -> None:
     """Long-running coroutine — poll registry, fire due jobs, sleep.
 
     ``argv_for`` maps a due manifest to the command the spawned task runs;
     the default is the visible-firing print stub. Consumer daemons supply
     their real payload (e.g. a one-shot digest run) here.
+
+    ``note_sink`` receives manifests whose ``target = "next-wake"`` — the
+    timed-note pattern: the firing queues a note for the wake scheduler
+    instead of spawning. Without a sink (standalone loops, the REPL) such
+    manifests fall back to the spawn path so firings are never dropped.
 
     Cancellation-safe: ``asyncio.CancelledError`` propagates out cleanly
     so ``task.cancel(); await task`` shapes shut the loop down without
@@ -267,6 +273,10 @@ async def cron_tick_loop(
                     continue
                 try:
                     manifest = load_cron_manifest(manifest_path)
+                    if manifest.target == "next-wake" and note_sink is not None:
+                        note_sink(manifest)
+                        mark_job_run(registry_path, job.name, success=True)
+                        continue
                     record = await spawn_cron_session(
                         manager=manager,
                         manifest=manifest,

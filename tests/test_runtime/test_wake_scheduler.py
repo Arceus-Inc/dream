@@ -228,6 +228,85 @@ async def test_missing_checklist_file_still_wakes(tmp_path: Any) -> None:
 
 
 @pytest.mark.asyncio
+async def test_pending_notes_wake_with_cron_source_and_context(tmp_path: Any) -> None:
+    # The timed-note pattern's read side: notes queued by cron firings are
+    # drained into the next wake — the source becomes CronWake and the note
+    # texts ride into the cycle as extra context.
+    from dream.runtime._wake_notes import WakeNoteStore
+    from dream.wake import CronWake
+
+    notes = WakeNoteStore(tmp_path / "notes")
+    notes.add("review the inbox backlog", source="nudge")
+    notes.add("weekly report due", source="weekly-report")
+    cycles: list[dict[str, Any]] = []
+
+    async def fake_cycle(streamer: Any, **kwargs: Any) -> WakeOutcome:
+        cycles.append(kwargs)
+        return WakeOutcome(decision=_decision("skip"))
+
+    emit = _Recorder()
+    with pytest.raises(_StopLoop):
+        await wake_scheduler_loop(
+            streamer_factory=lambda: object(),
+            agent_id="default",
+            coordination_dir=tmp_path,
+            idle_minutes=1,
+            heartbeat_config=HeartbeatConfig(),
+            emit=emit,
+            on_run=None,
+            notes=notes,
+            sleep=_sleeper(max_ticks=2),
+            run_cycle=fake_cycle,
+        )
+    assert len(cycles) == 2
+    first = cycles[0]
+    assert isinstance(first["wake_source"], CronWake)
+    assert first["wake_source"].cron_kind == "nudge"
+    context = first["extra_context"]
+    assert "review the inbox backlog" in context
+    assert "weekly report due" in context
+    # Second tick: notes were consumed — back to the idle timer source.
+    assert isinstance(cycles[1]["wake_source"], IdleTimerWake)
+    assert cycles[1]["extra_context"] is None
+
+
+@pytest.mark.asyncio
+async def test_pending_notes_override_empty_checklist_skip(tmp_path: Any) -> None:
+    # An empty checklist normally means zero-cost skip — but queued notes
+    # ARE content; the wake must fire to deliver them.
+    from dream.runtime._wake_notes import WakeNoteStore
+
+    notes = WakeNoteStore(tmp_path / "notes")
+    notes.add("the digest is due", source="rolling-digest")
+    override = tmp_path / "heartbeat.md"
+    override.write_text("", encoding="utf-8")
+    cycles: list[dict[str, Any]] = []
+
+    async def fake_cycle(streamer: Any, **kwargs: Any) -> WakeOutcome:
+        cycles.append(kwargs)
+        return WakeOutcome(decision=_decision("skip"))
+
+    emit = _Recorder()
+    with pytest.raises(_StopLoop):
+        await wake_scheduler_loop(
+            streamer_factory=lambda: object(),
+            agent_id="default",
+            coordination_dir=tmp_path,
+            idle_minutes=1,
+            heartbeat_config=HeartbeatConfig(),
+            emit=emit,
+            on_run=None,
+            prompt_override_path=override,
+            notes=notes,
+            sleep=_sleeper(max_ticks=2),
+            run_cycle=fake_cycle,
+        )
+    assert len(cycles) == 1  # note tick fired; the empty tick after skipped
+    skipped = [p for t, p in emit.events if t == "wake.skipped"]
+    assert len(skipped) == 1
+
+
+@pytest.mark.asyncio
 async def test_wake_events_forwarded_to_emit(tmp_path: Any) -> None:
     async def fake_cycle(streamer: Any, **kwargs: Any) -> WakeOutcome:
         kwargs["on_event"]("heartbeat.decision.run", {"agent_id": "default"})

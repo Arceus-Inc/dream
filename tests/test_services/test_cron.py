@@ -533,3 +533,95 @@ async def test_tick_loop_honours_custom_argv_builder(tmp_path: Path) -> None:
 
     assert seen == ["digest"]
     assert marker.exists(), "custom argv payload did not run"
+
+
+@pytest.mark.asyncio
+async def test_tick_loop_routes_next_wake_target_to_note_sink(tmp_path: Path) -> None:
+    """A manifest with ``target = "next-wake"`` is the timed-note pattern:
+    the firing enqueues a note for the wake scheduler instead of spawning
+    a process; ``next_run`` still advances."""
+    manifest_dir = tmp_path / CRON_MANIFEST_DIR
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / "nudge.toml").write_text(
+        'name = "nudge"\nschedule = "* * * * *"\nenabled = true\n'
+        'target = "next-wake"\nentry_prompt = "review the inbox backlog"\n'
+    )
+    registry = _registry_path(tmp_path)
+    cron_service.ensure_registry_seeded(registry, load_cron_manifests(manifest_dir))
+    save_cron_jobs(
+        registry,
+        [
+            j.model_copy(update={"next_run": datetime.now(UTC) - timedelta(seconds=1)})
+            for j in load_cron_jobs(registry)
+        ],
+    )
+    noted: list[CronManifest] = []
+    manager = BackgroundTaskManager(tasks_dir=tmp_path / ".dream" / "tasks")
+    loop_task = asyncio.create_task(
+        cron_service.cron_tick_loop(
+            manager=manager,
+            working_dir=tmp_path,
+            registry_path=registry,
+            poll_seconds=0,
+            note_sink=noted.append,
+        )
+    )
+    try:
+        for _ in range(100):
+            await asyncio.sleep(0.05)
+            if noted:
+                break
+    finally:
+        loop_task.cancel()
+        try:
+            await loop_task
+        except asyncio.CancelledError:
+            pass
+
+    assert [m.name for m in noted] == ["nudge"]
+    # No process was spawned for the note firing.
+    assert manager.list_tasks() == []
+    job = get_cron_job(registry, "nudge")
+    assert job is not None and job.next_run is not None
+    assert job.next_run > datetime.now(UTC) - timedelta(seconds=1)
+
+
+@pytest.mark.asyncio
+async def test_next_wake_without_sink_falls_back_to_spawn(tmp_path: Path) -> None:
+    """Standalone tick loops (no wake scheduler) must not silently drop
+    next-wake firings — they fall back to the spawn path."""
+    manifest_dir = tmp_path / CRON_MANIFEST_DIR
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / "nudge.toml").write_text(
+        'name = "nudge"\nschedule = "* * * * *"\nenabled = true\ntarget = "next-wake"\n'
+    )
+    registry = _registry_path(tmp_path)
+    cron_service.ensure_registry_seeded(registry, load_cron_manifests(manifest_dir))
+    save_cron_jobs(
+        registry,
+        [
+            j.model_copy(update={"next_run": datetime.now(UTC) - timedelta(seconds=1)})
+            for j in load_cron_jobs(registry)
+        ],
+    )
+    manager = BackgroundTaskManager(tasks_dir=tmp_path / ".dream" / "tasks")
+    loop_task = asyncio.create_task(
+        cron_service.cron_tick_loop(
+            manager=manager,
+            working_dir=tmp_path,
+            registry_path=registry,
+            poll_seconds=0,
+        )
+    )
+    try:
+        for _ in range(100):
+            await asyncio.sleep(0.05)
+            if read_cron_run_records(tmp_path / CRON_RUNS_ROOT, "nudge"):
+                break
+    finally:
+        loop_task.cancel()
+        try:
+            await loop_task
+        except asyncio.CancelledError:
+            pass
+    assert read_cron_run_records(tmp_path / CRON_RUNS_ROOT, "nudge")

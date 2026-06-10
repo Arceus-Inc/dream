@@ -70,6 +70,7 @@ types and unknown payload keys: the catalogue only grows.
 | `wake.dropped` | `agent_id`, `reason`, `wake_source` | another wake held the per-agent lock |
 | `wake.skipped` | `agent_id`, `reason` | the scheduler skipped the tick without a model call (`empty-checklist`: the heartbeat prompt file exists but is empty) |
 | `runtime.wake.run` | `agent_id`, `tasks: [str]`, `reason`, `forced` | a `run` decision surfaced to consumers |
+| `runtime.cron.note_queued` | `job`, `text` | a `target="next-wake"` cron firing queued a note for the next heartbeat (the timed-note pattern) |
 
 ## Command channel
 

@@ -31,6 +31,7 @@ from dream.observability import EventSink
 from dream.runtime._boot import BootReport, run_boot_gates
 from dream.runtime._channel import channel_loop
 from dream.runtime._supervisor import supervise_loop
+from dream.runtime._wake_notes import WakeNoteStore
 from dream.runtime._wake_scheduler import wake_scheduler_loop
 from dream.runtime._watchdog import watchdog_loop
 from dream.runtime._workers import WorkerSupervisor
@@ -176,6 +177,10 @@ class Runtime:
     @property
     def inbox_path(self) -> Path:
         return self._paths.dream_dir / "runtime" / "inbox"
+
+    @property
+    def notes_path(self) -> Path:
+        return self._paths.dream_dir / "runtime" / "wake-notes"
 
     @property
     def running_loops(self) -> tuple[str, ...]:
@@ -581,12 +586,14 @@ class Runtime:
         poll_seconds = self._config.cron_poll_seconds
         working_dir = self._harness.config.working_dir
         argv_builder = self._cron_argv_builder
+        note_sink = self._make_note_sink()
 
         def factory() -> Awaitable[None]:
             kwargs: dict[str, Any] = {
                 "manager": manager,
                 "working_dir": working_dir,
                 "registry_path": registry,
+                "note_sink": note_sink,
             }
             if poll_seconds is not None:
                 kwargs["poll_seconds"] = poll_seconds
@@ -595,6 +602,20 @@ class Runtime:
             return cron_tick_loop(**kwargs)
 
         return factory
+
+    def _make_note_sink(self) -> Callable[[CronManifest], None]:
+        """Route ``target="next-wake"`` cron firings into the wake-note queue."""
+        store = WakeNoteStore(self.notes_path)
+
+        def note_sink(manifest: CronManifest) -> None:
+            text = manifest.entry_prompt or manifest.description or manifest.name
+            store.add(text, source=manifest.name)
+            if self._sink is not None:
+                self._sink.emit(
+                    "runtime.cron.note_queued", job=manifest.name, text=text
+                )
+
+        return note_sink
 
     def _wake_factory(
         self,
@@ -612,6 +633,7 @@ class Runtime:
                 emit=sink.emit,
                 on_run=self._wake_run_handler,
                 prompt_override_path=self._config.wake_prompt_path,
+                notes=WakeNoteStore(self.notes_path),
             )
 
         return factory

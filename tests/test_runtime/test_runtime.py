@@ -158,6 +158,56 @@ async def test_task_lifecycle_mirrored_to_events(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_next_wake_cron_firing_queues_note(tmp_path: Path) -> None:
+    # The timed-note pattern end to end at the runtime layer: a due
+    # manifest with target="next-wake" produces a wake note (and an event),
+    # not a spawned process.
+    from datetime import UTC, datetime, timedelta
+
+    from dream.runtime._wake_notes import WakeNoteStore
+    from dream.services import cron as cron_service
+    from dream.tasks._cron import (
+        CRON_MANIFEST_DIR,
+        load_cron_jobs,
+        load_cron_manifests,
+        save_cron_jobs,
+    )
+
+    repo = tmp_path / "repo"
+    manifest_dir = repo / CRON_MANIFEST_DIR
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / "nudge.toml").write_text(
+        'name = "nudge"\nschedule = "* * * * *"\nenabled = true\n'
+        'target = "next-wake"\nentry_prompt = "review the inbox backlog"\n',
+        encoding="utf-8",
+    )
+    registry = repo / ".dream" / "cron" / "registry.json"
+    registry.parent.mkdir(parents=True)
+    cron_service.ensure_registry_seeded(registry, load_cron_manifests(manifest_dir))
+    save_cron_jobs(
+        registry,
+        [
+            j.model_copy(update={"next_run": datetime.now(UTC) - timedelta(seconds=1)})
+            for j in load_cron_jobs(registry)
+        ],
+    )
+    manager = BackgroundTaskManager(tasks_dir=tmp_path / "tasks")
+    harness = _harness(tmp_path, task_manager=manager, cron_registry_path=registry)
+    rt = Runtime(harness, RuntimeConfig(cron_poll_seconds=0))
+    async with rt:
+        notes = WakeNoteStore(rt.notes_path)
+        for _ in range(100):
+            if notes.pending():
+                break
+            await asyncio.sleep(0.05)
+        drained = notes.drain()
+    assert [n.text for n in drained] == ["review the inbox backlog"]
+    assert drained[0].source == "nudge"
+    assert manager.list_tasks() == []  # nothing was spawned
+    assert "runtime.cron.note_queued" in _event_types(rt.events_path)
+
+
+@pytest.mark.asyncio
 async def test_cron_argv_builder_reaches_tick_loop(tmp_path: Path) -> None:
     # A consumer daemon's cron payload (spec 15 follow-up): the builder the
     # Runtime is constructed with must reach the supervised cron loop.

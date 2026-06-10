@@ -20,11 +20,14 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from dream.runtime._supervisor import EmitFn
+from dream.runtime._wake_notes import WakeNote, WakeNoteStore
 from dream.wake import (
+    CronWake,
     HeartbeatConfig,
     HeartbeatDecision,
     IdleTimerWake,
     WakeOutcome,
+    WakeSource,
     run_wake_cycle,
 )
 
@@ -43,6 +46,24 @@ async def _default_run_cycle(streamer: Any, **kwargs: Any) -> WakeOutcome:
     # kwargs-adapter so the concrete run_wake_cycle signature satisfies the
     # injectable Protocol without widening its own typing.
     return await run_wake_cycle(streamer, **kwargs)
+
+
+def _wake_source(pending: list[WakeNote], *, idle_minutes: int) -> WakeSource:
+    """Cron notes make the wake a ``CronWake``; otherwise the idle timer."""
+    if pending:
+        return CronWake(cron_kind=pending[0].source)
+    return IdleTimerWake(idle_minutes=idle_minutes)
+
+
+def _notes_context(pending: list[WakeNote]) -> str | None:
+    """Render queued notes for the heartbeat stimulus, oldest-first."""
+    if not pending:
+        return None
+    lines = [f"- [{note.source}] {note.text}" for note in pending]
+    return (
+        "PENDING CRON NOTES (queued since the last wake — factor these "
+        "into your decision):\n" + "\n".join(lines)
+    )
 
 
 def _checklist_is_empty(prompt_override_path: Path | None) -> bool:
@@ -65,6 +86,7 @@ async def wake_scheduler_loop(
     emit: EmitFn,
     on_run: Callable[[HeartbeatDecision], Awaitable[None]] | None = None,
     prompt_override_path: Path | None = None,
+    notes: WakeNoteStore | None = None,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     run_cycle: RunCycleFn = _default_run_cycle,
 ) -> None:
@@ -81,20 +103,23 @@ async def wake_scheduler_loop(
 
     while True:
         await sleep(idle_minutes * _SECONDS_PER_MINUTE)
-        if _checklist_is_empty(prompt_override_path):
+        pending = notes.drain() if notes is not None else []
+        if not pending and _checklist_is_empty(prompt_override_path):
             # Zero-cost skip: an existing-but-empty checklist is the
             # operator's explicit "nothing to check" — don't spend a model
             # call discovering that. (A *missing* file falls back to the
-            # bundled default prompt and still wakes.)
+            # bundled default prompt and still wakes; queued notes ARE
+            # content and always wake.)
             emit("wake.skipped", agent_id=agent_id, reason="empty-checklist")
             continue
         outcome = await run_cycle(
             streamer_factory(),
             agent_id=agent_id,
-            wake_source=IdleTimerWake(idle_minutes=idle_minutes),
+            wake_source=_wake_source(pending, idle_minutes=idle_minutes),
             coordination_dir=coordination_dir,
             config=heartbeat_config,
             prompt_override_path=prompt_override_path,
+            extra_context=_notes_context(pending),
             on_event=_forward,
         )
         decision = outcome.decision
