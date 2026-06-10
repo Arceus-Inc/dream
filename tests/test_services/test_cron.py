@@ -480,3 +480,56 @@ async def test_tick_loop_advances_next_run_when_manifest_missing(
     after = get_cron_job(registry, "orphan")
     assert after is not None
     assert after.last_status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_tick_loop_honours_custom_argv_builder(tmp_path: Path) -> None:
+    """A consumer agent supplies the real cron payload (spec 15 follow-up):
+    ``argv_for`` replaces the print-stub so a scheduled job runs an actual
+    one-shot command (e.g. a digest run)."""
+    manifest_dir = tmp_path / CRON_MANIFEST_DIR
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / "digest.toml").write_text(
+        'name = "digest"\nschedule = "* * * * *"\nenabled = true\n'
+    )
+    registry = _registry_path(tmp_path)
+    cron_service.ensure_registry_seeded(registry, load_cron_manifests(manifest_dir))
+    jobs = load_cron_jobs(registry)
+    save_cron_jobs(
+        registry,
+        [
+            j.model_copy(update={"next_run": datetime.now(UTC) - timedelta(seconds=1)})
+            for j in jobs
+        ],
+    )
+    marker = tmp_path / "fired.txt"
+    seen: list[str] = []
+
+    def argv_for(manifest: CronManifest) -> list[str]:
+        seen.append(manifest.name)
+        return ["touch", str(marker)]
+
+    manager = BackgroundTaskManager(tasks_dir=tmp_path / ".dream" / "tasks")
+    loop_task = asyncio.create_task(
+        cron_service.cron_tick_loop(
+            manager=manager,
+            working_dir=tmp_path,
+            registry_path=registry,
+            poll_seconds=0,
+            argv_for=argv_for,
+        )
+    )
+    try:
+        for _ in range(100):
+            await asyncio.sleep(0.05)
+            if marker.exists():
+                break
+    finally:
+        loop_task.cancel()
+        try:
+            await loop_task
+        except asyncio.CancelledError:
+            pass
+
+    assert seen == ["digest"]
+    assert marker.exists(), "custom argv payload did not run"

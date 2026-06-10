@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -232,8 +232,13 @@ async def cron_tick_loop(
     working_dir: str | Path,
     registry_path: str | Path,
     poll_seconds: int = DEFAULT_POLL_SECONDS,
+    argv_for: Callable[[CronManifest], list[str]] = _default_cron_argv,
 ) -> None:
     """Long-running coroutine — poll registry, fire due jobs, sleep.
+
+    ``argv_for`` maps a due manifest to the command the spawned task runs;
+    the default is the visible-firing print stub. Consumer daemons supply
+    their real payload (e.g. a one-shot digest run) here.
 
     Cancellation-safe: ``asyncio.CancelledError`` propagates out cleanly
     so ``task.cancel(); await task`` shapes shut the loop down without
@@ -267,7 +272,7 @@ async def cron_tick_loop(
                         manifest=manifest,
                         cwd=wd,
                         runs_root=runs_root,
-                        argv=_default_cron_argv(manifest),
+                        argv=argv_for(manifest),
                     )
                     # Roll next_run forward now so this job isn't re-grabbed on
                     # the next tick before it finishes (dedup); the final

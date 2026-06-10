@@ -38,6 +38,7 @@ from dream.services.cron import cron_tick_loop
 from dream.swarm import TeamRegistry
 from dream.swarm._spawn import TeammateExecutor, TeammateSpawnConfig
 from dream.tasks import BackgroundTaskManager, TaskRecord
+from dream.tasks._cron import CronManifest
 from dream.utils.file_lock import try_exclusive_file_lock
 from dream.wake import (
     HeartbeatConfig,
@@ -128,11 +129,13 @@ class Runtime:
         boot_report: BootReport | None = None,
         wake_run_handler: Callable[[HeartbeatDecision], Awaitable[None]] | None = None,
         stale_claim_handler: Callable[[Claim], Awaitable[None]] | None = None,
+        cron_argv_builder: Callable[[CronManifest], list[str]] | None = None,
     ) -> None:
         self._harness = harness
         self._config = config or RuntimeConfig()
         self._wake_run_handler = wake_run_handler
         self._stale_claim_handler = stale_claim_handler
+        self._cron_argv_builder = cron_argv_builder
         # ``paths`` lets a frontend that resolved storage roots itself (the
         # REPL honours a caller-supplied env mapping) hand them over instead
         # of the runtime re-deriving and diverging. ``boot_report`` likewise:
@@ -577,18 +580,19 @@ class Runtime:
     ) -> Callable[[], Awaitable[None]]:
         poll_seconds = self._config.cron_poll_seconds
         working_dir = self._harness.config.working_dir
+        argv_builder = self._cron_argv_builder
 
         def factory() -> Awaitable[None]:
-            if poll_seconds is None:
-                return cron_tick_loop(
-                    manager=manager, working_dir=working_dir, registry_path=registry
-                )
-            return cron_tick_loop(
-                manager=manager,
-                working_dir=working_dir,
-                registry_path=registry,
-                poll_seconds=poll_seconds,
-            )
+            kwargs: dict[str, Any] = {
+                "manager": manager,
+                "working_dir": working_dir,
+                "registry_path": registry,
+            }
+            if poll_seconds is not None:
+                kwargs["poll_seconds"] = poll_seconds
+            if argv_builder is not None:
+                kwargs["argv_for"] = argv_builder
+            return cron_tick_loop(**kwargs)
 
         return factory
 

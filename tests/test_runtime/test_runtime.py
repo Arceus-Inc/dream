@@ -158,6 +158,60 @@ async def test_task_lifecycle_mirrored_to_events(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_cron_argv_builder_reaches_tick_loop(tmp_path: Path) -> None:
+    # A consumer daemon's cron payload (spec 15 follow-up): the builder the
+    # Runtime is constructed with must reach the supervised cron loop.
+    from datetime import UTC, datetime, timedelta
+
+    from dream.services import cron as cron_service
+    from dream.tasks._cron import (
+        CRON_MANIFEST_DIR,
+        CronManifest,
+        load_cron_jobs,
+        load_cron_manifests,
+        save_cron_jobs,
+    )
+
+    repo = tmp_path / "repo"
+    manifest_dir = repo / CRON_MANIFEST_DIR
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / "digest.toml").write_text(
+        'name = "digest"\nschedule = "* * * * *"\nenabled = true\n',
+        encoding="utf-8",
+    )
+    registry = repo / ".dream" / "cron" / "registry.json"
+    registry.parent.mkdir(parents=True)
+    cron_service.ensure_registry_seeded(registry, load_cron_manifests(manifest_dir))
+    save_cron_jobs(
+        registry,
+        [
+            j.model_copy(update={"next_run": datetime.now(UTC) - timedelta(seconds=1)})
+            for j in load_cron_jobs(registry)
+        ],
+    )
+    marker = tmp_path / "fired.txt"
+
+    def argv_for(manifest: CronManifest) -> list[str]:
+        return ["touch", str(marker)]
+
+    manager = BackgroundTaskManager(tasks_dir=tmp_path / "tasks")
+    harness = _harness(
+        tmp_path, task_manager=manager, cron_registry_path=registry
+    )
+    rt = Runtime(
+        harness,
+        RuntimeConfig(cron_poll_seconds=0),
+        cron_argv_builder=argv_for,
+    )
+    async with rt:
+        for _ in range(100):
+            if marker.exists():
+                break
+            await asyncio.sleep(0.05)
+    assert marker.exists(), "runtime cron loop did not run the custom payload"
+
+
+@pytest.mark.asyncio
 async def test_paths_override_drives_lock_and_gates(tmp_path: Path) -> None:
     # A frontend (the REPL) resolves DreamPaths from its own working dir +
     # env; the runtime must honour that override rather than re-deriving
