@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         SprintGoalProvider,
     )
     from dream.sprint import EvaluatorPropose, GeneratorRespond
+    from dream.tasks import BackgroundTaskManager
 
 
 # Slice D: the production wiring (Provider -> TurnStreamer adapter via
@@ -56,6 +57,13 @@ class HarnessConfig:
     default_model: str | None = None
     default_provider: str | None = None
     permission_mode: str = "default"
+    # Harness-bound runtime subsystems wired by ``dream.build_harness``:
+    # the per-harness background task manager (shared across sessions so
+    # task IDs / archives stay consistent) and the on-disk cron registry a
+    # scheduler tick loop polls. ``None`` when the harness was constructed
+    # without the factory (e.g. bare engine-factory tests).
+    task_manager: BackgroundTaskManager | None = None
+    cron_registry_path: Path | None = None
     extra: dict[str, Any] = field(default_factory=dict)
     _engine_factory: EngineFactory | None = None
 

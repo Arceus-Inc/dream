@@ -5,6 +5,7 @@ listed in `__all__` is private and may change without notice. The
 re-exports are pinned by `tests/test_public_api.py`.
 """
 
+from dream._factory import build_harness
 from dream.contracts.exec_plan import ExecPlan, ExecPlanLedger, ExecPlanStatus
 from dream.contracts.hook import Hook, HookEvent, HookResult, HookSpec
 from dream.contracts.memory import (
@@ -98,4 +99,5 @@ __all__ = [
     "ToolUseStart",
     "TurnComplete",
     "__version__",
+    "build_harness",
 ]

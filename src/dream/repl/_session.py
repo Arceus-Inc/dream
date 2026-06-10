@@ -18,19 +18,15 @@ import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import Any, TextIO
+from typing import TextIO
 
+from dream._factory import (
+    DEFAULT_BASE_URL,
+    PolicyWarningSink,
+    SkillEventSink,
+    build_harness,
+)
 from dream.config.paths import DreamPaths
-from dream.contracts.provider import ProviderCapabilities
-from dream.engine._adapter_openai import (
-    OpenAIChatStreamer,
-    httpx_chat_completion_stream,
-)
-from dream.engine._engine import QueryEngine, build_query_engine
-from dream.engine._permission_gate import (
-    compute_session_role_allowlist,
-    make_permission_gate,
-)
 from dream.events import (
     Compacted,
     Error,
@@ -40,10 +36,8 @@ from dream.events import (
     ToolUseStart,
     TurnComplete,
 )
-from dream.harness import Harness, HarnessConfig
+from dream.harness import Harness
 from dream.mcp import McpClientManager
-from dream.observability import JsonlTracer, TraceWriter
-from dream.permissions import SessionLimits
 from dream.repl._ansi import (
     BOLD as _BOLD,
 )
@@ -70,16 +64,11 @@ from dream.repl._ansi import flatten as _flatten
 from dream.repl._ansi import use_colour as _use_colour
 from dream.repl._events import EventSink
 from dream.repl._mcp import mcp_paths, setup_mcp_session
-from dream.repl._runtime_info import render_runtime_info
-from dream.roles import RoleManifest
-from dream.runner._role_session import ROLE_MANIFEST_METADATA_KEY
 from dream.services import cron as cron_service
 from dream.services.compact._orchestrator import (
-    AutoCompactState,
     auto_compact_if_needed,
 )
 from dream.services.context_log import ContextEvent
-from dream.services.core_beliefs import extract_standing_orders, render_standing_orders
 from dream.services.repo_validator import has_blocking, validate_repo
 from dream.services.threat_scan import threat_scan
 from dream.services.token_estimation import (
@@ -88,29 +77,16 @@ from dream.services.token_estimation import (
 )
 from dream.session import Session, SessionOptions
 from dream.skills import (
-    SKILL_CONTEXT_KEY,
-    SkillContext,
     SkillRegistry,
     build_session_skill_registry,
-    render_skill_catalogue,
     validate_skills,
 )
 from dream.tasks import (
-    TASK_CONTEXT_KEY,
     BackgroundTaskManager,
     TaskRecord,
-    TaskSessionContext,
 )
-from dream.tasks._cron import CRON_MANIFEST_DIR, load_cron_manifests
 from dream.tools._registry import ToolRegistry
 from dream.tools.builtin import default_registry
-
-# A context-event sink the skill registry calls when a body loads.
-SkillEventSink = Callable[[ContextEvent], None]
-
-# A plain-string sink for operator-facing policy warnings (e.g. stale tier
-# promotions) surfaced from permission-policy assembly at session startup.
-PolicyWarningSink = Callable[[str], None]
 
 # ---------------------------------------------------------------------------
 # Default harness construction from env
@@ -134,270 +110,28 @@ def build_default_harness(
     skill_event_sink: SkillEventSink | None = None,
     policy_warning_sink: PolicyWarningSink | None = None,
 ) -> Harness:
-    """Build a Harness whose ``_engine_factory`` produces a real engine.
+    """REPL convenience over :func:`dream.build_harness`, credentials from env.
 
-    Reads ``DREAM_SMOKE_API_KEY``, ``DREAM_SMOKE_MODEL`` and
-    ``DREAM_SMOKE_BASE_URL`` from ``env``. Each ``start_session`` call
-    constructs a fresh ``OpenAIChatStreamer`` so per-session
-    ``system_prompt`` / ``model`` overrides take effect; the
-    ``ToolRegistry`` and ``AutoCompactState`` are shared so registrations
-    and compaction-cooldown state survive across sessions in the same
-    REPL process.
-
-    ``registry`` may be supplied so the caller can register additional tools
-    (e.g. MCP, Spec 06 slice 4) into the same registry *after* this returns but
-    *before* the first session starts — the tool wire-schema and the skill
-    available-tool set are computed lazily per session, so late registrations
-    are reflected.
+    Reads ``DREAM_SMOKE_API_KEY``, ``DREAM_SMOKE_MODEL`` and (optionally)
+    ``DREAM_SMOKE_BASE_URL`` from ``env`` and delegates everything else —
+    engine wiring, tools, task/cron bootstrap, skills, tracing — to the
+    public factory. Raises ``KeyError`` naming any missing required vars so
+    the CLI failure mode stays explicit.
     """
     missing = _missing(env)
     if missing:
         raise KeyError("missing required env vars: " + ", ".join(missing))
-    api_key = env["DREAM_SMOKE_API_KEY"]
-    model = env["DREAM_SMOKE_MODEL"]
-    base_url = env.get("DREAM_SMOKE_BASE_URL", "https://api.openai.com/v1")
-    tool_registry = registry if registry is not None else default_registry()
-    compactor = AutoCompactState()
-    # Resolve the home root from env so ``DREAM_HOME`` overrides are honoured for
-    # task storage / sidecars (#43); hardcoding ``Path.home()`` would write task
-    # artifacts under ~/.dream even when the operator redirected the home root.
-    paths = DreamPaths.resolve(working_dir, env=env).ensure()
-    task_manager, task_context = _bootstrap_task_and_cron(working_dir, paths)
-    # Spec 13C policy-assembly warnings (e.g. stale tier promotions) are
-    # operator-facing security signals; surface them once at session startup
-    # rather than discarding them inside the factory (#47). They derive solely
-    # from ``.harness/tool-tier-overrides.toml`` (paths) and are independent of
-    # session/role, so one assembly here covers every session in this REPL.
-    if policy_warning_sink is not None:
-        _, policy_warnings = make_permission_gate(
-            tool_registry, paths=paths, cwd=working_dir
-        )
-        for warning in policy_warnings:
-            policy_warning_sink(warning)
-
-    # 128K is the default we use throughout Spec 02; the watch panel /
-    # /util command surface utilisation against this number.
-    capabilities = ProviderCapabilities(max_context_tokens=128_000)
-
-    # Skills (Spec 06 slice 2): the frontmatter catalogue goes into the system
-    # prompt so the model can discover skills; the SkillContext rides the
-    # dispatcher's context_metadata so the `skill` tool can load bodies.
-    catalogue = (
-        render_skill_catalogue(skill_registry.list_meta()) if skill_registry else ""
-    )
-    # Runtime environment (shell + OS + python) injected so the model picks the
-    # right command syntax when it calls ``task_create command=...`` — without
-    # this it guesses bash on Windows and cmd.exe rejects the command.
-    runtime_info = render_runtime_info(env=env, working_dir=working_dir)
-
-    def _factory(session_id: str, options: SessionOptions) -> QueryEngine:
-        return _build_session_engine(
-            session_id,
-            options,
-            tool_registry=tool_registry,
-            paths=paths,
-            working_dir=working_dir,
-            api_key=api_key,
-            base_url=base_url,
-            model=model,
-            max_turns=max_turns,
-            catalogue=catalogue,
-            runtime_info=runtime_info,
-            skill_registry=skill_registry,
-            skill_event_sink=skill_event_sink,
-            task_context=task_context,
-            compactor=compactor,
-            capabilities=capabilities,
-        )
-
-    # Stash the task manager on the harness config so the REPL can register
-    # lifecycle listeners and surface cron-spawned task starts/completions
-    # alongside ordinary tool calls. ``extra`` is the documented escape hatch
-    # for harness-bound subsystems the SDK Harness API doesn't model yet.
-    # The cron registry path rides alongside so the in-process scheduler
-    # tick loop (started by ``run_session_repl``) knows where to poll.
-    config = HarnessConfig(working_dir=working_dir, _engine_factory=_factory)
-    config.extra["task_manager"] = task_manager
-    config.extra["cron_registry_path"] = task_context.cron_registry_path
-    return Harness(config)
-
-
-def _bootstrap_task_and_cron(
-    working_dir: Path, paths: DreamPaths
-) -> tuple[BackgroundTaskManager, TaskSessionContext]:
-    """Build the per-harness task manager + cron context, seeding cron on disk.
-
-    Task tools (Spec 07): one BackgroundTaskManager per harness, shared across
-    sessions in this REPL so task IDs / archives stay consistent. The cron
-    registry lives at the in-repo convention (``.dream/cron/registry.json``);
-    the exec-plans root is the parent of ``exec_plans_active`` since the FSM
-    appends the state segment itself via :func:`plan_dir`. The two cron
-    bootstrap calls are idempotent so operator edits to either the manifest or
-    the registry survive restart.
-    """
-    task_manager = BackgroundTaskManager(tasks_dir=paths.tasks_dir)
-    cron_registry_path = paths.dream_dir / "cron" / "registry.json"
-    task_context = TaskSessionContext(
-        manager=task_manager,
-        cron_registry_path=cron_registry_path,
-        plans_root=paths.exec_plans_active.parent,
-    )
-    cron_service.bootstrap_default_manifests(working_dir)
-    cron_service.ensure_registry_seeded(
-        cron_registry_path,
-        load_cron_manifests(Path(working_dir) / CRON_MANIFEST_DIR),
-    )
-    return task_manager, task_context
-
-
-def _assemble_system_prompt(
-    *, paths: DreamPaths, runtime_info: str, catalogue: str, system_prompt: str | None
-) -> str:
-    """Assemble the per-session system prompt from its four ordered blocks.
-
-    Order: the governance standing orders FIRST (the constitution outranks
-    everything; Spec 13F AC #21-22, re-extracted every session start), then
-    runtime info (host facts the model must trust), the skill catalogue
-    (capabilities), and the caller-supplied prompt (task framing). Each block
-    survives if the next is empty.
-    """
-    standing_orders = render_standing_orders(
-        extract_standing_orders(paths.repo / "docs" / "design-docs" / "core-beliefs.md")
-    )
-    parts = [standing_orders] if standing_orders else []
-    parts.append(runtime_info)
-    if catalogue:
-        parts.append(catalogue)
-    if system_prompt:
-        parts.append(system_prompt)
-    return "\n\n".join(parts)
-
-
-def _build_session_engine(
-    session_id: str,
-    options: SessionOptions,
-    *,
-    tool_registry: ToolRegistry,
-    paths: DreamPaths,
-    working_dir: Path,
-    api_key: str,
-    base_url: str,
-    model: str,
-    max_turns: int,
-    catalogue: str,
-    runtime_info: str,
-    skill_registry: SkillRegistry | None,
-    skill_event_sink: SkillEventSink | None,
-    task_context: TaskSessionContext,
-    compactor: AutoCompactState,
-    capabilities: ProviderCapabilities,
-) -> QueryEngine:
-    """Construct one session's ``QueryEngine`` from explicit, pre-resolved deps.
-
-    Lifted out of ``build_default_harness``'s nested ``_factory`` so the build
-    reads as a plan; everything per-session (tool wire schema, skill context,
-    prompt, permission gate, role allow-list) is computed lazily here so tools
-    registered after ``build_default_harness`` (MCP adapters etc.) are visible.
-    """
-    # Render the registry into OpenAI ``tools`` wire shape per session (cheap;
-    # a handful of tools) so tools registered after build — MCP adapters /
-    # resource + auth tools — are visible to the model. The engine's
-    # TurnStreamer Protocol has no tools parameter (only messages), so we
-    # smuggle the schema through ``httpx_chat_completion_stream``'s
-    # ``extra_params`` — splatted verbatim into every request body.
-    tools = tool_registry.list_tools()
-    tools_wire: list[dict[str, Any]] = [
-        {
-            "type": "function",
-            "function": {
-                "name": t.name,
-                "description": t.description,
-                "parameters": t.input_schema(),
-            },
-        }
-        for t in tools
-    ]
-    # Built per session too, so the available-tool set the `skill` tool
-    # checks ``tools_required`` against includes late (MCP) registrations.
-    skill_context = (
-        SkillContext(
-            registry=skill_registry,
-            available_tools=frozenset(t.name for t in tools),
-            event_sink=skill_event_sink,
-        )
-        if skill_registry is not None
-        else None
-    )
-    system_prompt = _assemble_system_prompt(
-        paths=paths,
-        runtime_info=runtime_info,
-        catalogue=catalogue,
-        system_prompt=options.system_prompt,
-    )
-    streamer = OpenAIChatStreamer(
-        stream_chat_completion=httpx_chat_completion_stream(
-            api_key=api_key,
-            base_url=base_url,
-            extra_params={"tools": tools_wire, "tool_choice": "auto"}
-            if tools_wire
-            else None,
-        ),
-        model=options.model or model,
-        system_prompt=system_prompt,
-    )
-    # OTel-shaped trace (Spec 12a): one durable JSONL per session under the
-    # task sidecar. The session_id doubles as the sidecar dir key in the REPL.
-    tracer = JsonlTracer(
-        # Reuse the env-resolved ``paths`` so the trace log honours
-        # ``DREAM_HOME`` like task storage does (#43).
-        TraceWriter(paths.trace_log(session_id)),
-        session_id=session_id,
-        task_id=session_id,
-    )
-    # Spec 13C: gate every tool call against the sandbox policy assembled
-    # from the registry's declared tiers + operator .harness config. Stale
-    # promotions etc. surface as warnings (data); not emitted here yet.
-    # Spec 10-H: when the caller stamped a RoleManifest on
-    # ``options.metadata[ROLE_MANIFEST_METADATA_KEY]`` (the runner does
-    # this in ``open_role_session``), intersect with the active sandbox
-    # tier and pass the result to *both* the dispatcher (hard refusal
-    # before the gate) and the gate itself (defensive double-lock).
-    manifest = options.metadata.get(ROLE_MANIFEST_METADATA_KEY)
-    role_allowed: frozenset[str] | None = None
-    if isinstance(manifest, RoleManifest):
-        role_allowed = compute_session_role_allowlist(
-            tool_registry, paths=paths, cwd=working_dir, manifest=manifest
-        )
-    # SECURITY: do NOT feed ``role_allowed`` into the gate's ``tool_allow``.
-    # ``tool_allow`` is an allow-list override (it lets a tool bypass the
-    # tool-deny list), so passing role tools there would *widen* them rather
-    # than restrict them. Role enforcement is a hard "must be in set" deny in
-    # the dispatcher (``role_allowed_tools`` below); the gate then applies its
-    # full pipeline (path/command deny, tier, trust) to every role-allowed
-    # tool. See ``compute_session_role_allowlist``'s docstring for the
-    # rationale.
-    permission_gate, _gate_warnings = make_permission_gate(
-        tool_registry, paths=paths, cwd=working_dir
-    )
-    # Dispatcher context_metadata: skill + task contexts keyed for the
-    # `skill` / task tools to fetch out of the dispatcher.
-    context_metadata: dict[str, Any] = {TASK_CONTEXT_KEY: task_context}
-    if skill_context is not None:
-        context_metadata[SKILL_CONTEXT_KEY] = skill_context
-    return build_query_engine(
-        streamer=streamer,
-        registry=tool_registry,
-        session_id=session_id,
+    return build_harness(
+        model=env["DREAM_SMOKE_MODEL"],
+        api_key=env["DREAM_SMOKE_API_KEY"],
+        base_url=env.get("DREAM_SMOKE_BASE_URL", DEFAULT_BASE_URL),
         working_dir=working_dir,
-        max_turns=options.max_turns or max_turns,
-        permission_gate=permission_gate,
-        role_allowed_tools=role_allowed,
-        limits=SessionLimits(),
-        context_metadata=context_metadata,
-        compactor=compactor,
-        compaction_capabilities=capabilities,
-        tracer=tracer,
-        model=options.model or model,
+        max_turns=max_turns,
+        registry=registry,
+        skill_registry=skill_registry,
+        skill_event_sink=skill_event_sink,
+        policy_warning_sink=policy_warning_sink,
+        env=env,
     )
 
 
@@ -1130,11 +864,11 @@ def run_session_repl(
         mcp_manager: McpClientManager | None = None
         # Surface background task lifecycle (cron firings + ad-hoc task_create
         # spawns) inline in the REPL, the same way tool calls are rendered.
-        # The harness stashes its task_manager on ``config.extra`` so the REPL
-        # can subscribe without the SDK Harness API exposing every subsystem.
+        # ``build_harness`` wires its task manager onto the typed
+        # ``HarnessConfig.task_manager`` field so frontends can subscribe.
         unsubs: list[Callable[[], None]] = []
         cron_task: asyncio.Task[None] | None = None
-        task_manager = harness.config.extra.get("task_manager")
+        task_manager = harness.config.task_manager
         if isinstance(task_manager, BackgroundTaskManager):
             unsubs.append(
                 task_manager.register_start_listener(
@@ -1151,7 +885,7 @@ def run_session_repl(
             # for the duration of this REPL session; an OS-level trigger
             # (``python -m dream.repl cron run <kind>``) covers the
             # cron-without-an-open-REPL case.
-            cron_registry = harness.config.extra.get("cron_registry_path")
+            cron_registry = harness.config.cron_registry_path
             if isinstance(cron_registry, Path):
                 cron_task = asyncio.create_task(
                     cron_service.cron_tick_loop(

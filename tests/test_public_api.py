@@ -30,6 +30,8 @@ EXPECTED_PUBLIC_API: frozenset[str] = frozenset({
     "ExecPlan", "ExecPlanLedger", "ExecPlanStatus",
     # types
     "MessageRole", "StopReason",
+    # factory
+    "build_harness",
     # metadata
     "__version__",
 })

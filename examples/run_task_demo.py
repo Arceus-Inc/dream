@@ -46,9 +46,8 @@ if hasattr(sys.stdout, "buffer"):
 if hasattr(sys.stderr, "buffer"):
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", line_buffering=True)
 
-from dream.repl._session import build_default_harness  # noqa: E402
-from dream.runner import StdioObserver  # noqa: E402
-
+from dream import build_harness
+from dream.runner import StdioObserver
 
 _DEFAULT_INTENT = (
     "Create a small Python module `hello.py` that exposes a `greet(name)` "
@@ -127,21 +126,25 @@ async def main() -> None:
     if missing:
         raise SystemExit(f"[demo] missing required env vars: {', '.join(missing)}")
 
-    env = {
-        "DREAM_SMOKE_API_KEY": os.environ["DREAM_SMOKE_API_KEY"],
-        "DREAM_SMOKE_MODEL": os.environ["DREAM_SMOKE_MODEL"],
-        "DREAM_SMOKE_BASE_URL": os.environ["DREAM_SMOKE_BASE_URL"],
-    }
 
     # Worktree under a tmp dir so repeated runs don't litter the repo.
     worktree = Path(tempfile.mkdtemp(prefix="dream-demo-"))
     _git_init_worktree(worktree)
     print(f"[demo] worktree: {worktree} (git-initialised)", flush=True)
-    print(f"[demo] model:    {env['DREAM_SMOKE_MODEL']} @ {env['DREAM_SMOKE_BASE_URL']}", flush=True)
+    print(
+        f"[demo] model:    {os.environ['DREAM_SMOKE_MODEL']} "
+        f"@ {os.environ['DREAM_SMOKE_BASE_URL']}",
+        flush=True,
+    )
     print(f"[demo] intent:   {intent}", flush=True)
     print("[demo] --- starting run_task; live walkthrough follows ---", flush=True)
 
-    harness = build_default_harness(env=env, working_dir=worktree)
+    harness = build_harness(
+        model=os.environ["DREAM_SMOKE_MODEL"],
+        api_key=os.environ["DREAM_SMOKE_API_KEY"],
+        base_url=os.environ["DREAM_SMOKE_BASE_URL"],
+        working_dir=worktree,
+    )
 
     max_sprints = int(os.environ.get("DREAM_DEMO_MAX_SPRINTS", "6"))
     async with harness:

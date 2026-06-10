@@ -5,9 +5,9 @@ Two new surfaces:
 1. ``render_task_started`` / ``render_task_finished`` mirror the
    ``ToolUseStart`` shape (``▸ label  description``) so cron firings and
    ad-hoc ``task_create`` calls show up inline next to tool calls.
-2. ``build_default_harness`` stashes the ``BackgroundTaskManager`` on
-   ``HarnessConfig.extra["task_manager"]`` so the REPL can subscribe to
-   start + completion listeners without bloating the public Harness API.
+2. ``build_default_harness`` wires the ``BackgroundTaskManager`` onto the
+   typed ``HarnessConfig.task_manager`` field so the REPL can subscribe to
+   start + completion listeners.
 """
 
 from __future__ import annotations
@@ -142,9 +142,9 @@ def test_render_task_finished_failed_status_is_emitted(tmp_path: Path) -> None:
 # --- harness wiring --------------------------------------------------------
 
 
-def test_build_default_harness_stashes_task_manager_in_extra(tmp_path: Path) -> None:
-    """The REPL subscribes via ``harness.config.extra["task_manager"]`` —
-    if the key disappears, lifecycle listeners silently never register and
+def test_build_default_harness_wires_task_manager(tmp_path: Path) -> None:
+    """The REPL subscribes via ``harness.config.task_manager`` — if the field
+    stops being populated, lifecycle listeners silently never register and
     cron firings stop being visible.
     """
     env = {
@@ -153,5 +153,5 @@ def test_build_default_harness_stashes_task_manager_in_extra(tmp_path: Path) -> 
         "DREAM_SMOKE_BASE_URL": "http://127.0.0.1:9/v1",
     }
     harness = build_default_harness(env=env, working_dir=tmp_path)
-    tm = harness.config.extra.get("task_manager")
+    tm = harness.config.task_manager
     assert isinstance(tm, BackgroundTaskManager)
