@@ -46,6 +46,12 @@ from dream.events import (
     TurnComplete,
 )
 from dream.harness import Harness, HarnessConfig
+from dream.runtime import (
+    Runtime,
+    RuntimeBootBlockedError,
+    RuntimeBusyError,
+    RuntimeConfig,
+)
 from dream.session import Session, SessionCost, SessionOptions
 from dream.types import MessageRole, StopReason
 
@@ -85,6 +91,10 @@ __all__ = [
     "ProviderError",
     "ProviderEvent",
     "ProviderUsage",
+    "Runtime",
+    "RuntimeBootBlockedError",
+    "RuntimeBusyError",
+    "RuntimeConfig",
     "SandboxError",
     "Session",
     "SessionCost",

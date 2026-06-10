@@ -21,7 +21,9 @@ from dream.contracts.tool import Tool
 from dream.session import Session, SessionOptions
 
 if TYPE_CHECKING:
+    from dream.config.paths import DreamPaths
     from dream.engine._engine import QueryEngine
+    from dream.engine._loop import TurnStreamer
     from dream.planner import PlannerCallable
     from dream.roles import RoleManifest, RoleName
     from dream.runner._observer import RunTaskObserver
@@ -64,6 +66,13 @@ class HarnessConfig:
     # without the factory (e.g. bare engine-factory tests).
     task_manager: BackgroundTaskManager | None = None
     cron_registry_path: Path | None = None
+    # The env-resolved storage roots the factory built the harness against,
+    # so the runtime reuses the exact same roots (DREAM_HOME honoured) rather
+    # than re-resolving and risking divergence.
+    paths: DreamPaths | None = None
+    # Zero-arg factory for a TurnStreamer carrying the heartbeat tool schema;
+    # the runtime's wake scheduler (spec 06.5 / 15) drives wake cycles with it.
+    wake_streamer_factory: Callable[[], TurnStreamer] | None = None
     extra: dict[str, Any] = field(default_factory=dict)
     _engine_factory: EngineFactory | None = None
 

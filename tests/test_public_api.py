@@ -32,6 +32,8 @@ EXPECTED_PUBLIC_API: frozenset[str] = frozenset({
     "MessageRole", "StopReason",
     # factory
     "build_harness",
+    # runtime (spec 15 P1)
+    "Runtime", "RuntimeConfig", "RuntimeBusyError", "RuntimeBootBlockedError",
     # metadata
     "__version__",
 })

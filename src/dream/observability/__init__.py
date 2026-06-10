@@ -7,6 +7,7 @@ the substrate the rest of #12 (query tools, evals) and #09/#11 read from.
 
 from __future__ import annotations
 
+from dream.observability._event_sink import EventSink
 from dream.observability._events import (
     TraceEvent,
     TraceEventType,
@@ -30,6 +31,7 @@ from dream.observability._tracer import JsonlTracer, NoopTracer, Span, Tracer
 from dream.observability._writer import TraceWriter
 
 __all__ = [
+    "EventSink",
     "JsonlTracer",
     "LogQuery",
     "NoopTracer",

@@ -13,7 +13,6 @@ a manual Spec 04 compaction on the bound engine's transcript).
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, fields
@@ -64,13 +63,17 @@ from dream.repl._ansi import flatten as _flatten
 from dream.repl._ansi import use_colour as _use_colour
 from dream.repl._events import EventSink
 from dream.repl._mcp import mcp_paths, setup_mcp_session
-from dream.services import cron as cron_service
+from dream.runtime import (
+    Runtime,
+    RuntimeBusyError,
+    RuntimeConfig,
+    run_boot_gates,
+)
 from dream.services.compact._orchestrator import (
     auto_compact_if_needed,
 )
 from dream.services.context_log import ContextEvent
-from dream.services.repo_validator import has_blocking, validate_repo
-from dream.services.threat_scan import threat_scan
+from dream.services.repo_validator import has_blocking
 from dream.services.token_estimation import (
     estimate_conversation_tokens,
     utilisation,
@@ -79,7 +82,6 @@ from dream.session import Session, SessionOptions
 from dream.skills import (
     SkillRegistry,
     build_session_skill_registry,
-    validate_skills,
 )
 from dream.tasks import (
     BackgroundTaskManager,
@@ -780,38 +782,24 @@ def run_session_repl(
     else:
         work_dir = Path.cwd()
 
-    # Session-start skill gate (Spec 06 MUST #3): a malformed SKILL.md blocks
-    # the session before anything else. Runs even with an injected harness.
-    skill_findings = validate_skills(work_dir)
-    if has_blocking(skill_findings):
-        for finding in skill_findings:
-            out.write(f"blocked: {finding.message} ({finding.path})\n")
-        return 3
-
     # Resolve the home root from the effective env so ``DREAM_HOME`` overrides
     # are honoured here too (#43), keeping path roots consistent with the
     # harness ``build_default_harness`` constructs below.
     paths_env = env if env is not None else _os.environ
     session_paths = DreamPaths.resolve(work_dir, env=paths_env)
 
-    # Session-start structural validation (Spec 01 / Architect PR#49): AGENTS.md,
-    # the required docs tree, JSON+schema validity, and stale exec-plans. Unlike
-    # the threat scan this is *advisory* — its findings are surfaced as warnings
-    # but never block the live REPL. Hard-blocking would refuse to start in any
-    # embedded-SDK consumer repo that doesn't carry the harness's own docs
-    # layout; security (the threat scan below) is what blocks. Wiring it here
-    # ensures these findings are no longer silently skipped.
-    for finding in validate_repo(session_paths):
-        out.write(f"warning: repo: {finding.message} ({finding.path})\n")
-
-    # Session-start threat scan (Spec 13E): a worktree secret / world-writable
-    # file under docs/ / eval-in-tool in .harness/tools/ blocks the session
-    # before the agent runs.
-    threat_findings = threat_scan(session_paths)
-    if has_blocking(threat_findings):
-        for finding in threat_findings:
+    # Boot gates (spec 15 P1): the sequencing lives in ``dream.runtime`` now —
+    # skills gate (block), structural validation (warn), threat scan (block).
+    # The REPL runs them pre-flight because it must know the verdict *before*
+    # building the skill registry below; the verdict is then handed to the
+    # Runtime so boot doesn't scan twice.
+    boot_report = run_boot_gates(working_dir=work_dir, paths=session_paths)
+    if boot_report.blocked:
+        for finding in boot_report.blocking_findings():
             out.write(f"blocked: {finding.message} ({finding.path})\n")
         return 3
+    for finding in boot_report.repo_findings:
+        out.write(f"warning: repo: {finding.message} ({finding.path})\n")
 
     skill_registry, shadows = build_session_skill_registry(work_dir)
     for shadow in shadows:
@@ -861,13 +849,26 @@ def run_session_repl(
     allowlist_path, credentials_path = mcp_paths(work_dir)
 
     async def _run(harness: Harness) -> int:
+        # The REPL is a *client* of the long-running runtime (spec 15 P1):
+        # the Runtime owns the single-instance lock, the harness lifecycle,
+        # the cron tick loop, task-lifecycle event mirroring, and drain. The
+        # REPL adds its own pretty-rendering listeners on top and runs the
+        # interactive session loop.
+        runtime = Runtime(
+            harness,
+            RuntimeConfig(events_path=events_path),
+            paths=session_paths,
+            boot_report=boot_report,
+        )
+        try:
+            await runtime.start()
+        except RuntimeBusyError as exc:
+            out.write(f"blocked: {exc}\n")
+            return 3
         mcp_manager: McpClientManager | None = None
         # Surface background task lifecycle (cron firings + ad-hoc task_create
         # spawns) inline in the REPL, the same way tool calls are rendered.
-        # ``build_harness`` wires its task manager onto the typed
-        # ``HarnessConfig.task_manager`` field so frontends can subscribe.
         unsubs: list[Callable[[], None]] = []
-        cron_task: asyncio.Task[None] | None = None
         task_manager = harness.config.task_manager
         if isinstance(task_manager, BackgroundTaskManager):
             unsubs.append(
@@ -880,64 +881,42 @@ def run_session_repl(
                     lambda t: render_task_finished(t, sink=sink, output=out)
                 )
             )
-            # Spec 07 in-process scheduler tick — polls the registry every
-            # ``DEFAULT_POLL_SECONDS`` and fires any due cron job. Lives only
-            # for the duration of this REPL session; an OS-level trigger
-            # (``python -m dream.repl cron run <kind>``) covers the
-            # cron-without-an-open-REPL case.
-            cron_registry = harness.config.cron_registry_path
-            if isinstance(cron_registry, Path):
-                cron_task = asyncio.create_task(
-                    cron_service.cron_tick_loop(
-                        manager=task_manager,
-                        working_dir=harness.config.working_dir,
-                        registry_path=cron_registry,
-                    ),
-                    name="cron-tick-loop",
-                )
-        # Outer ``finally`` so listener unsubscription + cron-task cancellation
+        # Outer ``finally`` so listener unsubscription + runtime shutdown
         # ALWAYS run once the listeners are registered — including the early
         # ``return 3`` on a blocking MCP finding (#44). Keeping cleanup only in
         # the inner ``finally`` leaked sink/output references (and caused
         # duplicate lifecycle rendering on later runs) when MCP setup blocked.
         try:
-            async with harness:
-                if tool_registry is not None:
-                    setup = await setup_mcp_session(
-                        tool_registry,
-                        allowlist_path=allowlist_path,
-                        credentials_path=credentials_path,
-                    )
-                    if has_blocking(setup.findings):
-                        for finding in setup.findings:
-                            if finding.severity == "blocking":
-                                out.write(f"blocked: {finding.message} ({finding.path})\n")
-                        return 3
-                    mcp_manager = setup.manager
-                try:
-                    session = await harness.start_session(options)
-                    await session_loop(
-                        session=session,
-                        sink=sink,
-                        skill_registry=skill_registry,
-                        mcp_manager=mcp_manager,
-                        input_func=input_func,
-                        output=out,
-                    )
-                finally:
-                    if mcp_manager is not None:
-                        await mcp_manager.close()
+            if tool_registry is not None:
+                setup = await setup_mcp_session(
+                    tool_registry,
+                    allowlist_path=allowlist_path,
+                    credentials_path=credentials_path,
+                )
+                if has_blocking(setup.findings):
+                    for finding in setup.findings:
+                        if finding.severity == "blocking":
+                            out.write(f"blocked: {finding.message} ({finding.path})\n")
+                    return 3
+                mcp_manager = setup.manager
+            try:
+                session = await harness.start_session(options)
+                await session_loop(
+                    session=session,
+                    sink=sink,
+                    skill_registry=skill_registry,
+                    mcp_manager=mcp_manager,
+                    input_func=input_func,
+                    output=out,
+                )
+            finally:
+                if mcp_manager is not None:
+                    await mcp_manager.close()
             return 0
         finally:
-            if cron_task is not None:
-                cron_task.cancel()
-                # Awaiting a just-cancelled task raises ``CancelledError``; that
-                # is the only expected outcome here, so suppress only it (a real
-                # bug in the tick loop should still surface, not be swallowed).
-                with contextlib.suppress(asyncio.CancelledError):
-                    await cron_task
             for un in unsubs:
                 un()
+            await runtime.shutdown()
 
     # ``finally`` so the stop lifecycle event is written even when the loop
     # raises (otherwise an exception would skip ``session.repl.stopped`` and
