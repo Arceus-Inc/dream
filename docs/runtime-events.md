@@ -68,6 +68,7 @@ types and unknown payload keys: the catalogue only grows.
 | `heartbeat.decision.run` / `.skip` / `.forced` | `agent_id`, `action`, `tasks`, `reason`, `forced`, `outcome`, `decided_at`, `wake_source` | one wake decision |
 | `heartbeat.missing` | same | the model produced no usable decision |
 | `wake.dropped` | `agent_id`, `reason`, `wake_source` | another wake held the per-agent lock |
+| `wake.skipped` | `agent_id`, `reason` | the scheduler skipped the tick without a model call (`empty-checklist`: the heartbeat prompt file exists but is empty) |
 | `runtime.wake.run` | `agent_id`, `tasks: [str]`, `reason`, `forced` | a `run` decision surfaced to consumers |
 
 ## Command channel

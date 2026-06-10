@@ -82,6 +82,7 @@ def build_harness(
     skill_event_sink: SkillEventSink | None = None,
     policy_warning_sink: PolicyWarningSink | None = None,
     env: Mapping[str, str] | None = None,
+    wake_model: str | None = None,
 ) -> Harness:
     """Build a Harness whose engine factory produces a real, tool-wired engine.
 
@@ -97,6 +98,10 @@ def build_harness(
     ``env`` is consulted only for host resolution — ``DREAM_HOME`` path
     overrides and shell detection for the runtime-info prompt block — and
     defaults to ``os.environ``. Credentials never come from it.
+
+    ``wake_model`` overrides the model for wake-cycle heartbeat turns only
+    (they fire on a schedule, so a cheap model here is the main cost lever
+    for always-on agents); ``None`` uses ``model``.
     """
     if not model:
         raise ValueError("model must be a non-empty string")
@@ -170,7 +175,11 @@ def build_harness(
         cron_registry_path=task_context.cron_registry_path,
         paths=paths,
         wake_streamer_factory=_make_wake_streamer_factory(
-            api_key=api_key, base_url=base_url, model=model
+            api_key=api_key,
+            base_url=base_url,
+            # Heartbeat turns fire constantly; ``wake_model`` lets them run
+            # on a cheap model while real sessions keep ``model``.
+            model=wake_model if wake_model is not None else model,
         ),
         _engine_factory=_factory,
     )

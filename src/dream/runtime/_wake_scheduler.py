@@ -45,6 +45,16 @@ async def _default_run_cycle(streamer: Any, **kwargs: Any) -> WakeOutcome:
     return await run_wake_cycle(streamer, **kwargs)
 
 
+def _checklist_is_empty(prompt_override_path: Path | None) -> bool:
+    """True only for an existing override file with no non-whitespace content."""
+    if prompt_override_path is None:
+        return False
+    try:
+        return prompt_override_path.read_text(encoding="utf-8").strip() == ""
+    except OSError:
+        return False
+
+
 async def wake_scheduler_loop(
     *,
     streamer_factory: Callable[[], Any],
@@ -71,6 +81,13 @@ async def wake_scheduler_loop(
 
     while True:
         await sleep(idle_minutes * _SECONDS_PER_MINUTE)
+        if _checklist_is_empty(prompt_override_path):
+            # Zero-cost skip: an existing-but-empty checklist is the
+            # operator's explicit "nothing to check" — don't spend a model
+            # call discovering that. (A *missing* file falls back to the
+            # bundled default prompt and still wakes.)
+            emit("wake.skipped", agent_id=agent_id, reason="empty-checklist")
+            continue
         outcome = await run_cycle(
             streamer_factory(),
             agent_id=agent_id,

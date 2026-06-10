@@ -58,6 +58,20 @@ def test_task_manager_and_cron_registry_wired(tmp_path: Path) -> None:
     assert isinstance(harness.config.cron_registry_path, Path)
 
 
+def test_wake_model_override_reaches_wake_streamer(tmp_path: Path) -> None:
+    # The heartbeat fires constantly; running it on a cheap model is the
+    # single biggest cost lever for an always-on agent. Default: same model.
+    harness = _build(tmp_path, wake_model="cheap-mini")
+    factory = harness.config.wake_streamer_factory
+    assert factory is not None
+    assert factory()._model == "cheap-mini"  # type: ignore[attr-defined]
+
+    default = _build(tmp_path, model="main-model")
+    default_factory = default.config.wake_streamer_factory
+    assert default_factory is not None
+    assert default_factory()._model == "main-model"  # type: ignore[attr-defined]
+
+
 def test_extra_no_longer_smuggles_runtime_fields(tmp_path: Path) -> None:
     # The typed fields replace the ``config.extra`` escape hatch.
     harness = _build(tmp_path)

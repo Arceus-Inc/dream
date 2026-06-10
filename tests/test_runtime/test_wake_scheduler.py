@@ -167,6 +167,67 @@ async def test_prompt_override_forwarded_to_cycle(tmp_path: Any) -> None:
 
 
 @pytest.mark.asyncio
+async def test_empty_checklist_skips_model_entirely(tmp_path: Any) -> None:
+    # The zero-cost skip: an empty (or whitespace-only) heartbeat checklist
+    # means there is nothing to decide about — the scheduler must not spend
+    # a model call discovering that. OpenClaw analog: reason=empty-heartbeat-file.
+    cycles: list[Any] = []
+
+    async def fake_cycle(streamer: Any, **kwargs: Any) -> WakeOutcome:
+        cycles.append(kwargs)
+        return WakeOutcome(decision=_decision("run"))
+
+    override = tmp_path / "heartbeat.md"
+    override.write_text("   \n\n  ", encoding="utf-8")
+    emit = _Recorder()
+    with pytest.raises(_StopLoop):
+        await wake_scheduler_loop(
+            streamer_factory=lambda: object(),
+            agent_id="default",
+            coordination_dir=tmp_path,
+            idle_minutes=1,
+            heartbeat_config=HeartbeatConfig(),
+            emit=emit,
+            on_run=None,
+            prompt_override_path=override,
+            sleep=_sleeper(max_ticks=2),
+            run_cycle=fake_cycle,
+        )
+    assert cycles == []  # no model turn happened
+    skipped = [p for t, p in emit.events if t == "wake.skipped"]
+    assert len(skipped) == 2  # one per tick, zero-cost
+    assert skipped[0]["reason"] == "empty-checklist"
+
+
+@pytest.mark.asyncio
+async def test_missing_checklist_file_still_wakes(tmp_path: Any) -> None:
+    # A *missing* override file falls back to the bundled prompt (the agent
+    # has no operator checklist but still has its default mission) — only an
+    # EXISTING-but-empty file is the explicit "nothing to check" signal.
+    cycles: list[Any] = []
+
+    async def fake_cycle(streamer: Any, **kwargs: Any) -> WakeOutcome:
+        cycles.append(kwargs)
+        return WakeOutcome(decision=_decision("skip"))
+
+    emit = _Recorder()
+    with pytest.raises(_StopLoop):
+        await wake_scheduler_loop(
+            streamer_factory=lambda: object(),
+            agent_id="default",
+            coordination_dir=tmp_path,
+            idle_minutes=1,
+            heartbeat_config=HeartbeatConfig(),
+            emit=emit,
+            on_run=None,
+            prompt_override_path=tmp_path / "missing.md",
+            sleep=_sleeper(max_ticks=1),
+            run_cycle=fake_cycle,
+        )
+    assert len(cycles) == 1
+
+
+@pytest.mark.asyncio
 async def test_wake_events_forwarded_to_emit(tmp_path: Any) -> None:
     async def fake_cycle(streamer: Any, **kwargs: Any) -> WakeOutcome:
         kwargs["on_event"]("heartbeat.decision.run", {"agent_id": "default"})
