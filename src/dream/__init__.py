@@ -46,6 +46,7 @@ from dream.events import (
     TurnComplete,
 )
 from dream.harness import Harness, HarnessConfig
+from dream.observability import tail_events
 from dream.runtime import (
     Runtime,
     RuntimeBootBlockedError,
@@ -110,4 +111,5 @@ __all__ = [
     "TurnComplete",
     "__version__",
     "build_harness",
+    "tail_events",
 ]

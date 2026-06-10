@@ -12,18 +12,34 @@ import contextlib
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
+from dream.channels import (
+    Ack,
+    CancelCommand,
+    Command,
+    CommandInbox,
+    StatusCommand,
+    SubmitTaskCommand,
+    WakeCommand,
+)
 from dream.config.paths import DreamPaths
 from dream.errors import DreamError
-from dream.harness import Harness
+from dream.harness import Harness, _mint_task_id
 from dream.observability import EventSink
 from dream.runtime._boot import BootReport, run_boot_gates
+from dream.runtime._channel import channel_loop
 from dream.runtime._supervisor import supervise_loop
 from dream.runtime._wake_scheduler import wake_scheduler_loop
 from dream.services.cron import cron_tick_loop
 from dream.tasks import BackgroundTaskManager, TaskRecord
 from dream.utils.file_lock import try_exclusive_file_lock
-from dream.wake import HeartbeatConfig, HeartbeatDecision
+from dream.wake import (
+    HeartbeatConfig,
+    HeartbeatDecision,
+    ManualWake,
+    run_wake_cycle,
+)
 
 __all__ = [
     "Runtime",
@@ -67,8 +83,12 @@ class RuntimeConfig:
     cron_poll_seconds: int | None = None
     wake_idle_minutes: int | None = None
     heartbeat: HeartbeatConfig = field(default_factory=HeartbeatConfig)
+    channel_poll_seconds: float = 1.0
     drain_timeout_seconds: float = 10.0
     max_loop_restarts: int = 5
+    # Rotate the events JSONL once it would exceed this size (one prior
+    # generation kept as ``events.jsonl.1``). None disables rotation.
+    events_max_bytes: int | None = 10_000_000
 
 
 class Runtime:
@@ -105,6 +125,7 @@ class Runtime:
         self._boot_report: BootReport | None = boot_report
         self._exit_stack = contextlib.ExitStack()
         self._loops: dict[str, asyncio.Task[None]] = {}
+        self._jobs: dict[str, asyncio.Task[None]] = {}
         self._unsubs: list[Callable[[], None]] = []
         self._stop_requested = asyncio.Event()
         self._started = False
@@ -130,8 +151,18 @@ class Runtime:
         return self._paths.dream_dir / "runtime" / "events.jsonl"
 
     @property
+    def inbox_path(self) -> Path:
+        return self._paths.dream_dir / "runtime" / "inbox"
+
+    @property
     def running_loops(self) -> tuple[str, ...]:
         return tuple(name for name, task in self._loops.items() if not task.done())
+
+    @property
+    def running_jobs(self) -> tuple[str, ...]:
+        return tuple(
+            task_id for task_id, task in self._jobs.items() if not task.done()
+        )
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -143,7 +174,7 @@ class Runtime:
         self._paths.ensure()
         try:
             self._acquire_instance_lock()
-            sink = EventSink(self.events_path)
+            sink = EventSink(self.events_path, max_bytes=self._config.events_max_bytes)
             self._sink = sink
             report = self._boot_report
             if report is None:
@@ -186,10 +217,16 @@ class Runtime:
             return
         self._closed = True
         self._stop_requested.set()
+        # Loops first (stop draining new commands), then in-flight jobs —
+        # each job's wrapper emits ``runtime.job.cancelled`` on its way out.
         for task in self._loops.values():
             task.cancel()
         if self._loops:
             await asyncio.gather(*self._loops.values(), return_exceptions=True)
+        for job in self._jobs.values():
+            job.cancel()
+        if self._jobs:
+            await asyncio.gather(*self._jobs.values(), return_exceptions=True)
         for unsub in self._unsubs:
             with contextlib.suppress(Exception):
                 unsub()
@@ -269,6 +306,145 @@ class Runtime:
         idle = self._config.wake_idle_minutes
         if streamer_factory is not None and idle is not None:
             self._spawn("wake", self._wake_factory(streamer_factory, idle, sink), sink)
+        self._spawn("channel", self._channel_factory(sink), sink)
+
+    def _channel_factory(self, sink: EventSink) -> Callable[[], Awaitable[None]]:
+        inbox = CommandInbox(self.inbox_path)
+        poll_seconds = self._config.channel_poll_seconds
+
+        def factory() -> Awaitable[None]:
+            return channel_loop(
+                inbox=inbox,
+                sink=sink,
+                handler=self._handle_command,
+                poll_seconds=poll_seconds,
+            )
+
+        return factory
+
+    # -- command handling ------------------------------------------------
+
+    async def _handle_command(self, command: Command) -> Ack:
+        if isinstance(command, StatusCommand):
+            return self._status_ack()
+        if isinstance(command, SubmitTaskCommand):
+            return self._handle_submit(command)
+        if isinstance(command, CancelCommand):
+            return await self._handle_cancel(command)
+        return await self._handle_wake(command)
+
+    def _status_ack(self) -> Ack:
+        manager = self._harness.config.task_manager
+        background_running = (
+            len(manager.list_tasks(status="running")) if manager is not None else 0
+        )
+        loops = ", ".join(self.running_loops) or "none"
+        summary = (
+            f"loops: {loops}; jobs running: {len(self.running_jobs)}; "
+            f"background tasks running: {background_running}"
+        )
+        return Ack(
+            status="ok",
+            summary=summary,
+            next_actions=(
+                "submit_task {intent} to start work",
+                "cancel {task_id} to stop a job",
+            ),
+            artifacts=(str(self.events_path),),
+        )
+
+    def _handle_submit(self, command: SubmitTaskCommand) -> Ack:
+        task_id = command.task_id or _mint_task_id()
+        existing = self._jobs.get(task_id)
+        if existing is not None and not existing.done():
+            return Ack(
+                status="rejected", summary=f"job {task_id} is already running"
+            )
+        self._spawn_job(task_id, command)
+        return Ack(
+            status="ok",
+            summary=f"task {task_id} accepted: {command.intent}",
+            next_actions=("status to watch progress", f"cancel {task_id} to stop"),
+            artifacts=(str(self.events_path),),
+        )
+
+    def _spawn_job(self, task_id: str, command: SubmitTaskCommand) -> None:
+        sink = self._sink
+        assert sink is not None  # jobs only spawn after start()
+
+        async def run() -> None:
+            if command.max_sprints is None:
+                await self._harness.run_task(task_id=task_id, intent=command.intent)
+                return
+            await self._harness.run_task(
+                task_id=task_id,
+                intent=command.intent,
+                max_sprints=command.max_sprints,
+            )
+
+        async def job() -> None:
+            try:
+                await run()
+            except asyncio.CancelledError:
+                sink.emit("runtime.job.cancelled", task_id=task_id)
+                raise
+            except Exception as exc:
+                sink.emit("runtime.job.failed", task_id=task_id, error=repr(exc))
+            else:
+                sink.emit("runtime.job.finished", task_id=task_id)
+
+        self._jobs[task_id] = asyncio.create_task(job(), name=f"dream-job-{task_id}")
+
+    async def _handle_cancel(self, command: CancelCommand) -> Ack:
+        job = self._jobs.get(command.task_id)
+        if job is not None and not job.done():
+            job.cancel()
+            await asyncio.gather(job, return_exceptions=True)
+            return Ack(status="ok", summary=f"job {command.task_id} cancelled")
+        manager = self._harness.config.task_manager
+        if manager is not None:
+            record = manager.get_task(command.task_id)
+            if record is not None and record.status == "running":
+                stopped = await manager.stop_task(command.task_id)
+                return Ack(
+                    status="ok",
+                    summary=f"background task {stopped.id} stopped ({stopped.status})",
+                )
+        return Ack(
+            status="rejected",
+            summary=f"no running job or background task {command.task_id}",
+        )
+
+    async def _handle_wake(self, command: WakeCommand) -> Ack:
+        streamer_factory = self._harness.config.wake_streamer_factory
+        sink = self._sink
+        if streamer_factory is None or sink is None:
+            return Ack(
+                status="rejected",
+                summary="wake not configured (harness has no wake streamer)",
+            )
+        def forward(event_type: str, payload: dict[str, Any]) -> None:
+            sink.emit(event_type, **payload)
+
+        outcome = await run_wake_cycle(
+            streamer_factory(),
+            agent_id=self._config.agent_id,
+            wake_source=ManualWake(),
+            coordination_dir=self._paths.coordination_dir,
+            config=self._config.heartbeat,
+            on_event=forward,
+        )
+        if outcome.decision is None:
+            return Ack(
+                status="rejected",
+                summary=f"wake dropped: {outcome.dropped_reason}",
+            )
+        decision = outcome.decision
+        return Ack(
+            status="ok",
+            summary=f"wake decided {decision.action}: {decision.reason}",
+            artifacts=(str(self.events_path),),
+        )
 
     def _cron_factory(
         self, manager: BackgroundTaskManager, registry: Path
