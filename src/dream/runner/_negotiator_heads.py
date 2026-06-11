@@ -31,6 +31,8 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from dream.runner._head_retry import ask_until_parsed
+
 if TYPE_CHECKING:
     from dream.harness import Harness
     from dream.runner._observer import RunTaskObserver
@@ -251,16 +253,39 @@ def make_evaluator_propose_head(
             log_block=_format_log(log),
             example=_PROPOSAL_EXAMPLE,
         )
-        result = await harness.run_role(
-            "evaluator", prompt, harness_dir=harness_dir, observer=observer
+
+        async def _ask(p: str) -> Any:
+            return await harness.run_role(
+                "evaluator", p, harness_dir=harness_dir, observer=observer
+            )
+
+        def _on_retry(attempt: int, err: Exception) -> None:
+            if observer is not None:
+                observer.on_event(
+                    {
+                        "kind": "head.retry",
+                        "role": "evaluator",
+                        "attempt": attempt,
+                        "error": str(err),
+                    }
+                )
+
+        def _parse(final_text: str) -> list[str]:
+            data = _extract_payload(
+                final_text,
+                regex=_PROPOSAL_RE,
+                tag="proposal",
+                exc_cls=EvaluatorProposeHeadParseError,
+            )
+            return _coerce_proposal(data)
+
+        return await ask_until_parsed(
+            _ask,
+            _parse,
+            prompt=prompt,
+            parse_error=EvaluatorProposeHeadParseError,
+            on_retry=_on_retry,
         )
-        data = _extract_payload(
-            result.final_text,
-            regex=_PROPOSAL_RE,
-            tag="proposal",
-            exc_cls=EvaluatorProposeHeadParseError,
-        )
-        return _coerce_proposal(data)
 
     return propose
 
@@ -293,15 +318,38 @@ def make_generator_respond_head(
             log_block=_format_log(log),
             example=_RESPONSE_EXAMPLE,
         )
-        result = await harness.run_role(
-            "generator", prompt, harness_dir=harness_dir, observer=observer
+
+        async def _ask(p: str) -> Any:
+            return await harness.run_role(
+                "generator", p, harness_dir=harness_dir, observer=observer
+            )
+
+        def _on_retry(attempt: int, err: Exception) -> None:
+            if observer is not None:
+                observer.on_event(
+                    {
+                        "kind": "head.retry",
+                        "role": "generator",
+                        "attempt": attempt,
+                        "error": str(err),
+                    }
+                )
+
+        def _parse(final_text: str) -> tuple[bool, list[str] | None]:
+            data = _extract_payload(
+                final_text,
+                regex=_RESPONSE_RE,
+                tag="response",
+                exc_cls=GeneratorRespondHeadParseError,
+            )
+            return _coerce_response(data)
+
+        return await ask_until_parsed(
+            _ask,
+            _parse,
+            prompt=prompt,
+            parse_error=GeneratorRespondHeadParseError,
+            on_retry=_on_retry,
         )
-        data = _extract_payload(
-            result.final_text,
-            regex=_RESPONSE_RE,
-            tag="response",
-            exc_cls=GeneratorRespondHeadParseError,
-        )
-        return _coerce_response(data)
 
     return respond

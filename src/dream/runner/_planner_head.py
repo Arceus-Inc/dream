@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from dream.planner import LedgerStep, PlannerLedger, PlannerOutput
+from dream.runner._head_retry import ask_until_parsed
 
 if TYPE_CHECKING:
     from dream.harness import Harness
@@ -232,14 +233,37 @@ def make_planner_head(
 
     async def planner(task_id: str, intent: str) -> PlannerOutput:
         prompt = _build_intent(task_id, intent)
-        result = await harness.run_role(
-            "planner", prompt, harness_dir=harness_dir, observer=observer
+
+        async def _ask(p: str) -> Any:
+            return await harness.run_role(
+                "planner", p, harness_dir=harness_dir, observer=observer
+            )
+
+        def _on_retry(attempt: int, err: Exception) -> None:
+            if observer is not None:
+                observer.on_event(
+                    {
+                        "kind": "head.retry",
+                        "role": "planner",
+                        "attempt": attempt,
+                        "error": str(err),
+                    }
+                )
+
+        def _parse_for_task(final_text: str) -> PlannerOutput:
+            spec = _extract_spec(final_text)
+            ledger_data = _extract_ledger_json(final_text)
+            ledger = _build_ledger(
+                task_id=task_id, intent=intent, data=ledger_data
+            )
+            return PlannerOutput(spec_markdown=spec, ledger=ledger)
+
+        return await ask_until_parsed(
+            _ask,
+            _parse_for_task,
+            prompt=prompt,
+            parse_error=PlannerHeadParseError,
+            on_retry=_on_retry,
         )
-        spec = _extract_spec(result.final_text)
-        ledger_data = _extract_ledger_json(result.final_text)
-        ledger = _build_ledger(
-            task_id=task_id, intent=intent, data=ledger_data
-        )
-        return PlannerOutput(spec_markdown=spec, ledger=ledger)
 
     return planner

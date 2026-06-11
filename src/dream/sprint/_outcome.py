@@ -3,11 +3,15 @@
 Spec 10 §"Generator + evaluator loop" step 6:
 
 - ``pass``           → step transitions to ``done`` (and advances).
-- ``needs-changes``  → step stays ``in_progress``; items are surfaced into
-  the next contract's negotiation log via
-  :func:`dream.sprint.load_pending_carry_items`.
-- ``fail``           → step transitions to ``blocked``; a tech-debt entry
-  is appended to ``<wt>/docs/exec-plans/tech-debt-tracker.md``.
+- ``needs-changes``  → step stays ``in_progress``; evaluator notes are
+  accumulated on the step so the generator retries with context rather
+  than an identical prompt.  After ``NEEDS_CHANGES_LIMIT`` consecutive
+  rejections the step transitions to ``blocked`` instead, preventing the
+  sprint budget from being burned on a structurally blocked step.
+- ``fail``           → step transitions to ``blocked``; evaluator notes
+  are also carried onto the step (the blocked reason is then readable
+  without opening the tech-debt file); a tech-debt entry is appended to
+  ``<wt>/docs/exec-plans/tech-debt-tracker.md``.
 
 This module is pure transitions: no event emission, no contract writing.
 """
@@ -29,6 +33,29 @@ from ._ledger_ops import replace_step_by_id
 
 __all__ = ["append_tech_debt", "apply_outcome"]
 
+# Maximum number of ``needs-changes`` evaluations before a step is escalated
+# to ``blocked`` to avoid burning the entire sprint budget on a structurally
+# impossible step.
+NEEDS_CHANGES_LIMIT: int = 2
+
+
+def _append_evaluator_notes(
+    prior: str,
+    record_notes: str,
+    sprint_number: int,
+) -> str:
+    """Return ``prior`` with the evaluator's feedback appended.
+
+    Appends nothing when ``record_notes`` is empty — avoids adding a bare
+    separator or an empty evaluator tag that would pollute the notes field.
+    """
+    if not record_notes:
+        return prior
+    tag = f"[evaluator, sprint {sprint_number}] {record_notes}"
+    if prior:
+        return f"{prior}\n{tag}"
+    return tag
+
 
 def apply_outcome(ledger: PlannerLedger, record: EvaluationRecord) -> PlannerLedger:
     """Return a new ledger with ``record.step_id`` transitioned per the rules.
@@ -42,14 +69,29 @@ def apply_outcome(ledger: PlannerLedger, record: EvaluationRecord) -> PlannerLed
                 f"in_progress step may transition, got status "
                 f"{step.status!r}"
             )
-        new_status: Literal["done", "blocked", "in_progress"]
         if record.outcome == "pass":
-            new_status = "done"
-        elif record.outcome == "fail":
-            new_status = "blocked"
-        else:  # needs-changes
-            new_status = "in_progress"
-        return replace(step, status=new_status)
+            return replace(step, status="done")
+        if record.outcome == "fail":
+            # Carry the evaluator's notes so the blocked reason is readable
+            # inline without consulting the tech-debt file.
+            new_notes = _append_evaluator_notes(
+                step.notes, record.notes, record.sprint_number
+            )
+            return replace(step, status="blocked", notes=new_notes)
+        # needs-changes: accumulate notes and count; escalate when limit hit.
+        new_count = step.needs_changes_count + 1
+        new_notes = _append_evaluator_notes(
+            step.notes, record.notes, record.sprint_number
+        )
+        new_status: Literal["blocked", "in_progress"] = (
+            "blocked" if new_count >= NEEDS_CHANGES_LIMIT else "in_progress"
+        )
+        return replace(
+            step,
+            status=new_status,
+            notes=new_notes,
+            needs_changes_count=new_count,
+        )
 
     return replace_step_by_id(ledger, record.step_id, _transition)
 
