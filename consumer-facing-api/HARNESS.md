@@ -1,8 +1,8 @@
 # HARNESS.md — every concept in dream, and what we implemented for each
 
 The single-page map of the harness: each concept defined, what exists in the
-codebase for it, and where it lives. Companion to the consumer docs in
-[consumer-facing-api/](consumer-facing-api/README.md).
+codebase for it, and where it lives. Companion to the consumer docs in this
+folder ([README](README.md), [QUICKSTART](QUICKSTART.md), [SDK_GUIDE](SDK_GUIDE.md)).
 
 ---
 

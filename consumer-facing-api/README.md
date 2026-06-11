@@ -6,6 +6,7 @@ Everything an SDK consumer needs to build agents on `dream`, in one place.
 |---|---|
 | [QUICKSTART.md](QUICKSTART.md) | Zero to a running `run_task()` in five minutes. |
 | [SDK_GUIDE.md](SDK_GUIDE.md) | The full guide: every component, the task loop, security model, conventions. |
+| [HARNESS.md](HARNESS.md) | Concept map: every harness concept + what we implemented for each (incl. the full tool inventory). |
 | [run_harness.py](run_harness.py) | Configurable runner — toggle every component from the command line. |
 | [examples/](examples/) | One runnable script per component, plus an everything-at-once demo. |
 
