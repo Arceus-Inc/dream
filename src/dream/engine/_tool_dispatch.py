@@ -46,6 +46,8 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
+from dream.contracts.hook import HookEvent
+from dream.hooks import HookExecutor
 from dream.permissions import Outcome, PermissionDecision, PermissionRequest
 from dream.services.tool_outputs import offload_tool_output
 from dream.tools._base import BaseTool
@@ -54,6 +56,10 @@ from dream.tools._registry import ToolRegistry
 
 PermissionGate = Callable[[PermissionRequest], PermissionDecision]
 """A pure decision function the dispatcher consults before executing a tool."""
+
+# Spec 13: POST_TOOL_USE carries a bounded ``result_summary`` so an observer
+# never gets the full (possibly offloaded) payload through the hook channel.
+_RESULT_SUMMARY_MAX_CHARS = 500
 
 
 @dataclass(frozen=True)
@@ -101,8 +107,37 @@ class EngineToolDispatcher:
     # the engine skill-agnostic: the skills layer stuffs its SkillContext here
     # under its own key and the skill tool reads it back (Spec 06 slice 2).
     context_metadata: dict[str, Any] = field(default_factory=dict)
+    # Optional spec-13 lifecycle hook executor. When set, PRE_TOOL_USE fires
+    # immediately before the dispatch atom and POST_TOOL_USE immediately after
+    # the ``(content, is_error)`` result exists -- observer-only (hooks never
+    # veto), so the call proceeds regardless. ``None`` means no firing, so
+    # existing call sites are byte-for-byte unaffected.
+    hook_executor: HookExecutor | None = None
 
     async def dispatch(self, name: str, input: dict[str, Any]) -> tuple[str, bool]:
+        # Spec 13: PRE_TOOL_USE fires *before* the dispatch atom, then the result
+        # is produced, then POST_TOOL_USE fires *after* it exists. The hook is an
+        # observer (spec 13 divergence #1: it never vetoes) and ``fire`` never
+        # raises, so a faulty hook can't break the loop or split the tool-call
+        # atom. Wrapping the whole inner pipeline guarantees POST sees a result
+        # for *every* exit (role-refused, unknown, invalid, denied, timeout, ok).
+        if self.hook_executor is None:
+            return await self._dispatch_inner(name, input)
+        await self.hook_executor.fire(
+            HookEvent.PRE_TOOL_USE, {"tool_name": name, "tool_input": dict(input)}
+        )
+        content, is_error = await self._dispatch_inner(name, input)
+        await self.hook_executor.fire(
+            HookEvent.POST_TOOL_USE,
+            {
+                "tool_name": name,
+                "is_error": is_error,
+                "result_summary": content[:_RESULT_SUMMARY_MAX_CHARS],
+            },
+        )
+        return content, is_error
+
+    async def _dispatch_inner(self, name: str, input: dict[str, Any]) -> tuple[str, bool]:
         # ``input`` is the raw tool-call argument map straight off the model's
         # ToolUseBlock (e.g. {"path": "src/x.py", "content": "..."}); it is
         # validated against ``tool.input_model`` before any side-effecting work.

@@ -32,6 +32,7 @@ from dream.engine._permission_gate import (
     make_permission_gate,
 )
 from dream.harness import Harness, HarnessConfig
+from dream.hooks import HookExecutor, collect_hooks
 from dream.observability import JsonlTracer, TraceWriter
 from dream.permissions import SessionLimits
 from dream.prompts.environment import render_runtime_info
@@ -158,26 +159,6 @@ def build_harness(
     # this it guesses bash on Windows and cmd.exe rejects the command.
     runtime_info = render_runtime_info(env=resolved_env, working_dir=working_dir)
 
-    def _factory(session_id: str, options: SessionOptions) -> QueryEngine:
-        return _build_session_engine(
-            session_id,
-            options,
-            tool_registry=tool_registry,
-            paths=paths,
-            working_dir=working_dir,
-            api_key=api_key,
-            base_url=base_url,
-            model=model,
-            max_turns=max_turns,
-            catalogue=catalogue,
-            runtime_info=runtime_info,
-            skill_registry=skill_registry,
-            skill_event_sink=skill_event_sink,
-            task_context=task_context,
-            compactor=compactor,
-            capabilities=capabilities,
-        )
-
     # The task manager rides on the harness config so callers can register
     # lifecycle listeners and surface cron-spawned task starts/completions
     # alongside ordinary tool calls. The cron registry path rides alongside
@@ -197,9 +178,37 @@ def build_harness(
             # on a cheap model while real sessions keep ``model``.
             model=wake_model if wake_model is not None else model,
         ),
-        _engine_factory=_factory,
     )
-    return Harness(config)
+    harness = Harness(config)
+
+    # The engine factory closes over ``harness`` (not a hooks snapshot) so the
+    # spec-13 lifecycle executor is assembled lazily at session construction
+    # from ``harness._hooks`` / ``harness._plugins`` read *then* — hooks and
+    # plugins registered via ``register_hook`` / ``register_plugin`` *after*
+    # ``build_harness`` returns are still seen by the next session.
+    def _factory(session_id: str, options: SessionOptions) -> QueryEngine:
+        return _build_session_engine(
+            session_id,
+            options,
+            tool_registry=tool_registry,
+            paths=paths,
+            working_dir=working_dir,
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+            max_turns=max_turns,
+            catalogue=catalogue,
+            runtime_info=runtime_info,
+            skill_registry=skill_registry,
+            skill_event_sink=skill_event_sink,
+            task_context=task_context,
+            compactor=compactor,
+            capabilities=capabilities,
+            harness=harness,
+        )
+
+    config._engine_factory = _factory
+    return harness
 
 
 def _make_wake_streamer_factory(
@@ -306,13 +315,25 @@ def _build_session_engine(
     task_context: TaskSessionContext,
     compactor: AutoCompactState,
     capabilities: ProviderCapabilities,
+    harness: Harness,
 ) -> QueryEngine:
     """Construct one session's ``QueryEngine`` from explicit, pre-resolved deps.
 
     Everything per-session (tool wire schema, skill context, prompt, permission
-    gate, role allow-list) is computed lazily here so tools registered after
-    :func:`build_harness` (MCP adapters etc.) are visible.
+    gate, role allow-list, lifecycle hooks) is computed lazily here so tools
+    *and* hooks/plugins registered after :func:`build_harness` (MCP adapters,
+    ``register_hook`` / ``register_plugin`` etc.) are visible.
     """
+    # Spec 13: assemble the lifecycle hook executor from the harness's *current*
+    # hooks + plugins, read at session-construction time so late
+    # ``register_hook`` / ``register_plugin`` calls are seen. ``collect_hooks``
+    # merges harness-direct registrations (first) with plugin-contributed hooks
+    # (in load order) deterministically. Built unconditionally — an empty hook
+    # list makes ``fire`` a cheap no-op, so the firing seams stay live for a
+    # later ``register_hook`` without rebuilding the harness. The executor's
+    # ``emit`` is left defaulted (no-op): hook timeout/error event types are not
+    # part of the OTel ``TraceEventType`` surface, so they don't ride the tracer.
+    hook_executor = HookExecutor(collect_hooks(harness._hooks, harness._plugins))
     # Render the registry into OpenAI ``tools`` wire shape per session (cheap;
     # a handful of tools) so tools registered after build — MCP adapters /
     # resource + auth tools — are visible to the model. The engine's
@@ -412,4 +433,5 @@ def _build_session_engine(
         compaction_capabilities=capabilities,
         tracer=tracer,
         model=options.model or model,
+        hook_executor=hook_executor,
     )
