@@ -52,6 +52,12 @@ SELECT task_id, state, checkout_run_id, execution_run_id,
 FROM claims WHERE task_id = ?
 """
 
+_SELECT_ALL = """
+SELECT task_id, state, checkout_run_id, execution_run_id,
+       claimed_by, claimed_at_ms, lease_expires_at_ms, last_heartbeat_at_ms
+FROM claims ORDER BY task_id
+"""
+
 _COUNT_EXECUTING = """
 SELECT COUNT(*) FROM claims WHERE state = 'executing' AND lease_expires_at_ms > ?
 """
@@ -128,6 +134,11 @@ class BoardStore:
         cur = self._conn.execute(_SELECT, (task_id,))
         row = cur.fetchone()
         return _row_to_claim(row) if row is not None else None
+
+    def list_claims(self) -> tuple[Claim, ...]:
+        """Autocommit snapshot of every row (the 10p5 watchdog's walk)."""
+        cur = self._conn.execute(_SELECT_ALL)
+        return tuple(_row_to_claim(row) for row in cur.fetchall())
 
     @contextmanager
     def transaction(self) -> Iterator[BoardTransaction]:

@@ -32,9 +32,10 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 from dream.tasks._cron import (
     CRON_MANIFEST_DIR,
@@ -47,7 +48,12 @@ from dream.tasks._cron import (
     mark_job_run,
     upsert_cron_job,
 )
-from dream.tasks._cron_session import CRON_RUNS_ROOT, spawn_cron_session
+from dream.tasks._cron_session import (
+    CRON_RUNS_ROOT,
+    CronRunRecord,
+    spawn_cron_session,
+    write_cron_run_record,
+)
 from dream.tasks._manager import (
     BackgroundTaskManager,
     register_one_shot_completion,
@@ -64,6 +70,11 @@ __all__ = [
 ]
 
 DEFAULT_POLL_SECONDS = 30
+
+# How late a ``misfire = "skip"`` firing may be and still run. Beyond this
+# the scheduled occasion has passed — record a skipped run and wait for the
+# next boundary (a stale freshness-critical run is worse than a gap).
+MISFIRE_GRACE_SECONDS = 300
 """Tick interval for :func:`cron_tick_loop`. 30s is small enough to fire
 minute-granular cron expressions on time, large enough that the registry
 file lock isn't being grabbed constantly."""
@@ -88,6 +99,13 @@ def _record_completion_outcome(
         mark_job_run(registry_path, name, success=success)
 
     register_one_shot_completion(manager, task_id, _stamp)
+
+
+def _misfired(manifest: CronManifest, scheduled: datetime, *, now: datetime) -> bool:
+    """True when a skip-policy firing is stale beyond the grace window."""
+    if manifest.misfire != "skip":
+        return False
+    return (now - scheduled).total_seconds() > MISFIRE_GRACE_SECONDS
 
 
 def _manifest_dir(working_dir: Path) -> Path:
@@ -232,8 +250,19 @@ async def cron_tick_loop(
     working_dir: str | Path,
     registry_path: str | Path,
     poll_seconds: int = DEFAULT_POLL_SECONDS,
+    argv_for: Callable[[CronManifest], list[str]] = _default_cron_argv,
+    note_sink: Callable[[CronManifest], None] | None = None,
 ) -> None:
     """Long-running coroutine — poll registry, fire due jobs, sleep.
+
+    ``argv_for`` maps a due manifest to the command the spawned task runs;
+    the default is the visible-firing print stub. Consumer daemons supply
+    their real payload (e.g. a one-shot digest run) here.
+
+    ``note_sink`` receives manifests whose ``target = "next-wake"`` — the
+    timed-note pattern: the firing queues a note for the wake scheduler
+    instead of spawning. Without a sink (standalone loops, the REPL) such
+    manifests fall back to the spawn path so firings are never dropped.
 
     Cancellation-safe: ``asyncio.CancelledError`` propagates out cleanly
     so ``task.cancel(); await task`` shapes shut the loop down without
@@ -262,12 +291,30 @@ async def cron_tick_loop(
                     continue
                 try:
                     manifest = load_cron_manifest(manifest_path)
+                    if _misfired(manifest, job.next_run, now=now):
+                        write_cron_run_record(
+                            runs_root,
+                            CronRunRecord(
+                                kind=manifest.name,
+                                run_id=uuid4().hex[:12],
+                                started_at=now,
+                                ended_at=now,
+                                outcome="skipped",
+                                failure_reason="misfire",
+                            ),
+                        )
+                        mark_job_run(registry_path, job.name, success=True)
+                        continue
+                    if manifest.target == "next-wake" and note_sink is not None:
+                        note_sink(manifest)
+                        mark_job_run(registry_path, job.name, success=True)
+                        continue
                     record = await spawn_cron_session(
                         manager=manager,
                         manifest=manifest,
                         cwd=wd,
                         runs_root=runs_root,
-                        argv=_default_cron_argv(manifest),
+                        argv=argv_for(manifest),
                     )
                     # Roll next_run forward now so this job isn't re-grabbed on
                     # the next tick before it finishes (dedup); the final

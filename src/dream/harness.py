@@ -21,7 +21,9 @@ from dream.contracts.tool import Tool
 from dream.session import Session, SessionOptions
 
 if TYPE_CHECKING:
+    from dream.config.paths import DreamPaths
     from dream.engine._engine import QueryEngine
+    from dream.engine._loop import TurnStreamer
     from dream.planner import PlannerCallable
     from dream.roles import RoleManifest, RoleName
     from dream.runner._observer import RunTaskObserver
@@ -33,6 +35,7 @@ if TYPE_CHECKING:
         SprintGoalProvider,
     )
     from dream.sprint import EvaluatorPropose, GeneratorRespond
+    from dream.tasks import BackgroundTaskManager
 
 
 # Slice D: the production wiring (Provider -> TurnStreamer adapter via
@@ -56,6 +59,20 @@ class HarnessConfig:
     default_model: str | None = None
     default_provider: str | None = None
     permission_mode: str = "default"
+    # Harness-bound runtime subsystems wired by ``dream.build_harness``:
+    # the per-harness background task manager (shared across sessions so
+    # task IDs / archives stay consistent) and the on-disk cron registry a
+    # scheduler tick loop polls. ``None`` when the harness was constructed
+    # without the factory (e.g. bare engine-factory tests).
+    task_manager: BackgroundTaskManager | None = None
+    cron_registry_path: Path | None = None
+    # The env-resolved storage roots the factory built the harness against,
+    # so the runtime reuses the exact same roots (DREAM_HOME honoured) rather
+    # than re-resolving and risking divergence.
+    paths: DreamPaths | None = None
+    # Zero-arg factory for a TurnStreamer carrying the heartbeat tool schema;
+    # the runtime's wake scheduler (spec 06.5 / 15) drives wake cycles with it.
+    wake_streamer_factory: Callable[[], TurnStreamer] | None = None
     extra: dict[str, Any] = field(default_factory=dict)
     _engine_factory: EngineFactory | None = None
 
@@ -204,6 +221,7 @@ class Harness:
                 intent=intent,
                 harness_dir=harness_dir,
                 observer=observer,
+                worktree_root=root,
             )
         )
 
@@ -243,6 +261,7 @@ class Harness:
         intent: str,
         harness_dir: Path | None,
         observer: RunTaskObserver | None,
+        worktree_root: Path | None = None,
     ) -> tuple[
         PlannerCallable,
         GeneratorExecute,
@@ -295,7 +314,12 @@ class Harness:
             )
         if evaluator_run is None:
             evaluator_run = make_evaluator_head(
-                self, harness_dir=harness_dir, observer=observer
+                self,
+                harness_dir=harness_dir,
+                observer=observer,
+                # The oracle (spec 15 P3) runs verification steps in the same
+                # tree the generator wrote to.
+                worktree_root=worktree_root,
             )
         return (
             planner,

@@ -29,7 +29,7 @@ import tomllib
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from croniter import croniter  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, field_validator
@@ -330,6 +330,16 @@ class CronManifest(BaseModel):
     description: str | None = None
     entry_prompt: str | None = None
     max_session_minutes: int | None = None
+    # Where a firing goes (spec 15 hardening 2): "spawn" runs a detached
+    # task; "next-wake" queues a note the wake scheduler delivers on the
+    # next heartbeat (the timed-note pattern).
+    target: Literal["spawn", "next-wake"] = "spawn"
+    # Missed-tick policy (spec 15 hardening 3, Quartz taxonomy):
+    # "fire_once" merges missed firings into one immediate run (the right
+    # default for most agent jobs); "skip" drops a firing that is stale
+    # beyond the grace window — for freshness-critical work where a late
+    # run is worse than a gap.
+    misfire: Literal["fire_once", "skip"] = "fire_once"
 
     @field_validator("schedule")
     @classmethod

@@ -1,0 +1,399 @@
+"""Public construct-and-run factory — ``dream.build_harness``.
+
+The one place that wires a *runnable* :class:`~dream.harness.Harness`: an
+OpenAI-compatible streamer, the default tool registry, the permission gate,
+task/cron bootstrap, skills, tracing, and auto-compaction — behind explicit
+parameters instead of env-var coupling. SDK consumers (and the bundled REPL)
+construct through here; ``dream.repl`` merely adds its ``DREAM_SMOKE_*`` env
+convenience on top.
+
+Each ``start_session`` call constructs a fresh engine so per-session
+``system_prompt`` / ``model`` overrides take effect; the ``ToolRegistry`` and
+``AutoCompactState`` are shared so registrations and compaction-cooldown state
+survive across sessions in the same process.
+"""
+
+from __future__ import annotations
+
+import os
+from collections.abc import Callable, Mapping
+from pathlib import Path
+from typing import Any
+
+from dream.config.paths import DreamPaths
+from dream.contracts.provider import ProviderCapabilities
+from dream.engine._adapter_openai import (
+    OpenAIChatStreamer,
+    httpx_chat_completion_stream,
+)
+from dream.engine._engine import QueryEngine, build_query_engine
+from dream.engine._permission_gate import (
+    compute_session_role_allowlist,
+    make_permission_gate,
+)
+from dream.harness import Harness, HarnessConfig
+from dream.observability import JsonlTracer, TraceWriter
+from dream.permissions import SessionLimits
+from dream.prompts.environment import render_runtime_info
+from dream.roles import RoleManifest
+from dream.runner._role_session import ROLE_MANIFEST_METADATA_KEY
+from dream.services import cron as cron_service
+from dream.services.compact._orchestrator import AutoCompactState
+from dream.services.context_log import ContextEvent
+from dream.services.core_beliefs import extract_standing_orders, render_standing_orders
+from dream.session import SessionOptions
+from dream.skills import (
+    SKILL_CONTEXT_KEY,
+    SkillContext,
+    SkillRegistry,
+    render_skill_catalogue,
+)
+from dream.tasks import (
+    TASK_CONTEXT_KEY,
+    BackgroundTaskManager,
+    TaskSessionContext,
+)
+from dream.tasks._cron import CRON_MANIFEST_DIR, load_cron_manifests
+from dream.tools._registry import ToolRegistry
+from dream.tools.builtin import default_registry
+from dream.wake import HeartbeatTool
+
+__all__ = ["PolicyWarningSink", "SkillEventSink", "build_harness"]
+
+DEFAULT_BASE_URL = "https://api.openai.com/v1"
+
+# A context-event sink the skill registry calls when a body loads.
+SkillEventSink = Callable[[ContextEvent], None]
+
+# A plain-string sink for operator-facing policy warnings (e.g. stale tier
+# promotions) surfaced from permission-policy assembly at harness build.
+PolicyWarningSink = Callable[[str], None]
+
+
+def build_harness(
+    *,
+    model: str,
+    api_key: str,
+    base_url: str = DEFAULT_BASE_URL,
+    working_dir: Path,
+    max_turns: int = 8,
+    registry: ToolRegistry | None = None,
+    skill_registry: SkillRegistry | None = None,
+    skill_event_sink: SkillEventSink | None = None,
+    policy_warning_sink: PolicyWarningSink | None = None,
+    env: Mapping[str, str] | None = None,
+    wake_model: str | None = None,
+) -> Harness:
+    """Build a Harness whose engine factory produces a real, tool-wired engine.
+
+    ``model`` / ``api_key`` / ``base_url`` name any OpenAI-compatible chat
+    endpoint (vanilla OpenAI, Azure's ``/openai/v1`` path, vLLM, gateways).
+
+    ``registry`` may be supplied so the caller can register additional tools
+    (e.g. MCP adapters) into the same registry *after* this returns but
+    *before* the first session starts — the tool wire-schema and the skill
+    available-tool set are computed lazily per session, so late registrations
+    are reflected.
+
+    ``env`` is consulted only for host resolution — ``DREAM_HOME`` path
+    overrides and shell detection for the runtime-info prompt block — and
+    defaults to ``os.environ``. Credentials never come from it.
+
+    ``wake_model`` overrides the model for wake-cycle heartbeat turns only
+    (they fire on a schedule, so a cheap model here is the main cost lever
+    for always-on agents); ``None`` uses ``model``.
+    """
+    if not model:
+        raise ValueError("model must be a non-empty string")
+    if not api_key:
+        raise ValueError("api_key must be a non-empty string")
+    resolved_env: Mapping[str, str] = env if env is not None else os.environ
+    tool_registry = registry if registry is not None else default_registry()
+    compactor = AutoCompactState()
+    # Resolve the home root from env so ``DREAM_HOME`` overrides are honoured
+    # for task storage / sidecars (#43); hardcoding ``Path.home()`` would write
+    # task artifacts under ~/.dream even when the operator redirected the root.
+    paths = DreamPaths.resolve(working_dir, env=resolved_env).ensure()
+    task_manager, task_context = _bootstrap_task_and_cron(working_dir, paths)
+    # Spec 13C policy-assembly warnings (e.g. stale tier promotions) are
+    # operator-facing security signals; surface them once at build rather than
+    # discarding them inside the factory (#47). They derive solely from
+    # ``.harness/tool-tier-overrides.toml`` (paths) and are independent of
+    # session/role, so one assembly here covers every session in this process.
+    if policy_warning_sink is not None:
+        _, policy_warnings = make_permission_gate(
+            tool_registry, paths=paths, cwd=working_dir
+        )
+        for warning in policy_warnings:
+            policy_warning_sink(warning)
+
+    # 128K is the default we use throughout Spec 02; utilisation surfaces
+    # (watch panel, /util) report against this number.
+    capabilities = ProviderCapabilities(max_context_tokens=128_000)
+
+    # Skills (Spec 06 slice 2): the frontmatter catalogue goes into the system
+    # prompt so the model can discover skills; the SkillContext rides the
+    # dispatcher's context_metadata so the `skill` tool can load bodies.
+    catalogue = (
+        render_skill_catalogue(skill_registry.list_meta()) if skill_registry else ""
+    )
+    # Runtime environment (shell + OS + python) injected so the model picks the
+    # right command syntax when it calls ``task_create command=...`` — without
+    # this it guesses bash on Windows and cmd.exe rejects the command.
+    runtime_info = render_runtime_info(env=resolved_env, working_dir=working_dir)
+
+    def _factory(session_id: str, options: SessionOptions) -> QueryEngine:
+        return _build_session_engine(
+            session_id,
+            options,
+            tool_registry=tool_registry,
+            paths=paths,
+            working_dir=working_dir,
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+            max_turns=max_turns,
+            catalogue=catalogue,
+            runtime_info=runtime_info,
+            skill_registry=skill_registry,
+            skill_event_sink=skill_event_sink,
+            task_context=task_context,
+            compactor=compactor,
+            capabilities=capabilities,
+        )
+
+    # The task manager rides on the harness config so callers can register
+    # lifecycle listeners and surface cron-spawned task starts/completions
+    # alongside ordinary tool calls. The cron registry path rides alongside
+    # so a scheduler tick loop (the runtime's, or the REPL's) knows where to
+    # poll, and `paths` so the runtime reuses the env-resolved roots. The
+    # wake streamer factory lets the runtime's wake scheduler drive
+    # heartbeat turns without re-deriving provider wiring.
+    config = HarnessConfig(
+        working_dir=working_dir,
+        task_manager=task_manager,
+        cron_registry_path=task_context.cron_registry_path,
+        paths=paths,
+        wake_streamer_factory=_make_wake_streamer_factory(
+            api_key=api_key,
+            base_url=base_url,
+            # Heartbeat turns fire constantly; ``wake_model`` lets them run
+            # on a cheap model while real sessions keep ``model``.
+            model=wake_model if wake_model is not None else model,
+        ),
+        _engine_factory=_factory,
+    )
+    return Harness(config)
+
+
+def _make_wake_streamer_factory(
+    *, api_key: str, base_url: str, model: str
+) -> Callable[[], OpenAIChatStreamer]:
+    """Build the zero-arg streamer factory the wake scheduler consumes.
+
+    The streamer advertises ONLY the virtual ``heartbeat`` tool — the wake
+    turn is a single decision turn (spec 06.5); giving it the full tool
+    catalogue would invite work the wake runner can't dispatch. The wake
+    stimulus carries the whole prompt, so no system prompt is set here.
+    """
+    heartbeat = HeartbeatTool()
+    heartbeat_wire = [
+        {
+            "type": "function",
+            "function": {
+                "name": heartbeat.name,
+                "description": heartbeat.description,
+                "parameters": heartbeat.input_schema(),
+            },
+        }
+    ]
+
+    def factory() -> OpenAIChatStreamer:
+        return OpenAIChatStreamer(
+            stream_chat_completion=httpx_chat_completion_stream(
+                api_key=api_key,
+                base_url=base_url,
+                extra_params={"tools": heartbeat_wire, "tool_choice": "auto"},
+            ),
+            model=model,
+        )
+
+    return factory
+
+
+def _bootstrap_task_and_cron(
+    working_dir: Path, paths: DreamPaths
+) -> tuple[BackgroundTaskManager, TaskSessionContext]:
+    """Build the per-harness task manager + cron context, seeding cron on disk.
+
+    Task tools (Spec 07): one BackgroundTaskManager per harness, shared across
+    sessions so task IDs / archives stay consistent. The cron registry lives at
+    the in-repo convention (``.dream/cron/registry.json``); the exec-plans root
+    is the parent of ``exec_plans_active`` since the FSM appends the state
+    segment itself via :func:`plan_dir`. The two cron bootstrap calls are
+    idempotent so operator edits to either the manifest or the registry survive
+    restart.
+    """
+    task_manager = BackgroundTaskManager(tasks_dir=paths.tasks_dir)
+    cron_registry_path = paths.dream_dir / "cron" / "registry.json"
+    task_context = TaskSessionContext(
+        manager=task_manager,
+        cron_registry_path=cron_registry_path,
+        plans_root=paths.exec_plans_active.parent,
+    )
+    cron_service.bootstrap_default_manifests(working_dir)
+    cron_service.ensure_registry_seeded(
+        cron_registry_path,
+        load_cron_manifests(Path(working_dir) / CRON_MANIFEST_DIR),
+    )
+    return task_manager, task_context
+
+
+def _assemble_system_prompt(
+    *, paths: DreamPaths, runtime_info: str, catalogue: str, system_prompt: str | None
+) -> str:
+    """Assemble the per-session system prompt from its four ordered blocks.
+
+    Order: the governance standing orders FIRST (the constitution outranks
+    everything; Spec 13F AC #21-22, re-extracted every session start), then
+    runtime info (host facts the model must trust), the skill catalogue
+    (capabilities), and the caller-supplied prompt (task framing). Each block
+    survives if the next is empty.
+    """
+    standing_orders = render_standing_orders(
+        extract_standing_orders(paths.repo / "docs" / "design-docs" / "core-beliefs.md")
+    )
+    parts = [standing_orders] if standing_orders else []
+    parts.append(runtime_info)
+    if catalogue:
+        parts.append(catalogue)
+    if system_prompt:
+        parts.append(system_prompt)
+    return "\n\n".join(parts)
+
+
+def _build_session_engine(
+    session_id: str,
+    options: SessionOptions,
+    *,
+    tool_registry: ToolRegistry,
+    paths: DreamPaths,
+    working_dir: Path,
+    api_key: str,
+    base_url: str,
+    model: str,
+    max_turns: int,
+    catalogue: str,
+    runtime_info: str,
+    skill_registry: SkillRegistry | None,
+    skill_event_sink: SkillEventSink | None,
+    task_context: TaskSessionContext,
+    compactor: AutoCompactState,
+    capabilities: ProviderCapabilities,
+) -> QueryEngine:
+    """Construct one session's ``QueryEngine`` from explicit, pre-resolved deps.
+
+    Everything per-session (tool wire schema, skill context, prompt, permission
+    gate, role allow-list) is computed lazily here so tools registered after
+    :func:`build_harness` (MCP adapters etc.) are visible.
+    """
+    # Render the registry into OpenAI ``tools`` wire shape per session (cheap;
+    # a handful of tools) so tools registered after build — MCP adapters /
+    # resource + auth tools — are visible to the model. The engine's
+    # TurnStreamer Protocol has no tools parameter (only messages), so we
+    # smuggle the schema through ``httpx_chat_completion_stream``'s
+    # ``extra_params`` — splatted verbatim into every request body.
+    tools = tool_registry.list_tools()
+    tools_wire: list[dict[str, Any]] = [
+        {
+            "type": "function",
+            "function": {
+                "name": t.name,
+                "description": t.description,
+                "parameters": t.input_schema(),
+            },
+        }
+        for t in tools
+    ]
+    # Built per session too, so the available-tool set the `skill` tool
+    # checks ``tools_required`` against includes late (MCP) registrations.
+    skill_context = (
+        SkillContext(
+            registry=skill_registry,
+            available_tools=frozenset(t.name for t in tools),
+            event_sink=skill_event_sink,
+        )
+        if skill_registry is not None
+        else None
+    )
+    system_prompt = _assemble_system_prompt(
+        paths=paths,
+        runtime_info=runtime_info,
+        catalogue=catalogue,
+        system_prompt=options.system_prompt,
+    )
+    streamer = OpenAIChatStreamer(
+        stream_chat_completion=httpx_chat_completion_stream(
+            api_key=api_key,
+            base_url=base_url,
+            extra_params={"tools": tools_wire, "tool_choice": "auto"}
+            if tools_wire
+            else None,
+        ),
+        model=options.model or model,
+        system_prompt=system_prompt,
+    )
+    # OTel-shaped trace (Spec 12a): one durable JSONL per session under the
+    # task sidecar. The session_id doubles as the sidecar dir key.
+    tracer = JsonlTracer(
+        # Reuse the env-resolved ``paths`` so the trace log honours
+        # ``DREAM_HOME`` like task storage does (#43).
+        TraceWriter(paths.trace_log(session_id)),
+        session_id=session_id,
+        task_id=session_id,
+    )
+    # Spec 13C: gate every tool call against the sandbox policy assembled
+    # from the registry's declared tiers + operator .harness config. Stale
+    # promotions etc. surface as warnings (data); not emitted here yet.
+    # Spec 10-H: when the caller stamped a RoleManifest on
+    # ``options.metadata[ROLE_MANIFEST_METADATA_KEY]`` (the runner does
+    # this in ``open_role_session``), intersect with the active sandbox
+    # tier and pass the result to *both* the dispatcher (hard refusal
+    # before the gate) and the gate itself (defensive double-lock).
+    manifest = options.metadata.get(ROLE_MANIFEST_METADATA_KEY)
+    role_allowed: frozenset[str] | None = None
+    if isinstance(manifest, RoleManifest):
+        role_allowed = compute_session_role_allowlist(
+            tool_registry, paths=paths, cwd=working_dir, manifest=manifest
+        )
+    # SECURITY: do NOT feed ``role_allowed`` into the gate's ``tool_allow``.
+    # ``tool_allow`` is an allow-list override (it lets a tool bypass the
+    # tool-deny list), so passing role tools there would *widen* them rather
+    # than restrict them. Role enforcement is a hard "must be in set" deny in
+    # the dispatcher (``role_allowed_tools`` below); the gate then applies its
+    # full pipeline (path/command deny, tier, trust) to every role-allowed
+    # tool. See ``compute_session_role_allowlist``'s docstring for the
+    # rationale.
+    permission_gate, _gate_warnings = make_permission_gate(
+        tool_registry, paths=paths, cwd=working_dir
+    )
+    # Dispatcher context_metadata: skill + task contexts keyed for the
+    # `skill` / task tools to fetch out of the dispatcher.
+    context_metadata: dict[str, Any] = {TASK_CONTEXT_KEY: task_context}
+    if skill_context is not None:
+        context_metadata[SKILL_CONTEXT_KEY] = skill_context
+    return build_query_engine(
+        streamer=streamer,
+        registry=tool_registry,
+        session_id=session_id,
+        working_dir=working_dir,
+        max_turns=options.max_turns or max_turns,
+        permission_gate=permission_gate,
+        role_allowed_tools=role_allowed,
+        limits=SessionLimits(),
+        context_metadata=context_metadata,
+        compactor=compactor,
+        compaction_capabilities=capabilities,
+        tracer=tracer,
+        model=options.model or model,
+    )

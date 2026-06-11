@@ -53,15 +53,20 @@ def _build_stimulus(
     *,
     forced: bool,
     forced_skip_streak: int,
+    extra_context: str | None = None,
 ) -> ConversationMessage:
     """The single user message that drives the wake turn.
 
     The prompt body is used verbatim — operator override prompts can carry
-    deliberate trailing formatting, so we do NOT trim it.
+    deliberate trailing formatting, so we do NOT trim it. ``extra_context``
+    (e.g. cron notes queued since the last wake — spec 15 hardening 2) is
+    appended after the body so the checklist stays primary.
     """
     body = system_prompt
     if forced:
         body = body + forced_addendum(forced_skip_streak)
+    if extra_context:
+        body = f"{body}\n\n{extra_context}"
     text = (
         f"{body}\n\n"
         f"Wake source: {wake_source.label}\n"
@@ -142,6 +147,7 @@ async def run_background_turn(
     prompt_override_path: Path | None = None,
     forced: bool = False,
     forced_skip_streak: int = 0,
+    extra_context: str | None = None,
     now: Callable[[], datetime] = _default_now,
 ) -> HeartbeatDecision:
     """Drive exactly one model turn and return the captured decision.
@@ -162,7 +168,11 @@ async def run_background_turn(
         else load_heartbeat_prompt(prompt_override_path)
     )
     stimulus = _build_stimulus(
-        prompt, wake_source, forced=forced, forced_skip_streak=forced_skip_streak
+        prompt,
+        wake_source,
+        forced=forced,
+        forced_skip_streak=forced_skip_streak,
+        extra_context=extra_context,
     )
 
     captured: ToolUseBlock | None = None

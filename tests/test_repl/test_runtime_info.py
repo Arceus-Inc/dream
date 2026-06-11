@@ -10,7 +10,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from dream.repl._runtime_info import detect_shell, render_runtime_info
+from dream.prompts.environment import detect_shell, render_runtime_info
 
 
 def test_detect_shell_always_reports_sh_on_posix(monkeypatch) -> None:

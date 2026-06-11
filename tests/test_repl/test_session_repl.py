@@ -158,7 +158,8 @@ def test_build_default_harness_honours_dream_home_for_task_storage(
         "DREAM_HOME": str(home),
     }
     harness = build_default_harness(env=env, working_dir=tmp_path / "repo")
-    task_manager = harness.config.extra["task_manager"]
+    task_manager = harness.config.task_manager
+    assert task_manager is not None
     # tasks_dir == <home>/data/tasks per DreamPaths; must be under DREAM_HOME.
     assert home in task_manager._tasks_dir.parents
 
@@ -502,7 +503,8 @@ def test_blocking_mcp_finding_still_unsubscribes_listeners(
 
     assert rc == 3
     assert captured, "harness should have been built via the self-built path"
-    task_manager = captured[0].config.extra["task_manager"]
+    task_manager = captured[0].config.task_manager
+    assert task_manager is not None
     # Both listener registries must be empty — the outer finally ran the unsubs
     # despite the early return at the MCP gate.
     assert task_manager._start_listeners == {}

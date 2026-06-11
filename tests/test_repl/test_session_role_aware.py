@@ -27,11 +27,11 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
+from dream import _factory as factory_module
 from dream.contracts.tool import ToolResult
 from dream.engine._engine import QueryEngine
 from dream.engine._tool_dispatch import EngineToolDispatcher
 from dream.permissions import Outcome, PermissionRequest
-from dream.repl import _session as session_module
 from dream.repl._session import build_default_harness
 from dream.roles import RoleManifest
 from dream.runner._role_session import ROLE_MANIFEST_METADATA_KEY
@@ -172,7 +172,7 @@ def test_factory_does_not_feed_role_allowlist_into_gate_tool_allow(
     full pipeline to every role-allowed tool. We spy on ``make_permission_gate``
     and assert it is never handed a ``tool_allow`` set.
     """
-    real_make_gate = session_module.make_permission_gate
+    real_make_gate = factory_module.make_permission_gate
     seen_tool_allow: list[frozenset[str] | None] = []
 
     def _spy(
@@ -188,7 +188,7 @@ def test_factory_does_not_feed_role_allowlist_into_gate_tool_allow(
             registry, paths=paths, cwd=cwd, tool_allow=tool_allow, clock=clock
         )
 
-    monkeypatch.setattr(session_module, "make_permission_gate", _spy)
+    monkeypatch.setattr(factory_module, "make_permission_gate", _spy)
 
     manifest = RoleManifest(
         name="evaluator",

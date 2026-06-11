@@ -5,6 +5,7 @@ listed in `__all__` is private and may change without notice. The
 re-exports are pinned by `tests/test_public_api.py`.
 """
 
+from dream._factory import build_harness
 from dream.contracts.exec_plan import ExecPlan, ExecPlanLedger, ExecPlanStatus
 from dream.contracts.hook import Hook, HookEvent, HookResult, HookSpec
 from dream.contracts.memory import (
@@ -45,6 +46,13 @@ from dream.events import (
     TurnComplete,
 )
 from dream.harness import Harness, HarnessConfig
+from dream.observability import tail_events
+from dream.runtime import (
+    Runtime,
+    RuntimeBootBlockedError,
+    RuntimeBusyError,
+    RuntimeConfig,
+)
 from dream.session import Session, SessionCost, SessionOptions
 from dream.types import MessageRole, StopReason
 
@@ -84,6 +92,10 @@ __all__ = [
     "ProviderError",
     "ProviderEvent",
     "ProviderUsage",
+    "Runtime",
+    "RuntimeBootBlockedError",
+    "RuntimeBusyError",
+    "RuntimeConfig",
     "SandboxError",
     "Session",
     "SessionCost",
@@ -98,4 +110,6 @@ __all__ = [
     "ToolUseStart",
     "TurnComplete",
     "__version__",
+    "build_harness",
+    "tail_events",
 ]
