@@ -42,10 +42,11 @@ from dream.memory import (
     scan_memory_dir,
 )
 from dream.observability import JsonlTracer, TraceWriter
-from dream.permissions import SessionLimits
+from dream.permissions import SessionLimits, read_sandbox_config
 from dream.prompts.environment import render_runtime_info
 from dream.roles import RoleManifest
 from dream.runner._role_session import ROLE_MANIFEST_METADATA_KEY
+from dream.sandbox import SANDBOX_CONTEXT_KEY, SandboxAdapter, select_backend
 from dream.services import cron as cron_service
 from dream.services.compact._orchestrator import AutoCompactState
 from dream.services.context_log import ContextEvent
@@ -146,6 +147,12 @@ def build_harness(
             working_dir, home=paths.home
         )
     task_manager, task_context = _bootstrap_task_and_cron(working_dir, paths)
+    # Spec 13B: the sandbox *tier* (read-only/repo-write/...) is read from
+    # ``.harness/sandbox.toml`` and enforced at the permission gate; the
+    # *backend* is how approved commands execute. The adapter rides every
+    # session's context_metadata so the ``bash`` tool runs through the one
+    # execution mechanism instead of spawning its own.
+    sandbox_adapter = _select_sandbox_adapter(paths)
     # Spec 13C policy-assembly warnings (e.g. stale tier promotions) are
     # operator-facing security signals; surface them once at build rather than
     # discarding them inside the factory (#47). They derive solely from
@@ -231,6 +238,7 @@ def build_harness(
             skill_event_sink=skill_event_sink,
             memory_store=memory_store,
             task_context=task_context,
+            sandbox_adapter=sandbox_adapter,
             compactor=compactor,
             capabilities=capabilities,
             harness=harness,
@@ -303,6 +311,18 @@ def _bootstrap_task_and_cron(
     return task_manager, task_context
 
 
+def _select_sandbox_adapter(paths: DreamPaths) -> SandboxAdapter:
+    """Pick the execution backend for this harness (Spec 13B).
+
+    The tier is read from ``.harness/sandbox.toml`` so a malformed config
+    surfaces at build (and is the input a future docker upgrade keys off of),
+    but v1 always selects the subprocess backend: docker is the *gated* seam
+    and must never be auto-selected from the tier alone.
+    """
+    _tier = read_sandbox_config(paths.sandbox_config()).tier
+    return select_backend("subprocess")
+
+
 def _assemble_system_prompt(
     *,
     paths: DreamPaths,
@@ -352,6 +372,7 @@ def _build_session_engine(
     skill_event_sink: SkillEventSink | None,
     memory_store: FileMemoryStore | None,
     task_context: TaskSessionContext,
+    sandbox_adapter: SandboxAdapter,
     compactor: AutoCompactState,
     capabilities: ProviderCapabilities,
     harness: Harness,
@@ -455,8 +476,12 @@ def _build_session_engine(
         tool_registry, paths=paths, cwd=working_dir
     )
     # Dispatcher context_metadata: skill + task contexts keyed for the
-    # `skill` / task tools to fetch out of the dispatcher.
-    context_metadata: dict[str, Any] = {TASK_CONTEXT_KEY: task_context}
+    # `skill` / task tools to fetch out of the dispatcher, plus the sandbox
+    # adapter the `bash` tool routes execution through (Spec 13B).
+    context_metadata: dict[str, Any] = {
+        TASK_CONTEXT_KEY: task_context,
+        SANDBOX_CONTEXT_KEY: sandbox_adapter,
+    }
     if skill_context is not None:
         context_metadata[SKILL_CONTEXT_KEY] = skill_context
     if memory_store is not None:
