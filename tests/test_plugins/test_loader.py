@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from dream.permissions import SandboxTier
 from dream.plugins import (
     PluginManifestError,
     load_enabled_plugins,
@@ -98,7 +99,7 @@ def test_unknown_capability_refused() -> None:
 def test_no_enabled_file_means_no_plugins(tmp_path: Path) -> None:
     _write_plugin(tmp_path)
     assert read_enabled_names(tmp_path) == ()
-    report = load_enabled_plugins(tmp_path, tier="repo-write")
+    report = load_enabled_plugins(tmp_path, tier=SandboxTier.REPO_WRITE)
     assert report.loaded == ()
 
 
@@ -106,7 +107,7 @@ def test_on_disk_but_not_listed_is_ignored(tmp_path: Path) -> None:
     _write_plugin(tmp_path, "metrics-pusher")
     _write_plugin(tmp_path, "other")
     _enable(tmp_path, "other")
-    report = load_enabled_plugins(tmp_path, tier="repo-write")
+    report = load_enabled_plugins(tmp_path, tier=SandboxTier.REPO_WRITE)
     assert [p.manifest.name for p in report.loaded] == ["other"]
 
 
@@ -116,7 +117,7 @@ def test_on_disk_but_not_listed_is_ignored(tmp_path: Path) -> None:
 def test_load_happy_path(tmp_path: Path) -> None:
     _write_plugin(tmp_path)
     _enable(tmp_path, "metrics-pusher")
-    report = load_enabled_plugins(tmp_path, tier="repo-write")
+    report = load_enabled_plugins(tmp_path, tier=SandboxTier.REPO_WRITE)
     assert [p.manifest.name for p in report.loaded] == ["metrics-pusher"]
     assert report.failed == ()
 
@@ -125,7 +126,7 @@ def test_capability_exceeding_tier_refused(tmp_path: Path) -> None:
     manifest = _MANIFEST.replace('"repo-write"', '"network"')
     _write_plugin(tmp_path, manifest=manifest)
     _enable(tmp_path, "metrics-pusher")
-    report = load_enabled_plugins(tmp_path, tier="repo-write")
+    report = load_enabled_plugins(tmp_path, tier=SandboxTier.REPO_WRITE)
     assert report.loaded == ()
     assert len(report.failed) == 1
     assert "network" in report.failed[0].reason
@@ -134,14 +135,14 @@ def test_capability_exceeding_tier_refused(tmp_path: Path) -> None:
 def test_crashing_entry_is_reported_not_raised(tmp_path: Path) -> None:
     _write_plugin(tmp_path, entry="raise RuntimeError('boom at import')\n")
     _enable(tmp_path, "metrics-pusher")
-    report = load_enabled_plugins(tmp_path, tier="repo-write")
+    report = load_enabled_plugins(tmp_path, tier=SandboxTier.REPO_WRITE)
     assert report.loaded == ()
     assert "boom at import" in report.failed[0].reason
 
 
 def test_missing_plugin_dir_is_reported(tmp_path: Path) -> None:
     _enable(tmp_path, "ghost")
-    report = load_enabled_plugins(tmp_path, tier="repo-write")
+    report = load_enabled_plugins(tmp_path, tier=SandboxTier.REPO_WRITE)
     assert report.loaded == ()
     assert report.failed[0].name == "ghost"
 
@@ -149,7 +150,7 @@ def test_missing_plugin_dir_is_reported(tmp_path: Path) -> None:
 def test_entry_without_get_plugin_is_reported(tmp_path: Path) -> None:
     _write_plugin(tmp_path, entry="x = 1\n")
     _enable(tmp_path, "metrics-pusher")
-    report = load_enabled_plugins(tmp_path, tier="repo-write")
+    report = load_enabled_plugins(tmp_path, tier=SandboxTier.REPO_WRITE)
     assert "get_plugin" in report.failed[0].reason
 
 
@@ -160,6 +161,6 @@ def test_version_pin_mismatch_warns_not_fails(tmp_path: Path) -> None:
     enabled.write_text(
         '[[plugin]]\nname = "metrics-pusher"\nversion = "9.9.9"\n', encoding="utf-8"
     )
-    report = load_enabled_plugins(tmp_path, tier="repo-write")
+    report = load_enabled_plugins(tmp_path, tier=SandboxTier.REPO_WRITE)
     assert [p.manifest.name for p in report.loaded] == ["metrics-pusher"]
     assert any("version" in w for w in report.warnings)
