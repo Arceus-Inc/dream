@@ -13,11 +13,28 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from dream.contracts.memory import MemoryRecord, MemoryScope, MemoryType
+from dream.memory._catalogue import memory_description, render_memory_catalogue
+from dream.memory._context import (
+    MEMORY_CONTEXT_KEY,
+    MemoryContext,
+    put_memory_context,
+    read_memory_context,
+)
 from dream.memory._paths import project_memory_dir
 from dream.memory._scan import scan_memory_dir
 from dream.memory._search import search_records
 
-__all__ = ["FileMemoryStore", "project_memory_dir", "scan_memory_dir"]
+__all__ = [
+    "MEMORY_CONTEXT_KEY",
+    "FileMemoryStore",
+    "MemoryContext",
+    "memory_description",
+    "project_memory_dir",
+    "put_memory_context",
+    "read_memory_context",
+    "render_memory_catalogue",
+    "scan_memory_dir",
+]
 
 
 class FileMemoryStore:
