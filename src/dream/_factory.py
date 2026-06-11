@@ -32,6 +32,14 @@ from dream.engine._permission_gate import (
     make_permission_gate,
 )
 from dream.harness import Harness, HarnessConfig
+from dream.memory import (
+    MEMORY_CONTEXT_KEY,
+    FileMemoryStore,
+    MemoryContext,
+    project_memory_dir,
+    render_memory_catalogue,
+    scan_memory_dir,
+)
 from dream.observability import JsonlTracer, TraceWriter
 from dream.permissions import SessionLimits
 from dream.prompts.environment import render_runtime_info
@@ -81,6 +89,7 @@ def build_harness(
     registry: ToolRegistry | None = None,
     skill_registry: SkillRegistry | None = None,
     skills: bool = True,
+    memory: bool = True,
     skill_event_sink: SkillEventSink | None = None,
     policy_warning_sink: PolicyWarningSink | None = None,
     env: Mapping[str, str] | None = None,
@@ -101,6 +110,11 @@ def build_harness(
     ``SKILL.md`` dirs) by default so the whole action surface is wired with
     no caller effort. Pass ``skill_registry`` to supply your own (it wins);
     pass ``skills=False`` to disable discovery entirely.
+
+    Workspace memory (the durable per-project record store under
+    :func:`~dream.memory.project_memory_dir`) is wired by default: its
+    catalogue lands in the system prompt and the ``memory_search`` /
+    ``memory_get`` tools read from it. Pass ``memory=False`` to omit it.
 
     ``env`` is consulted only for host resolution — ``DREAM_HOME`` path
     overrides and shell detection for the runtime-info prompt block — and
@@ -153,6 +167,19 @@ def build_harness(
     catalogue = (
         render_skill_catalogue(skill_registry.list_meta()) if skill_registry else ""
     )
+    # Memory (Spec 11): the read-side store over the per-project memory dir.
+    # Its catalogue (id + description teasers) goes into the system prompt so
+    # the model can discover durable facts; the MemoryContext rides the
+    # dispatcher's context_metadata so the `memory_search` / `memory_get`
+    # tools pull full records in. Disabled cleanly with ``memory=False``.
+    memory_store = (
+        FileMemoryStore(project_memory_dir(paths.home, working_dir)) if memory else None
+    )
+    memory_catalogue = (
+        render_memory_catalogue(scan_memory_dir(memory_store.root))
+        if memory_store is not None
+        else ""
+    )
     # Runtime environment (shell + OS + python) injected so the model picks the
     # right command syntax when it calls ``task_create command=...`` — without
     # this it guesses bash on Windows and cmd.exe rejects the command.
@@ -170,9 +197,11 @@ def build_harness(
             model=model,
             max_turns=max_turns,
             catalogue=catalogue,
+            memory_catalogue=memory_catalogue,
             runtime_info=runtime_info,
             skill_registry=skill_registry,
             skill_event_sink=skill_event_sink,
+            memory_store=memory_store,
             task_context=task_context,
             compactor=compactor,
             capabilities=capabilities,
@@ -266,15 +295,21 @@ def _bootstrap_task_and_cron(
 
 
 def _assemble_system_prompt(
-    *, paths: DreamPaths, runtime_info: str, catalogue: str, system_prompt: str | None
+    *,
+    paths: DreamPaths,
+    runtime_info: str,
+    catalogue: str,
+    memory_catalogue: str,
+    system_prompt: str | None,
 ) -> str:
-    """Assemble the per-session system prompt from its four ordered blocks.
+    """Assemble the per-session system prompt from its ordered blocks.
 
     Order: the governance standing orders FIRST (the constitution outranks
     everything; Spec 13F AC #21-22, re-extracted every session start), then
     runtime info (host facts the model must trust), the skill catalogue
-    (capabilities), and the caller-supplied prompt (task framing). Each block
-    survives if the next is empty.
+    (capabilities), the memory catalogue (durable workspace facts), and the
+    caller-supplied prompt (task framing). Each block survives if the next is
+    empty.
     """
     standing_orders = render_standing_orders(
         extract_standing_orders(paths.repo / "docs" / "design-docs" / "core-beliefs.md")
@@ -283,6 +318,8 @@ def _assemble_system_prompt(
     parts.append(runtime_info)
     if catalogue:
         parts.append(catalogue)
+    if memory_catalogue:
+        parts.append(memory_catalogue)
     if system_prompt:
         parts.append(system_prompt)
     return "\n\n".join(parts)
@@ -300,9 +337,11 @@ def _build_session_engine(
     model: str,
     max_turns: int,
     catalogue: str,
+    memory_catalogue: str,
     runtime_info: str,
     skill_registry: SkillRegistry | None,
     skill_event_sink: SkillEventSink | None,
+    memory_store: FileMemoryStore | None,
     task_context: TaskSessionContext,
     compactor: AutoCompactState,
     capabilities: ProviderCapabilities,
@@ -346,6 +385,7 @@ def _build_session_engine(
         paths=paths,
         runtime_info=runtime_info,
         catalogue=catalogue,
+        memory_catalogue=memory_catalogue,
         system_prompt=options.system_prompt,
     )
     streamer = OpenAIChatStreamer(
@@ -398,6 +438,8 @@ def _build_session_engine(
     context_metadata: dict[str, Any] = {TASK_CONTEXT_KEY: task_context}
     if skill_context is not None:
         context_metadata[SKILL_CONTEXT_KEY] = skill_context
+    if memory_store is not None:
+        context_metadata[MEMORY_CONTEXT_KEY] = MemoryContext(store=memory_store)
     return build_query_engine(
         streamer=streamer,
         registry=tool_registry,

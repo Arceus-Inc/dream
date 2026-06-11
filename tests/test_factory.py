@@ -59,6 +59,59 @@ def test_explicit_skill_registry_wins_over_autowire(tmp_path: Path) -> None:
     assert "weather-lookup" not in _system_prompt(harness)
 
 
+def _write_memory_record(
+    tmp_path: Path, record_id: str, *, description: str, body: str
+) -> None:
+    """Write a markdown memory record into the workspace's project memory dir.
+
+    Mirrors ``_build``'s home/working_dir so the factory's
+    ``project_memory_dir(paths.home, working_dir)`` resolves to the same place.
+    """
+    from dream.memory import project_memory_dir
+
+    memory_dir = project_memory_dir(tmp_path / "home", tmp_path / "wt")
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    (memory_dir / f"{record_id}.md").write_text(
+        f"---\nname: {record_id}\ndescription: {description}\n"
+        f"metadata:\n  type: project\n  scope: project\n---\n\n{body}\n",
+        encoding="utf-8",
+    )
+
+
+def test_memory_catalogue_auto_wired_from_workspace(tmp_path: Path) -> None:
+    # A memory record in the workspace's project memory dir must reach
+    # run_task's system prompt by default — its id + description land in the
+    # catalogue with no caller wiring.
+    _write_memory_record(
+        tmp_path,
+        "naming-convention",
+        description="services use a service- prefix",
+        body="Name services service-<domain>.",
+    )
+    prompt = _system_prompt(_build(tmp_path))
+    assert "naming-convention" in prompt
+    assert "services use a service- prefix" in prompt
+
+
+def test_memory_can_be_disabled(tmp_path: Path) -> None:
+    _write_memory_record(
+        tmp_path,
+        "naming-convention",
+        description="services use a service- prefix",
+        body="Name services service-<domain>.",
+    )
+    prompt = _system_prompt(_build(tmp_path, memory=False))
+    assert "naming-convention" not in prompt
+
+
+def test_memory_tools_in_default_registry() -> None:
+    from dream.tools.builtin import default_registry
+
+    names = {t.name for t in default_registry().list_tools()}
+    assert "memory_search" in names
+    assert "memory_get" in names
+
+
 def test_build_harness_is_public() -> None:
     import dream
 
