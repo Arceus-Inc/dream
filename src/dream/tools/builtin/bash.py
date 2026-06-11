@@ -23,6 +23,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from dream.contracts.tool import ToolResult
+from dream.sandbox import SandboxResult, read_sandbox_adapter
 from dream.tools._base import BaseTool, ToolDeclaration, ToolEffects
 from dream.tools._context import ToolExecutionContext
 from dream.tools._paths import PathEscapesRoot, resolve_within
@@ -131,11 +132,24 @@ class BashTool(BaseTool):
 
     async def execute(self, input: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
         args = BashInput.model_validate(input)
+        # Confinement runs FIRST so a backend swap can never reopen the
+        # worktree-escape hole: an out-of-tree cwd is refused before any
+        # command reaches the adapter or our own spawn path.
         cwd = _resolve_cwd(args, ctx)
         if isinstance(cwd, ToolResult):
             return cwd
         if _looks_like_interactive_scaffold(args.command):
             return _interactive_required(args.command)
+        # Spec 13B: when a session wired a SandboxAdapter, the backend is the
+        # single execution mechanism — route the (already-confined) command
+        # through it. A bare engine / older caller has no adapter, so fall
+        # back to our own asyncio spawn so nothing breaks.
+        adapter = read_sandbox_adapter(ctx.metadata)
+        if adapter is not None:
+            outcome = await adapter.run(
+                args.command, cwd=cwd, timeout_seconds=args.timeout_seconds
+            )
+            return _result_from_sandbox(outcome, args.command, args.timeout_seconds)
         spawned = await _spawn(args.command, cwd)
         if isinstance(spawned, ToolResult):
             return spawned
@@ -260,6 +274,46 @@ def _build_result(buffer: bytearray, command: str, returncode: int | None) -> To
             }
         )
     return ToolResult(content=text, is_error=is_error, metadata=metadata)
+
+
+def _result_from_sandbox(
+    outcome: SandboxResult, command: str, timeout_seconds: float
+) -> ToolResult:
+    """Map a :class:`SandboxResult` back into the bash ``ToolResult`` shape.
+
+    The adapter path produces the same observable contract as the in-tool
+    spawn path: combined stdout/stderr in ``content``, ``returncode`` /
+    ``timed_out`` in ``metadata``, and the 3-part error contract on timeout
+    or a non-zero exit.
+    """
+    if outcome.timed_out:
+        partial = bytearray(_join_streams(outcome).encode("utf-8"))
+        return ToolResult(
+            content=_format_timeout(partial, command, timeout_seconds),
+            is_error=True,
+            metadata={
+                "command": command,
+                "returncode": outcome.returncode,
+                "timed_out": True,
+                "root_cause": f"command timed out after {timeout_seconds}s",
+                "safe_retry": "rerun with a tighter scope or larger timeout",
+                "stop_condition": "do not retry beyond the declared tool timeout",
+            },
+        )
+    return _build_result(
+        bytearray(_join_streams(outcome).encode("utf-8")), command, outcome.returncode
+    )
+
+
+def _join_streams(outcome: SandboxResult) -> str:
+    """Combine stdout + stderr so stderr-only output never disappears.
+
+    Both streams → join with a separator; otherwise whichever produced
+    output (stderr wins when present), matching ``_compose_subprocess_result``.
+    """
+    if outcome.stderr and outcome.stdout:
+        return f"{outcome.stdout}\n--- stderr ---\n{outcome.stderr}"
+    return outcome.stderr or outcome.stdout
 
 
 def _shell_argv(command: str) -> list[str]:

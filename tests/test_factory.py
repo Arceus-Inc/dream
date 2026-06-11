@@ -13,6 +13,13 @@ import pytest
 
 from dream import Harness, SessionOptions, build_harness
 from dream.engine._engine import QueryEngine
+from tests.test_skills._helpers import write_skill
+
+
+def _system_prompt(harness: Harness) -> str:
+    """The system prompt the factory's engine binds for a fresh session."""
+    engine = harness.config._engine_factory("s_probe", SessionOptions())  # type: ignore[misc]
+    return engine.streamer._system_prompt or ""  # type: ignore[attr-defined]
 
 
 def _build(tmp_path: Path, **overrides: object) -> Harness:
@@ -25,6 +32,84 @@ def _build(tmp_path: Path, **overrides: object) -> Harness:
     kwargs.update(overrides)
     (tmp_path / "wt").mkdir(parents=True, exist_ok=True)
     return build_harness(**kwargs)
+
+
+def test_skills_auto_wired_from_workspace(tmp_path: Path) -> None:
+    # "Constitute everything": a skill in the workspace must reach run_task's
+    # action surface by default — its catalogue lands in the system prompt
+    # with no caller wiring.
+    write_skill(tmp_path / "wt" / "docs" / "skills", "weather-lookup")
+    harness = _build(tmp_path)
+    assert "weather-lookup" in _system_prompt(harness)
+
+
+def test_skills_can_be_disabled(tmp_path: Path) -> None:
+    write_skill(tmp_path / "wt" / "docs" / "skills", "weather-lookup")
+    harness = _build(tmp_path, skills=False)
+    assert "weather-lookup" not in _system_prompt(harness)
+
+
+def test_explicit_skill_registry_wins_over_autowire(tmp_path: Path) -> None:
+    # A caller-supplied registry is authoritative — auto-wire must not
+    # override it (the REPL builds its own with shadow reporting).
+    from dream.skills import SkillRegistry
+
+    write_skill(tmp_path / "wt" / "docs" / "skills", "weather-lookup")
+    harness = _build(tmp_path, skill_registry=SkillRegistry())
+    assert "weather-lookup" not in _system_prompt(harness)
+
+
+def _write_memory_record(
+    tmp_path: Path, record_id: str, *, description: str, body: str
+) -> None:
+    """Write a markdown memory record into the workspace's project memory dir.
+
+    Mirrors ``_build``'s home/working_dir so the factory's
+    ``project_memory_dir(paths.home, working_dir)`` resolves to the same place.
+    """
+    from dream.memory import project_memory_dir
+
+    memory_dir = project_memory_dir(tmp_path / "home", tmp_path / "wt")
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    (memory_dir / f"{record_id}.md").write_text(
+        f"---\nname: {record_id}\ndescription: {description}\n"
+        f"metadata:\n  type: project\n  scope: project\n---\n\n{body}\n",
+        encoding="utf-8",
+    )
+
+
+def test_memory_catalogue_auto_wired_from_workspace(tmp_path: Path) -> None:
+    # A memory record in the workspace's project memory dir must reach
+    # run_task's system prompt by default — its id + description land in the
+    # catalogue with no caller wiring.
+    _write_memory_record(
+        tmp_path,
+        "naming-convention",
+        description="services use a service- prefix",
+        body="Name services service-<domain>.",
+    )
+    prompt = _system_prompt(_build(tmp_path))
+    assert "naming-convention" in prompt
+    assert "services use a service- prefix" in prompt
+
+
+def test_memory_can_be_disabled(tmp_path: Path) -> None:
+    _write_memory_record(
+        tmp_path,
+        "naming-convention",
+        description="services use a service- prefix",
+        body="Name services service-<domain>.",
+    )
+    prompt = _system_prompt(_build(tmp_path, memory=False))
+    assert "naming-convention" not in prompt
+
+
+def test_memory_tools_in_default_registry() -> None:
+    from dream.tools.builtin import default_registry
+
+    names = {t.name for t in default_registry().list_tools()}
+    assert "memory_search" in names
+    assert "memory_get" in names
 
 
 def test_build_harness_is_public() -> None:
@@ -56,6 +141,19 @@ def test_task_manager_and_cron_registry_wired(tmp_path: Path) -> None:
     harness = _build(tmp_path)
     assert isinstance(harness.config.task_manager, BackgroundTaskManager)
     assert isinstance(harness.config.cron_registry_path, Path)
+
+
+def test_sandbox_adapter_wired_into_session_context(tmp_path: Path) -> None:
+    # Spec 13B: the selected SandboxAdapter must ride the session's
+    # context_metadata so the ``bash`` tool executes through the one backend.
+    # v1 is the subprocess backend (docker is the gated seam, never auto-wired).
+    from dream.sandbox import SANDBOX_CONTEXT_KEY, SandboxAdapter, SubprocessSandbox
+
+    harness = _build(tmp_path)
+    engine = harness.config._engine_factory("s_sbx", SessionOptions())  # type: ignore[misc]
+    adapter = engine.dispatcher.context_metadata[SANDBOX_CONTEXT_KEY]  # type: ignore[attr-defined]
+    assert isinstance(adapter, SandboxAdapter)
+    assert isinstance(adapter, SubprocessSandbox)
 
 
 def test_wake_model_override_reaches_wake_streamer(tmp_path: Path) -> None:

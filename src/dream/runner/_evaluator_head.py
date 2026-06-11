@@ -33,6 +33,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from dream.runner._head_retry import ask_until_parsed
 from dream.runner._oracle import OracleResult, run_oracle
 from dream.sprint import EvaluationRecord
 
@@ -288,16 +289,38 @@ def make_evaluator_head(
             step=step,
             oracle=oracle,
         )
-        result = await harness.run_role(
-            "evaluator", prompt, harness_dir=harness_dir, observer=observer
-        )
-        data = _extract_verdict_json(result.final_text)
-        record = _coerce_record(
-            task_id=task_id,
-            sprint_number=sprint_number,
-            step_id=step.id,
-            evaluator_version=evaluator_version,
-            data=data,
+        async def _ask(p: str) -> Any:
+            return await harness.run_role(
+                "evaluator", p, harness_dir=harness_dir, observer=observer
+            )
+
+        def _on_retry(attempt: int, err: Exception) -> None:
+            if observer is not None:
+                observer.on_event(
+                    {
+                        "kind": "head.retry",
+                        "role": "evaluator",
+                        "attempt": attempt,
+                        "error": str(err),
+                    }
+                )
+
+        def _parse(final_text: str) -> EvaluationRecord:
+            data = _extract_verdict_json(final_text)
+            return _coerce_record(
+                task_id=task_id,
+                sprint_number=sprint_number,
+                step_id=step.id,
+                evaluator_version=evaluator_version,
+                data=data,
+            )
+
+        record = await ask_until_parsed(
+            _ask,
+            _parse,
+            prompt=prompt,
+            parse_error=EvaluatorHeadParseError,
+            on_retry=_on_retry,
         )
         return _enforce_oracle(record, oracle)
 

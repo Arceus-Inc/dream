@@ -56,6 +56,13 @@ class LedgerStep:
     status: StepStatus = "pending"
     sprint_target: int | None = None
     notes: str = ""
+    needs_changes_count: int = 0
+    """How many times this step has received a ``needs-changes`` evaluation.
+
+    Tracked so the runner can escalate to ``blocked`` after
+    ``NEEDS_CHANGES_LIMIT`` consecutive rejections without burning the full
+    sprint budget on a structurally impossible step.
+    """
 
     def __post_init__(self) -> None:
         if self.status not in _VALID_STATUSES:
@@ -72,6 +79,10 @@ class LedgerStep:
         }
         if self.sprint_target is not None:
             out["sprint_target"] = self.sprint_target
+        # Omit when zero — follows sprint_target precedent; keeps existing
+        # ledger JSON diffs minimal for steps that have never needed changes.
+        if self.needs_changes_count:
+            out["needs_changes_count"] = self.needs_changes_count
         return out
 
     @classmethod
@@ -82,6 +93,7 @@ class LedgerStep:
             status=data.get("status", "pending"),
             sprint_target=data.get("sprint_target"),
             notes=data.get("notes", ""),
+            needs_changes_count=int(data.get("needs_changes_count", 0)),
         )
 
 

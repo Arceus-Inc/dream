@@ -650,3 +650,120 @@ async def test_run_task_with_no_observer_does_not_break(tmp_path: Path) -> None:
     )
 
     assert result.sprints[0].outcome == "pass"
+
+
+# --- Fix 2: N-strikes escalation + sprint.escalated event -----------------
+
+
+def _make_evaluator_run_with_notes(*, outcome: str, notes: str = "") -> Any:
+    """Return an EvaluatorRun that always uses the given outcome and notes."""
+    from dream.sprint import EvaluationRecord
+
+    async def evaluator_run(task_id, sprint_n, contract, step):
+        return EvaluationRecord(
+            task_id=task_id,
+            sprint_number=sprint_n,
+            step_id=step.id,
+            outcome=outcome,  # type: ignore[arg-type]
+            notes=notes,
+        )
+
+    return evaluator_run
+
+
+async def test_two_needs_changes_blocks_step_without_burning_max_sprints(
+    tmp_path: Path,
+) -> None:
+    """After NEEDS_CHANGES_LIMIT (2) needs-changes on the same step the step
+    becomes blocked and the loop exits before hitting max_sprints."""
+    from dream.planner import PlannerLedger, planner_ledger_path
+    from dream.runner import run_task
+
+    result = await run_task(
+        task_id="t1",
+        intent="x",
+        worktree_root=tmp_path,
+        planner=_make_planner(steps=1),
+        generator_execute=_noop_execute,
+        evaluator_propose=_accept_first_proposal_propose(["c"]),
+        generator_respond=_accept_first_proposal_respond(),
+        evaluator_run=_make_evaluator_run_with_notes(
+            outcome="needs-changes", notes="structural issue"
+        ),
+        max_sprints=20,
+    )
+
+    # Must not have used all 20 sprints — blocked after 2 needs-changes
+    assert len(result.sprints) == 2
+    final = PlannerLedger.load(planner_ledger_path(tmp_path, "t1"))
+    assert final.steps[0].status == "blocked"
+
+
+async def test_two_needs_changes_emits_sprint_escalated_event(
+    tmp_path: Path,
+) -> None:
+    """When the second needs-changes triggers a block, a sprint.escalated event
+    must be dispatched to the observer with needs_changes_count == 2."""
+    from dream.runner import run_task
+    from dream.runner._observer import _CapturingObserver
+
+    observer = _CapturingObserver()
+
+    await run_task(
+        task_id="t1",
+        intent="x",
+        worktree_root=tmp_path,
+        planner=_make_planner(steps=1),
+        generator_execute=_noop_execute,
+        evaluator_propose=_accept_first_proposal_propose(["c"]),
+        generator_respond=_accept_first_proposal_respond(),
+        evaluator_run=_make_evaluator_run_with_notes(
+            outcome="needs-changes", notes="bad"
+        ),
+        max_sprints=20,
+        observer=observer,
+    )
+
+    escalated = [e for e in observer.events if e.get("kind") == "sprint.escalated"]
+    assert len(escalated) == 1
+    assert escalated[0]["task_id"] == "t1"
+    assert escalated[0]["step_id"] == "s1"
+    assert escalated[0]["needs_changes_count"] == 2
+
+
+async def test_sprint_escalated_not_emitted_on_first_needs_changes(
+    tmp_path: Path,
+) -> None:
+    """The escalation event fires only when the step is blocked — the first
+    needs-changes must not emit it."""
+    from dream.runner import run_task
+    from dream.runner._observer import _CapturingObserver
+    from dream.sprint import EvaluationRecord
+
+    observer = _CapturingObserver()
+    outcomes = iter(["needs-changes", "pass"])
+
+    async def evaluator_run(task_id, sprint_n, contract, step):
+        return EvaluationRecord(
+            task_id=task_id,
+            sprint_number=sprint_n,
+            step_id=step.id,
+            outcome=next(outcomes),  # type: ignore[arg-type]
+            notes="note" if sprint_n == 1 else "",
+        )
+
+    await run_task(
+        task_id="t1",
+        intent="x",
+        worktree_root=tmp_path,
+        planner=_make_planner(steps=1),
+        generator_execute=_noop_execute,
+        evaluator_propose=_accept_first_proposal_propose(["c"]),
+        generator_respond=_accept_first_proposal_respond(),
+        evaluator_run=evaluator_run,
+        max_sprints=10,
+        observer=observer,
+    )
+
+    escalated = [e for e in observer.events if e.get("kind") == "sprint.escalated"]
+    assert escalated == []

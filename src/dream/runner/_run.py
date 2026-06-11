@@ -326,6 +326,25 @@ async def _run_evaluator_phase(
             "notes": record.notes,
         }
     )
+
+    # Emit a sprint.escalated event when a needs-changes evaluation pushed the
+    # step to blocked (i.e. the N-strikes limit was reached).  We read the
+    # post-apply step state from the updated ledger so apply_outcome itself
+    # stays pure (no event coupling).
+    if record.outcome == "needs-changes":
+        updated_step = next(
+            (s for s in ledger.steps if s.id == record.step_id), None
+        )
+        if updated_step is not None and updated_step.status == "blocked":
+            emit(
+                {
+                    "kind": "sprint.escalated",
+                    "task_id": task_id,
+                    "step_id": record.step_id,
+                    "needs_changes_count": updated_step.needs_changes_count,
+                }
+            )
+
     events.append(
         handoff_event(
             from_role="evaluator",

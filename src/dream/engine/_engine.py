@@ -30,6 +30,7 @@ from dream.engine._loop import ToolDispatcher, TurnStreamer
 from dream.engine._records import TurnRecord
 from dream.engine._session import SessionConfig
 from dream.engine._tool_dispatch import DispatchRecord, EngineToolDispatcher, PermissionGate
+from dream.hooks import HookExecutor
 from dream.observability._tracer import NoopTracer, Tracer
 from dream.permissions import SessionLimiter, SessionLimits
 from dream.services.compact import DEFAULT_KEEP_RECENT
@@ -66,6 +67,11 @@ class QueryEngine:
     # Spec 13D: per-session hard caps. A fresh SessionLimiter is minted per
     # ``make_session_config`` call (per send), so counters reset each session.
     limits: SessionLimits | None = None
+    # Spec 13: optional lifecycle hook executor. Held here (and handed to the
+    # dispatcher at build time) so SESSION_START / STOP fire in the session
+    # loop and PRE/POST_TOOL_USE fire around each dispatch. ``None`` disables
+    # all firing, leaving the loop byte-for-byte unchanged.
+    hook_executor: HookExecutor | None = None
 
     def make_session_config(
         self,
@@ -92,6 +98,7 @@ class QueryEngine:
             tracer=self.tracer,
             model=self.model,
             limiter=SessionLimiter(self.limits) if self.limits is not None else None,
+            hook_executor=self.hook_executor,
         )
 
 
@@ -114,6 +121,7 @@ def build_query_engine(
     compaction_capabilities: ProviderCapabilities | None = None,
     tracer: Tracer | None = None,
     model: str = "",
+    hook_executor: HookExecutor | None = None,
 ) -> QueryEngine:
     """Wrap a ``ToolRegistry`` in the canonical dispatcher and bind a streamer.
 
@@ -130,6 +138,7 @@ def build_query_engine(
         context_metadata=context_metadata or {},
         permission_gate=permission_gate,
         role_allowed_tools=role_allowed_tools,
+        hook_executor=hook_executor,
     )
     return QueryEngine(
         streamer=streamer,
@@ -144,6 +153,7 @@ def build_query_engine(
         tracer=tracer or NoopTracer(),
         model=model,
         limits=limits,
+        hook_executor=hook_executor,
     )
 
 

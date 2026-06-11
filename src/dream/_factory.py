@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from dream.config.paths import DreamPaths
+from dream.contracts.plugin import Plugin
 from dream.contracts.provider import ProviderCapabilities
 from dream.engine._adapter_openai import (
     OpenAIChatStreamer,
@@ -31,12 +32,24 @@ from dream.engine._permission_gate import (
     compute_session_role_allowlist,
     make_permission_gate,
 )
-from dream.harness import Harness, HarnessConfig
+from dream.harness import AsyncOpener, AsyncTeardown, Harness, HarnessConfig
+from dream.hooks import HookExecutor, collect_hooks
+from dream.mcp import McpClientManager, mcp_paths, setup_mcp_session
+from dream.memory import (
+    MEMORY_CONTEXT_KEY,
+    FileMemoryStore,
+    MemoryContext,
+    project_memory_dir,
+    render_memory_catalogue,
+    scan_memory_dir,
+)
 from dream.observability import JsonlTracer, TraceWriter
-from dream.permissions import SessionLimits
+from dream.permissions import SessionLimits, read_sandbox_config
+from dream.plugins import load_enabled_plugins
 from dream.prompts.environment import render_runtime_info
 from dream.roles import RoleManifest
 from dream.runner._role_session import ROLE_MANIFEST_METADATA_KEY
+from dream.sandbox import SANDBOX_CONTEXT_KEY, SandboxAdapter, select_backend
 from dream.services import cron as cron_service
 from dream.services.compact._orchestrator import AutoCompactState
 from dream.services.context_log import ContextEvent
@@ -46,6 +59,7 @@ from dream.skills import (
     SKILL_CONTEXT_KEY,
     SkillContext,
     SkillRegistry,
+    build_session_skill_registry,
     render_skill_catalogue,
 )
 from dream.tasks import (
@@ -54,7 +68,8 @@ from dream.tasks import (
     TaskSessionContext,
 )
 from dream.tasks._cron import CRON_MANIFEST_DIR, load_cron_manifests
-from dream.tools._registry import ToolRegistry
+from dream.tools._base import BaseTool
+from dream.tools._registry import ToolRegistry, ToolSource
 from dream.tools.builtin import default_registry
 from dream.wake import HeartbeatTool
 
@@ -79,6 +94,10 @@ def build_harness(
     max_turns: int = 8,
     registry: ToolRegistry | None = None,
     skill_registry: SkillRegistry | None = None,
+    skills: bool = True,
+    memory: bool = True,
+    mcp: bool = True,
+    plugins: bool = True,
     skill_event_sink: SkillEventSink | None = None,
     policy_warning_sink: PolicyWarningSink | None = None,
     env: Mapping[str, str] | None = None,
@@ -94,6 +113,23 @@ def build_harness(
     *before* the first session starts — the tool wire-schema and the skill
     available-tool set are computed lazily per session, so late registrations
     are reflected.
+
+    Skills are auto-discovered from the workspace (bundled + user + project
+    ``SKILL.md`` dirs) by default so the whole action surface is wired with
+    no caller effort. Pass ``skill_registry`` to supply your own (it wins);
+    pass ``skills=False`` to disable discovery entirely.
+
+    Workspace memory (the durable per-project record store under
+    :func:`~dream.memory.project_memory_dir`) is wired by default: its
+    catalogue lands in the system prompt and the ``memory_search`` /
+    ``memory_get`` tools read from it. Pass ``memory=False`` to omit it.
+
+    ``mcp`` and ``plugins`` wire the two *async* action surfaces (Spec 06 / 13):
+    the per-repo MCP allowlist is admitted, connected, and its tools registered;
+    enabled repo-local plugins are loaded (tier-gated) and their tools / hooks /
+    providers installed. Both run once, lazily, on the first ``start_session``
+    (the async-open chokepoint) — never at construction — and tolerate a missing
+    or empty config as "nothing to wire". Pass ``False`` to skip either surface.
 
     ``env`` is consulted only for host resolution — ``DREAM_HOME`` path
     overrides and shell detection for the runtime-info prompt block — and
@@ -114,7 +150,22 @@ def build_harness(
     # for task storage / sidecars (#43); hardcoding ``Path.home()`` would write
     # task artifacts under ~/.dream even when the operator redirected the root.
     paths = DreamPaths.resolve(working_dir, env=resolved_env).ensure()
+    # Auto-discover workspace skills (Spec 06) unless the caller supplied a
+    # registry or opted out. An explicit ``skill_registry`` wins — the REPL
+    # builds its own with shadow reporting. Malformed SKILL.md files are the
+    # boot gate's job to block (Runtime.run_boot_gates); the loader here is
+    # tolerant so construction never raises on a bad skill.
+    if skill_registry is None and skills:
+        skill_registry, _shadows = build_session_skill_registry(
+            working_dir, home=paths.home
+        )
     task_manager, task_context = _bootstrap_task_and_cron(working_dir, paths)
+    # Spec 13B: the sandbox *tier* (read-only/repo-write/...) is read from
+    # ``.harness/sandbox.toml`` and enforced at the permission gate; the
+    # *backend* is how approved commands execute. The adapter rides every
+    # session's context_metadata so the ``bash`` tool runs through the one
+    # execution mechanism instead of spawning its own.
+    sandbox_adapter = _select_sandbox_adapter(paths)
     # Spec 13C policy-assembly warnings (e.g. stale tier promotions) are
     # operator-facing security signals; surface them once at build rather than
     # discarding them inside the factory (#47). They derive solely from
@@ -137,30 +188,23 @@ def build_harness(
     catalogue = (
         render_skill_catalogue(skill_registry.list_meta()) if skill_registry else ""
     )
+    # Memory (Spec 11): the read-side store over the per-project memory dir.
+    # Its catalogue (id + description teasers) goes into the system prompt so
+    # the model can discover durable facts; the MemoryContext rides the
+    # dispatcher's context_metadata so the `memory_search` / `memory_get`
+    # tools pull full records in. Disabled cleanly with ``memory=False``.
+    memory_store = (
+        FileMemoryStore(project_memory_dir(paths.home, working_dir)) if memory else None
+    )
+    memory_catalogue = (
+        render_memory_catalogue(scan_memory_dir(memory_store.root))
+        if memory_store is not None
+        else ""
+    )
     # Runtime environment (shell + OS + python) injected so the model picks the
     # right command syntax when it calls ``task_create command=...`` — without
     # this it guesses bash on Windows and cmd.exe rejects the command.
     runtime_info = render_runtime_info(env=resolved_env, working_dir=working_dir)
-
-    def _factory(session_id: str, options: SessionOptions) -> QueryEngine:
-        return _build_session_engine(
-            session_id,
-            options,
-            tool_registry=tool_registry,
-            paths=paths,
-            working_dir=working_dir,
-            api_key=api_key,
-            base_url=base_url,
-            model=model,
-            max_turns=max_turns,
-            catalogue=catalogue,
-            runtime_info=runtime_info,
-            skill_registry=skill_registry,
-            skill_event_sink=skill_event_sink,
-            task_context=task_context,
-            compactor=compactor,
-            capabilities=capabilities,
-        )
 
     # The task manager rides on the harness config so callers can register
     # lifecycle listeners and surface cron-spawned task starts/completions
@@ -181,9 +225,135 @@ def build_harness(
             # on a cheap model while real sessions keep ``model``.
             model=wake_model if wake_model is not None else model,
         ),
-        _engine_factory=_factory,
+        # MCP connect + plugin import are async/IO, so they hang off the
+        # async-open chokepoint (``Harness._ensure_open``) rather than running
+        # in this sync factory. ``None`` when both surfaces are disabled so the
+        # chokepoint stays a no-op.
+        _async_opener=(
+            _make_async_opener(
+                tool_registry=tool_registry,
+                working_dir=working_dir,
+                paths=paths,
+                mcp=mcp,
+                plugins=plugins,
+            )
+            if (mcp or plugins)
+            else None
+        ),
     )
-    return Harness(config)
+    harness = Harness(config)
+
+    # The engine factory closes over ``harness`` (not a hooks snapshot) so the
+    # spec-13 lifecycle executor is assembled lazily at session construction
+    # from ``harness._hooks`` / ``harness._plugins`` read *then* — hooks and
+    # plugins registered via ``register_hook`` / ``register_plugin`` *after*
+    # ``build_harness`` returns are still seen by the next session.
+    def _factory(session_id: str, options: SessionOptions) -> QueryEngine:
+        return _build_session_engine(
+            session_id,
+            options,
+            tool_registry=tool_registry,
+            paths=paths,
+            working_dir=working_dir,
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+            max_turns=max_turns,
+            catalogue=catalogue,
+            memory_catalogue=memory_catalogue,
+            runtime_info=runtime_info,
+            skill_registry=skill_registry,
+            skill_event_sink=skill_event_sink,
+            memory_store=memory_store,
+            task_context=task_context,
+            sandbox_adapter=sandbox_adapter,
+            compactor=compactor,
+            capabilities=capabilities,
+            harness=harness,
+        )
+
+    config._engine_factory = _factory
+    return harness
+
+
+def _make_async_opener(
+    *,
+    tool_registry: ToolRegistry,
+    working_dir: Path,
+    paths: DreamPaths,
+    mcp: bool,
+    plugins: bool,
+) -> AsyncOpener:
+    """Build the one-time async opener that wires MCP + plugins on first open.
+
+    Runs inside ``Harness._ensure_open`` (before the first session's engine is
+    built) so tools it registers are visible to that session's wire schema. It
+    is deliberately tolerant: a missing/empty allowlist or plugins manifest is
+    "nothing to wire", and a single plugin's failure never aborts the rest
+    (spec 13 decision #22). Returns a teardown that closes the MCP manager, or
+    ``None`` when there is nothing to tear down.
+    """
+
+    async def _opener(harness: Harness) -> AsyncTeardown | None:
+        manager: McpClientManager | None = None
+        if mcp:
+            allowlist_path, credentials_path = mcp_paths(working_dir)
+            setup = await setup_mcp_session(
+                tool_registry,
+                allowlist_path=allowlist_path,
+                credentials_path=credentials_path,
+            )
+            # Blocking findings leave ``manager`` None and no tools registered —
+            # the safe degradation: the session runs without MCP rather than
+            # aborting. (The REPL surfaces these findings to the operator; here
+            # the contract is non-fatal wiring.)
+            manager = setup.manager
+        if plugins:
+            tier = read_sandbox_config(paths.sandbox_config()).tier
+            report = load_enabled_plugins(working_dir, tier=tier)
+            for plugin in report.loaded:
+                _install_plugin(harness, tool_registry, plugin)
+        if manager is None:
+            return None
+
+        async def _teardown() -> None:
+            await manager.close()
+
+        return _teardown
+
+    return _opener
+
+
+def _install_plugin(
+    harness: Harness, tool_registry: ToolRegistry, plugin: Plugin
+) -> None:
+    """Install one loaded plugin's contributions into the live harness.
+
+    ``harness.register_plugin`` already records the bundle and attaches the
+    plugin's hooks / providers (and stashes its tools on the harness). The one
+    thing it does *not* do is put the tools in the engine-visible
+    ``ToolRegistry`` — so the model would never see them. This function closes
+    that gap: every plugin tool that is a real ``BaseTool`` joins the registry
+    as ``PER_REPO`` (discovered, so it rides the trust ramp — untrusted until an
+    operator promotes it, never auto-trusted like a built-in).
+
+    A tool-name collision with an already-registered tool skips the *whole*
+    plugin (so it never lands half-installed) rather than aborting the open —
+    one bad plugin must not take down the others (spec 13 decision #22).
+    """
+    # Only concrete ``BaseTool`` instances carry the wire-schema / tier surface
+    # the registry and permission gate need; a bare ``Tool``-protocol object
+    # can't be rendered into the request, so it never reaches the engine.
+    registrable = [t for t in plugin.tools if isinstance(t, BaseTool)]
+    clash = next((t.name for t in registrable if t.name in tool_registry), None)
+    if clash is not None:
+        return
+    for tool in registrable:
+        tool_registry.register(tool, source=ToolSource.PER_REPO)
+    # NB: ``plugin.skills`` are not surfaced in the system-prompt catalogue yet
+    # (it is rendered once at build, before this opener runs); plugin tools /
+    # hooks / providers are the live surface today.
+    harness.register_plugin(plugin)
 
 
 def _make_wake_streamer_factory(
@@ -249,16 +419,34 @@ def _bootstrap_task_and_cron(
     return task_manager, task_context
 
 
+def _select_sandbox_adapter(paths: DreamPaths) -> SandboxAdapter:
+    """Pick the execution backend for this harness (Spec 13B).
+
+    The tier is read from ``.harness/sandbox.toml`` so a malformed config
+    surfaces at build (and is the input a future docker upgrade keys off of),
+    but v1 always selects the subprocess backend: docker is the *gated* seam
+    and must never be auto-selected from the tier alone.
+    """
+    _tier = read_sandbox_config(paths.sandbox_config()).tier
+    return select_backend("subprocess")
+
+
 def _assemble_system_prompt(
-    *, paths: DreamPaths, runtime_info: str, catalogue: str, system_prompt: str | None
+    *,
+    paths: DreamPaths,
+    runtime_info: str,
+    catalogue: str,
+    memory_catalogue: str,
+    system_prompt: str | None,
 ) -> str:
-    """Assemble the per-session system prompt from its four ordered blocks.
+    """Assemble the per-session system prompt from its ordered blocks.
 
     Order: the governance standing orders FIRST (the constitution outranks
     everything; Spec 13F AC #21-22, re-extracted every session start), then
     runtime info (host facts the model must trust), the skill catalogue
-    (capabilities), and the caller-supplied prompt (task framing). Each block
-    survives if the next is empty.
+    (capabilities), the memory catalogue (durable workspace facts), and the
+    caller-supplied prompt (task framing). Each block survives if the next is
+    empty.
     """
     standing_orders = render_standing_orders(
         extract_standing_orders(paths.repo / "docs" / "design-docs" / "core-beliefs.md")
@@ -267,6 +455,8 @@ def _assemble_system_prompt(
     parts.append(runtime_info)
     if catalogue:
         parts.append(catalogue)
+    if memory_catalogue:
+        parts.append(memory_catalogue)
     if system_prompt:
         parts.append(system_prompt)
     return "\n\n".join(parts)
@@ -284,19 +474,34 @@ def _build_session_engine(
     model: str,
     max_turns: int,
     catalogue: str,
+    memory_catalogue: str,
     runtime_info: str,
     skill_registry: SkillRegistry | None,
     skill_event_sink: SkillEventSink | None,
+    memory_store: FileMemoryStore | None,
     task_context: TaskSessionContext,
+    sandbox_adapter: SandboxAdapter,
     compactor: AutoCompactState,
     capabilities: ProviderCapabilities,
+    harness: Harness,
 ) -> QueryEngine:
     """Construct one session's ``QueryEngine`` from explicit, pre-resolved deps.
 
     Everything per-session (tool wire schema, skill context, prompt, permission
-    gate, role allow-list) is computed lazily here so tools registered after
-    :func:`build_harness` (MCP adapters etc.) are visible.
+    gate, role allow-list, lifecycle hooks) is computed lazily here so tools
+    *and* hooks/plugins registered after :func:`build_harness` (MCP adapters,
+    ``register_hook`` / ``register_plugin`` etc.) are visible.
     """
+    # Spec 13: assemble the lifecycle hook executor from the harness's *current*
+    # hooks + plugins, read at session-construction time so late
+    # ``register_hook`` / ``register_plugin`` calls are seen. ``collect_hooks``
+    # merges harness-direct registrations (first) with plugin-contributed hooks
+    # (in load order) deterministically. Built unconditionally — an empty hook
+    # list makes ``fire`` a cheap no-op, so the firing seams stay live for a
+    # later ``register_hook`` without rebuilding the harness. The executor's
+    # ``emit`` is left defaulted (no-op): hook timeout/error event types are not
+    # part of the OTel ``TraceEventType`` surface, so they don't ride the tracer.
+    hook_executor = HookExecutor(collect_hooks(harness._hooks, harness._plugins))
     # Render the registry into OpenAI ``tools`` wire shape per session (cheap;
     # a handful of tools) so tools registered after build — MCP adapters /
     # resource + auth tools — are visible to the model. The engine's
@@ -330,6 +535,7 @@ def _build_session_engine(
         paths=paths,
         runtime_info=runtime_info,
         catalogue=catalogue,
+        memory_catalogue=memory_catalogue,
         system_prompt=options.system_prompt,
     )
     streamer = OpenAIChatStreamer(
@@ -378,10 +584,16 @@ def _build_session_engine(
         tool_registry, paths=paths, cwd=working_dir
     )
     # Dispatcher context_metadata: skill + task contexts keyed for the
-    # `skill` / task tools to fetch out of the dispatcher.
-    context_metadata: dict[str, Any] = {TASK_CONTEXT_KEY: task_context}
+    # `skill` / task tools to fetch out of the dispatcher, plus the sandbox
+    # adapter the `bash` tool routes execution through (Spec 13B).
+    context_metadata: dict[str, Any] = {
+        TASK_CONTEXT_KEY: task_context,
+        SANDBOX_CONTEXT_KEY: sandbox_adapter,
+    }
     if skill_context is not None:
         context_metadata[SKILL_CONTEXT_KEY] = skill_context
+    if memory_store is not None:
+        context_metadata[MEMORY_CONTEXT_KEY] = MemoryContext(store=memory_store)
     return build_query_engine(
         streamer=streamer,
         registry=tool_registry,
@@ -396,4 +608,5 @@ def _build_session_engine(
         compaction_capabilities=capabilities,
         tracer=tracer,
         model=options.model or model,
+        hook_executor=hook_executor,
     )

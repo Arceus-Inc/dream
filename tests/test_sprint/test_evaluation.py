@@ -356,3 +356,230 @@ def test_append_tech_debt_refuses_non_fail_outcome(tmp_path: Path) -> None:
         )
         with pytest.raises(ValueError, match="fail"):
             append_tech_debt(tmp_path, rec)
+
+
+# --- Fix 2: notes carry-through + N-strikes --------------------------------
+
+
+def _in_progress_ledger():
+    """Return a ledger whose first step is in_progress, ready for evaluation."""
+    from dream.planner import LedgerStep, PlannerLedger
+
+    return PlannerLedger(
+        task_id="t1",
+        intent="ship widget",
+        created_at=0.0,
+        steps=(
+            LedgerStep(id="s1", description="A", status="in_progress"),
+            LedgerStep(id="s2", description="B", status="pending"),
+        ),
+    )
+
+
+def test_needs_changes_first_strike_stays_in_progress_with_count_one() -> None:
+    """First needs-changes: step stays in_progress, count becomes 1."""
+    from dream.sprint import EvaluationRecord, apply_outcome
+
+    ledger = _in_progress_ledger()
+    rec = EvaluationRecord(
+        task_id="t1",
+        sprint_number=1,
+        step_id="s1",
+        outcome="needs-changes",
+        notes="add docstring",
+    )
+    updated = apply_outcome(ledger, rec)
+    step = next(s for s in updated.steps if s.id == "s1")
+    assert step.status == "in_progress"
+    assert step.needs_changes_count == 1
+
+
+def test_needs_changes_first_strike_appends_evaluator_notes() -> None:
+    """Evaluator notes are injected into step.notes so the generator retries
+    with context rather than an identical prompt."""
+    from dream.sprint import EvaluationRecord, apply_outcome
+
+    ledger = _in_progress_ledger()
+    rec = EvaluationRecord(
+        task_id="t1",
+        sprint_number=1,
+        step_id="s1",
+        outcome="needs-changes",
+        notes="missing docstring",
+    )
+    updated = apply_outcome(ledger, rec)
+    step = next(s for s in updated.steps if s.id == "s1")
+    assert "[evaluator, sprint 1]" in step.notes
+    assert "missing docstring" in step.notes
+
+
+def test_needs_changes_appends_to_existing_notes() -> None:
+    """When the step already has notes, the evaluator feedback is separated by
+    a newline and appended — prior context is preserved."""
+    from dream.planner import LedgerStep, PlannerLedger
+    from dream.sprint import EvaluationRecord, apply_outcome
+
+    step = LedgerStep(
+        id="s1",
+        description="A",
+        status="in_progress",
+        notes="original guidance",
+    )
+    ledger = PlannerLedger(
+        task_id="t1",
+        intent="x",
+        created_at=0.0,
+        steps=(step,),
+    )
+    rec = EvaluationRecord(
+        task_id="t1",
+        sprint_number=2,
+        step_id="s1",
+        outcome="needs-changes",
+        notes="add types",
+    )
+    updated = apply_outcome(ledger, rec)
+    updated_step = updated.steps[0]
+    # Both segments present, separated by newline
+    assert "original guidance" in updated_step.notes
+    assert "[evaluator, sprint 2]" in updated_step.notes
+    assert "add types" in updated_step.notes
+    assert updated_step.notes.index("original guidance") < updated_step.notes.index("[evaluator")
+
+
+def test_needs_changes_second_strike_becomes_blocked() -> None:
+    """On the second needs-changes (NEEDS_CHANGES_LIMIT = 2) the step is blocked
+    so the budget is not burned with further retries."""
+    from dream.planner import LedgerStep, PlannerLedger
+    from dream.sprint import EvaluationRecord, apply_outcome
+
+    step = LedgerStep(
+        id="s1",
+        description="A",
+        status="in_progress",
+        needs_changes_count=1,  # already had one strike
+    )
+    ledger = PlannerLedger(
+        task_id="t1",
+        intent="x",
+        created_at=0.0,
+        steps=(step,),
+    )
+    rec = EvaluationRecord(
+        task_id="t1",
+        sprint_number=2,
+        step_id="s1",
+        outcome="needs-changes",
+        notes="still missing types",
+    )
+    updated = apply_outcome(ledger, rec)
+    updated_step = updated.steps[0]
+    assert updated_step.status == "blocked"
+    assert updated_step.needs_changes_count == 2
+
+
+def test_needs_changes_second_strike_carries_both_notes() -> None:
+    """After two strikes both evaluator messages must be readable in step.notes."""
+    from dream.planner import LedgerStep, PlannerLedger
+    from dream.sprint import EvaluationRecord, apply_outcome
+
+    step = LedgerStep(
+        id="s1",
+        description="A",
+        status="in_progress",
+        notes="[evaluator, sprint 1] first complaint",
+        needs_changes_count=1,
+    )
+    ledger = PlannerLedger(task_id="t1", intent="x", created_at=0.0, steps=(step,))
+    rec = EvaluationRecord(
+        task_id="t1",
+        sprint_number=2,
+        step_id="s1",
+        outcome="needs-changes",
+        notes="second complaint",
+    )
+    updated = apply_outcome(ledger, rec)
+    notes = updated.steps[0].notes
+    assert "first complaint" in notes
+    assert "[evaluator, sprint 2]" in notes
+    assert "second complaint" in notes
+
+
+def test_needs_changes_empty_record_notes_appends_nothing_but_increments_count() -> None:
+    """When the evaluator leaves notes empty, step.notes is unchanged (no
+    extra separator) but the counter still increments."""
+    from dream.planner import LedgerStep, PlannerLedger
+    from dream.sprint import EvaluationRecord, apply_outcome
+
+    step = LedgerStep(
+        id="s1",
+        description="A",
+        status="in_progress",
+        notes="existing note",
+    )
+    ledger = PlannerLedger(task_id="t1", intent="x", created_at=0.0, steps=(step,))
+    rec = EvaluationRecord(
+        task_id="t1",
+        sprint_number=1,
+        step_id="s1",
+        outcome="needs-changes",
+        notes="",  # empty
+    )
+    updated = apply_outcome(ledger, rec)
+    updated_step = updated.steps[0]
+    assert updated_step.needs_changes_count == 1
+    # notes unchanged — no separator or evaluator tag appended
+    assert updated_step.notes == "existing note"
+
+
+def test_pass_outcome_unchanged_behaviour() -> None:
+    """pass → done; notes and count untouched (regression guard)."""
+    from dream.sprint import EvaluationRecord, apply_outcome
+
+    ledger = _in_progress_ledger()
+    rec = EvaluationRecord(
+        task_id="t1", sprint_number=1, step_id="s1", outcome="pass"
+    )
+    updated = apply_outcome(ledger, rec)
+    step = next(s for s in updated.steps if s.id == "s1")
+    assert step.status == "done"
+
+
+def test_fail_outcome_carries_evaluator_notes_into_step() -> None:
+    """fail → blocked AND evaluator notes appended — the blocked step's reason
+    must be readable without inspecting the tech-debt file."""
+    from dream.sprint import EvaluationRecord, apply_outcome
+
+    ledger = _in_progress_ledger()
+    rec = EvaluationRecord(
+        task_id="t1",
+        sprint_number=3,
+        step_id="s1",
+        outcome="fail",
+        notes="unsalvageable approach",
+    )
+    updated = apply_outcome(ledger, rec)
+    step = next(s for s in updated.steps if s.id == "s1")
+    assert step.status == "blocked"
+    assert "[evaluator, sprint 3]" in step.notes
+    assert "unsalvageable approach" in step.notes
+
+
+def test_fail_outcome_with_empty_notes_does_not_append() -> None:
+    """fail with no evaluator notes: step is blocked but notes stay unchanged."""
+    from dream.planner import LedgerStep, PlannerLedger
+    from dream.sprint import EvaluationRecord, apply_outcome
+
+    step = LedgerStep(id="s1", description="A", status="in_progress", notes="prior note")
+    ledger = PlannerLedger(task_id="t1", intent="x", created_at=0.0, steps=(step,))
+    rec = EvaluationRecord(
+        task_id="t1",
+        sprint_number=1,
+        step_id="s1",
+        outcome="fail",
+        notes="",
+    )
+    updated = apply_outcome(ledger, rec)
+    updated_step = updated.steps[0]
+    assert updated_step.status == "blocked"
+    assert updated_step.notes == "prior note"

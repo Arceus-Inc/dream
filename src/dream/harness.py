@@ -6,8 +6,9 @@ here reads from module-level state.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -46,6 +47,13 @@ if TYPE_CHECKING:
 # internal and may change without a public API bump.
 EngineFactory = Callable[[str, SessionOptions], "QueryEngine"]
 
+# An async teardown the opener returns (e.g. close MCP sessions), or None.
+AsyncTeardown = Callable[[], Awaitable[None]]
+# Run once before the first session: connects MCP, loads plugins, registers
+# their tools/hooks into the harness. Returns an optional teardown. Built by
+# ``dream.build_harness``; kept off the public API (underscore on the field).
+AsyncOpener = Callable[["Harness"], Awaitable["AsyncTeardown | None"]]
+
 
 @dataclass
 class HarnessConfig:
@@ -75,6 +83,10 @@ class HarnessConfig:
     wake_streamer_factory: Callable[[], TurnStreamer] | None = None
     extra: dict[str, Any] = field(default_factory=dict)
     _engine_factory: EngineFactory | None = None
+    # Async setup run once before the first session — MCP connect + plugin
+    # load (both async/IO). ``dream.build_harness`` populates it; ``None`` for
+    # bare engine-factory harnesses (tests).
+    _async_opener: AsyncOpener | None = None
 
 
 class Harness:
@@ -92,6 +104,14 @@ class Harness:
         self._hooks: list[Hook] = []
         self._plugins: list[Plugin] = []
         self._closed = False
+        # Async-open state (spec 15 wiring): MCP connect + plugin load are
+        # async/IO, so they run once via ``_ensure_open`` — at the
+        # ``start_session`` chokepoint (every path funnels through it,
+        # including every run_task head and bare ``--once`` callers), not
+        # only ``__aenter__`` (which direct callers can skip).
+        self._opened = False
+        self._open_lock = asyncio.Lock()
+        self._teardown: AsyncTeardown | None = None
 
     # -- registration -----------------------------------------------------
 
@@ -113,6 +133,27 @@ class Harness:
         for provider in plugin.providers:
             self.register_provider(provider)
 
+    # -- lifecycle (async open) -------------------------------------------
+
+    async def _ensure_open(self) -> None:
+        """Run the one-time async opener (MCP connect + plugin load).
+
+        Idempotent and lock-guarded: fires exactly once however the harness
+        is entered — ``async with``, a ``Runtime``, or a bare
+        ``await harness.run_task(...)``. Placed at the ``start_session``
+        chokepoint so every session (including every run_task head) is wired
+        before its engine is built.
+        """
+        if self._opened:
+            return
+        async with self._open_lock:
+            if self._opened:
+                return
+            opener = self.config._async_opener
+            if opener is not None:
+                self._teardown = await opener(self)
+            self._opened = True
+
     # -- sessions ---------------------------------------------------------
 
     async def start_session(self, options: SessionOptions | None = None) -> Session:
@@ -127,6 +168,7 @@ class Harness:
         """
         import uuid
 
+        await self._ensure_open()
         opts = options or SessionOptions()
         session_id = uuid.uuid4().hex
         engine = None
@@ -332,9 +374,13 @@ class Harness:
     # -- lifecycle --------------------------------------------------------
 
     async def aclose(self) -> None:
+        if self._teardown is not None:
+            teardown, self._teardown = self._teardown, None
+            await teardown()
         self._closed = True
 
     async def __aenter__(self) -> Self:
+        await self._ensure_open()
         return self
 
     async def __aexit__(

@@ -10,6 +10,8 @@ from dream.tools.builtin.file_edit import FileEditTool
 from dream.tools.builtin.file_read import FileReadTool
 from dream.tools.builtin.file_write import FileWriteTool
 from dream.tools.builtin.git import GitTool
+from dream.tools.builtin.memory_get import MemoryGetTool
+from dream.tools.builtin.memory_search import MemorySearchTool
 from dream.tools.builtin.observability_query import QueryLogsTool, QueryMetricsTool
 from dream.tools.builtin.plan_show import PlanShowTool
 from dream.tools.builtin.read_offloaded import ReadOffloadedTool
@@ -29,6 +31,8 @@ _DEFAULT_ORDER: tuple[str, ...] = (
     "git",
     "read_offloaded",
     "skill",
+    "memory_search",
+    "memory_get",
     "query_logs",
     "query_metrics",
     "task_create",
@@ -51,6 +55,8 @@ def default_registry() -> ToolRegistry:
     registry.register(GitTool(), source=ToolSource.DEFAULT)
     registry.register(ReadOffloadedTool(), source=ToolSource.DEFAULT)
     registry.register(SkillTool(), source=ToolSource.DEFAULT)
+    registry.register(MemorySearchTool(), source=ToolSource.DEFAULT)
+    registry.register(MemoryGetTool(), source=ToolSource.DEFAULT)
     registry.register(QueryLogsTool(), source=ToolSource.DEFAULT)
     registry.register(QueryMetricsTool(), source=ToolSource.DEFAULT)
     registry.register(TaskCreateTool(), source=ToolSource.DEFAULT)

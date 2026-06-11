@@ -122,3 +122,82 @@ def test_planner_paths_reject_unsafe_task_id(tmp_path: Path, bad: str) -> None:
         planner_spec_path(tmp_path, bad)
     with pytest.raises(ValueError, match=r"task_id|unsafe"):
         planner_ledger_path(tmp_path, bad)
+
+
+# --- Fix 2: needs_changes_count field -------------------------------------
+
+
+def test_ledger_step_needs_changes_count_defaults_to_zero() -> None:
+    """New field must default to 0 so every existing LedgerStep without it loads."""
+    from dream.planner import LedgerStep
+
+    step = LedgerStep(id="x", description="y")
+    assert step.needs_changes_count == 0
+
+
+def test_ledger_step_needs_changes_count_round_trips() -> None:
+    """When nonzero, needs_changes_count must survive to_dict / from_dict."""
+    from dream.planner import LedgerStep
+
+    step = LedgerStep(id="s1", description="do it", needs_changes_count=3)
+    rt = LedgerStep.from_dict(step.to_dict())
+    assert rt.needs_changes_count == 3
+
+
+def test_ledger_step_omits_needs_changes_count_when_zero() -> None:
+    """Follow the sprint_target precedent: omit the key when value is 0
+    so existing ledger JSON diffs stay minimal."""
+    from dream.planner import LedgerStep
+
+    step = LedgerStep(id="s1", description="d", needs_changes_count=0)
+    d = step.to_dict()
+    assert "needs_changes_count" not in d
+
+
+def test_ledger_step_includes_needs_changes_count_when_nonzero() -> None:
+    """When needs_changes_count > 0 the key must appear in the dict."""
+    from dream.planner import LedgerStep
+
+    step = LedgerStep(id="s1", description="d", needs_changes_count=1)
+    d = step.to_dict()
+    assert d["needs_changes_count"] == 1
+
+
+def test_ledger_step_from_dict_absent_key_loads_as_zero() -> None:
+    """Every existing ledger on disk has no needs_changes_count key; it must
+    deserialise to 0 without raising."""
+    from dream.planner import LedgerStep
+
+    raw: dict[str, object] = {
+        "id": "s1",
+        "description": "desc",
+        "status": "in_progress",
+        "notes": "",
+    }
+    step = LedgerStep.from_dict(raw)
+    assert step.needs_changes_count == 0
+
+
+def test_ledger_step_full_round_trip_with_all_fields(tmp_path: Path) -> None:
+    """All fields together must survive save/load through PlannerLedger."""
+    from dream.planner import LedgerStep, PlannerLedger
+
+    step = LedgerStep(
+        id="s1",
+        description="do the thing",
+        status="in_progress",
+        sprint_target=2,
+        notes="prior guidance",
+        needs_changes_count=1,
+    )
+    ledger = PlannerLedger(
+        task_id="t1",
+        intent="ship widget",
+        created_at=1.0,
+        steps=(step,),
+    )
+    path = tmp_path / "t1.json"
+    ledger.save(path)
+    loaded = PlannerLedger.load(path)
+    assert loaded.steps[0] == step
+    assert loaded.steps[0].needs_changes_count == 1
