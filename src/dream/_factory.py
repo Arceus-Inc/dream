@@ -46,6 +46,7 @@ from dream.skills import (
     SKILL_CONTEXT_KEY,
     SkillContext,
     SkillRegistry,
+    build_session_skill_registry,
     render_skill_catalogue,
 )
 from dream.tasks import (
@@ -79,6 +80,7 @@ def build_harness(
     max_turns: int = 8,
     registry: ToolRegistry | None = None,
     skill_registry: SkillRegistry | None = None,
+    skills: bool = True,
     skill_event_sink: SkillEventSink | None = None,
     policy_warning_sink: PolicyWarningSink | None = None,
     env: Mapping[str, str] | None = None,
@@ -94,6 +96,11 @@ def build_harness(
     *before* the first session starts — the tool wire-schema and the skill
     available-tool set are computed lazily per session, so late registrations
     are reflected.
+
+    Skills are auto-discovered from the workspace (bundled + user + project
+    ``SKILL.md`` dirs) by default so the whole action surface is wired with
+    no caller effort. Pass ``skill_registry`` to supply your own (it wins);
+    pass ``skills=False`` to disable discovery entirely.
 
     ``env`` is consulted only for host resolution — ``DREAM_HOME`` path
     overrides and shell detection for the runtime-info prompt block — and
@@ -114,6 +121,15 @@ def build_harness(
     # for task storage / sidecars (#43); hardcoding ``Path.home()`` would write
     # task artifacts under ~/.dream even when the operator redirected the root.
     paths = DreamPaths.resolve(working_dir, env=resolved_env).ensure()
+    # Auto-discover workspace skills (Spec 06) unless the caller supplied a
+    # registry or opted out. An explicit ``skill_registry`` wins — the REPL
+    # builds its own with shadow reporting. Malformed SKILL.md files are the
+    # boot gate's job to block (Runtime.run_boot_gates); the loader here is
+    # tolerant so construction never raises on a bad skill.
+    if skill_registry is None and skills:
+        skill_registry, _shadows = build_session_skill_registry(
+            working_dir, home=paths.home
+        )
     task_manager, task_context = _bootstrap_task_and_cron(working_dir, paths)
     # Spec 13C policy-assembly warnings (e.g. stale tier promotions) are
     # operator-facing security signals; surface them once at build rather than

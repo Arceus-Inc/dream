@@ -13,6 +13,13 @@ import pytest
 
 from dream import Harness, SessionOptions, build_harness
 from dream.engine._engine import QueryEngine
+from tests.test_skills._helpers import write_skill
+
+
+def _system_prompt(harness: Harness) -> str:
+    """The system prompt the factory's engine binds for a fresh session."""
+    engine = harness.config._engine_factory("s_probe", SessionOptions())  # type: ignore[misc]
+    return engine.streamer._system_prompt or ""  # type: ignore[attr-defined]
 
 
 def _build(tmp_path: Path, **overrides: object) -> Harness:
@@ -25,6 +32,31 @@ def _build(tmp_path: Path, **overrides: object) -> Harness:
     kwargs.update(overrides)
     (tmp_path / "wt").mkdir(parents=True, exist_ok=True)
     return build_harness(**kwargs)
+
+
+def test_skills_auto_wired_from_workspace(tmp_path: Path) -> None:
+    # "Constitute everything": a skill in the workspace must reach run_task's
+    # action surface by default — its catalogue lands in the system prompt
+    # with no caller wiring.
+    write_skill(tmp_path / "wt" / "docs" / "skills", "weather-lookup")
+    harness = _build(tmp_path)
+    assert "weather-lookup" in _system_prompt(harness)
+
+
+def test_skills_can_be_disabled(tmp_path: Path) -> None:
+    write_skill(tmp_path / "wt" / "docs" / "skills", "weather-lookup")
+    harness = _build(tmp_path, skills=False)
+    assert "weather-lookup" not in _system_prompt(harness)
+
+
+def test_explicit_skill_registry_wins_over_autowire(tmp_path: Path) -> None:
+    # A caller-supplied registry is authoritative — auto-wire must not
+    # override it (the REPL builds its own with shadow reporting).
+    from dream.skills import SkillRegistry
+
+    write_skill(tmp_path / "wt" / "docs" / "skills", "weather-lookup")
+    harness = _build(tmp_path, skill_registry=SkillRegistry())
+    assert "weather-lookup" not in _system_prompt(harness)
 
 
 def test_build_harness_is_public() -> None:
