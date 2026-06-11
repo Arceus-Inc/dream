@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from dream.config.paths import DreamPaths
+from dream.contracts.plugin import Plugin
 from dream.contracts.provider import ProviderCapabilities
 from dream.engine._adapter_openai import (
     OpenAIChatStreamer,
@@ -31,8 +32,9 @@ from dream.engine._permission_gate import (
     compute_session_role_allowlist,
     make_permission_gate,
 )
-from dream.harness import Harness, HarnessConfig
+from dream.harness import AsyncOpener, AsyncTeardown, Harness, HarnessConfig
 from dream.hooks import HookExecutor, collect_hooks
+from dream.mcp import McpClientManager, mcp_paths, setup_mcp_session
 from dream.memory import (
     MEMORY_CONTEXT_KEY,
     FileMemoryStore,
@@ -43,6 +45,7 @@ from dream.memory import (
 )
 from dream.observability import JsonlTracer, TraceWriter
 from dream.permissions import SessionLimits, read_sandbox_config
+from dream.plugins import load_enabled_plugins
 from dream.prompts.environment import render_runtime_info
 from dream.roles import RoleManifest
 from dream.runner._role_session import ROLE_MANIFEST_METADATA_KEY
@@ -65,7 +68,8 @@ from dream.tasks import (
     TaskSessionContext,
 )
 from dream.tasks._cron import CRON_MANIFEST_DIR, load_cron_manifests
-from dream.tools._registry import ToolRegistry
+from dream.tools._base import BaseTool
+from dream.tools._registry import ToolRegistry, ToolSource
 from dream.tools.builtin import default_registry
 from dream.wake import HeartbeatTool
 
@@ -92,6 +96,8 @@ def build_harness(
     skill_registry: SkillRegistry | None = None,
     skills: bool = True,
     memory: bool = True,
+    mcp: bool = True,
+    plugins: bool = True,
     skill_event_sink: SkillEventSink | None = None,
     policy_warning_sink: PolicyWarningSink | None = None,
     env: Mapping[str, str] | None = None,
@@ -117,6 +123,13 @@ def build_harness(
     :func:`~dream.memory.project_memory_dir`) is wired by default: its
     catalogue lands in the system prompt and the ``memory_search`` /
     ``memory_get`` tools read from it. Pass ``memory=False`` to omit it.
+
+    ``mcp`` and ``plugins`` wire the two *async* action surfaces (Spec 06 / 13):
+    the per-repo MCP allowlist is admitted, connected, and its tools registered;
+    enabled repo-local plugins are loaded (tier-gated) and their tools / hooks /
+    providers installed. Both run once, lazily, on the first ``start_session``
+    (the async-open chokepoint) — never at construction — and tolerate a missing
+    or empty config as "nothing to wire". Pass ``False`` to skip either surface.
 
     ``env`` is consulted only for host resolution — ``DREAM_HOME`` path
     overrides and shell detection for the runtime-info prompt block — and
@@ -212,6 +225,21 @@ def build_harness(
             # on a cheap model while real sessions keep ``model``.
             model=wake_model if wake_model is not None else model,
         ),
+        # MCP connect + plugin import are async/IO, so they hang off the
+        # async-open chokepoint (``Harness._ensure_open``) rather than running
+        # in this sync factory. ``None`` when both surfaces are disabled so the
+        # chokepoint stays a no-op.
+        _async_opener=(
+            _make_async_opener(
+                tool_registry=tool_registry,
+                working_dir=working_dir,
+                paths=paths,
+                mcp=mcp,
+                plugins=plugins,
+            )
+            if (mcp or plugins)
+            else None
+        ),
     )
     harness = Harness(config)
 
@@ -246,6 +274,86 @@ def build_harness(
 
     config._engine_factory = _factory
     return harness
+
+
+def _make_async_opener(
+    *,
+    tool_registry: ToolRegistry,
+    working_dir: Path,
+    paths: DreamPaths,
+    mcp: bool,
+    plugins: bool,
+) -> AsyncOpener:
+    """Build the one-time async opener that wires MCP + plugins on first open.
+
+    Runs inside ``Harness._ensure_open`` (before the first session's engine is
+    built) so tools it registers are visible to that session's wire schema. It
+    is deliberately tolerant: a missing/empty allowlist or plugins manifest is
+    "nothing to wire", and a single plugin's failure never aborts the rest
+    (spec 13 decision #22). Returns a teardown that closes the MCP manager, or
+    ``None`` when there is nothing to tear down.
+    """
+
+    async def _opener(harness: Harness) -> AsyncTeardown | None:
+        manager: McpClientManager | None = None
+        if mcp:
+            allowlist_path, credentials_path = mcp_paths(working_dir)
+            setup = await setup_mcp_session(
+                tool_registry,
+                allowlist_path=allowlist_path,
+                credentials_path=credentials_path,
+            )
+            # Blocking findings leave ``manager`` None and no tools registered —
+            # the safe degradation: the session runs without MCP rather than
+            # aborting. (The REPL surfaces these findings to the operator; here
+            # the contract is non-fatal wiring.)
+            manager = setup.manager
+        if plugins:
+            tier = read_sandbox_config(paths.sandbox_config()).tier
+            report = load_enabled_plugins(working_dir, tier=tier)
+            for plugin in report.loaded:
+                _install_plugin(harness, tool_registry, plugin)
+        if manager is None:
+            return None
+
+        async def _teardown() -> None:
+            await manager.close()
+
+        return _teardown
+
+    return _opener
+
+
+def _install_plugin(
+    harness: Harness, tool_registry: ToolRegistry, plugin: Plugin
+) -> None:
+    """Install one loaded plugin's contributions into the live harness.
+
+    ``harness.register_plugin`` already records the bundle and attaches the
+    plugin's hooks / providers (and stashes its tools on the harness). The one
+    thing it does *not* do is put the tools in the engine-visible
+    ``ToolRegistry`` — so the model would never see them. This function closes
+    that gap: every plugin tool that is a real ``BaseTool`` joins the registry
+    as ``PER_REPO`` (discovered, so it rides the trust ramp — untrusted until an
+    operator promotes it, never auto-trusted like a built-in).
+
+    A tool-name collision with an already-registered tool skips the *whole*
+    plugin (so it never lands half-installed) rather than aborting the open —
+    one bad plugin must not take down the others (spec 13 decision #22).
+    """
+    # Only concrete ``BaseTool`` instances carry the wire-schema / tier surface
+    # the registry and permission gate need; a bare ``Tool``-protocol object
+    # can't be rendered into the request, so it never reaches the engine.
+    registrable = [t for t in plugin.tools if isinstance(t, BaseTool)]
+    clash = next((t.name for t in registrable if t.name in tool_registry), None)
+    if clash is not None:
+        return
+    for tool in registrable:
+        tool_registry.register(tool, source=ToolSource.PER_REPO)
+    # NB: ``plugin.skills`` are not surfaced in the system-prompt catalogue yet
+    # (it is rendered once at build, before this opener runs); plugin tools /
+    # hooks / providers are the live surface today.
+    harness.register_plugin(plugin)
 
 
 def _make_wake_streamer_factory(

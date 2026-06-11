@@ -29,6 +29,13 @@ from dream.mcp._credentials import (
     read_credentials,
     write_credential,
 )
+from dream.mcp._setup import (
+    ALLOWLIST_RELPATH,
+    CREDENTIALS_RELPATH,
+    McpSetup,
+    mcp_paths,
+    setup_mcp_session,
+)
 from dream.mcp._types import (
     AllowlistEntry,
     McpConnectionStatus,
@@ -43,6 +50,8 @@ from dream.mcp._types import (
 )
 
 __all__ = [
+    "ALLOWLIST_RELPATH",
+    "CREDENTIALS_RELPATH",
     "AllowlistEntry",
     "AllowlistError",
     "CredentialMode",
@@ -53,6 +62,7 @@ __all__ = [
     "McpResourceInfo",
     "McpServerConfig",
     "McpServerNotConnectedError",
+    "McpSetup",
     "McpState",
     "McpStdioServerConfig",
     "McpToolInfo",
@@ -64,8 +74,10 @@ __all__ = [
     "admit",
     "apply_credentials",
     "entry_to_config",
+    "mcp_paths",
     "parse_allowlist",
     "read_allowlist",
     "read_credentials",
+    "setup_mcp_session",
     "write_credential",
 ]

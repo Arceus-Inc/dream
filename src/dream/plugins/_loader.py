@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from dream.contracts.plugin import Plugin
+from dream.permissions import SandboxTier
 from dream.plugins._schemas import PluginManifestError, parse_manifest
 
 __all__ = [
@@ -36,12 +37,15 @@ __all__ = [
 
 _INIT_TIMEOUT_SECONDS = 5.0
 
-# Which capabilities each sandbox tier (spec 13B) may grant to a plugin.
-_TIER_CAPABILITIES: dict[str, frozenset[str]] = {
-    "read-only": frozenset(),
-    "repo-write": frozenset({"repo-write"}),
-    "workspace-net": frozenset({"repo-write", "network", "subprocess"}),
-    "trusted": frozenset({"repo-write", "network", "subprocess"}),
+# Which plugin capabilities each sandbox tier (spec 13B) may grant. Keyed by the
+# ``SandboxTier`` enum itself — not a parallel string label — so the only caller
+# (``build_harness``'s opener) passes ``read_sandbox_config(...).tier`` straight
+# through with no lossy string mapping in between.
+_TIER_CAPABILITIES: dict[SandboxTier, frozenset[str]] = {
+    SandboxTier.READ_ONLY: frozenset(),
+    SandboxTier.REPO_WRITE: frozenset({"repo-write"}),
+    SandboxTier.REPO_WRITE_NET: frozenset({"repo-write", "network", "subprocess"}),
+    SandboxTier.UNRESTRICTED: frozenset({"repo-write", "network", "subprocess"}),
 }
 
 
@@ -85,7 +89,7 @@ def read_enabled_names(repo: Path) -> tuple[tuple[str, str | None], ...]:
 def load_enabled_plugins(
     repo: Path,
     *,
-    tier: str,
+    tier: SandboxTier,
     init_timeout_seconds: float = _INIT_TIMEOUT_SECONDS,
 ) -> PluginLoadReport:
     """Load every enabled plugin under ``repo/plugins/``, tier-gated."""
