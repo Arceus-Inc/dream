@@ -41,6 +41,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Literal, cast
 
+from dream.contracts.hook import HookEvent
 from dream.contracts.provider import ProviderCapabilities
 from dream.engine._cost import UsageSnapshot
 from dream.engine._events import (
@@ -80,6 +81,7 @@ from dream.engine._records import (
 )
 from dream.engine._reviewer import ReviewerConfig
 from dream.engine._transitions import TransitionBus, TransitionEvent
+from dream.hooks import HookExecutor
 from dream.observability._events import state_transition_attrs, validator_finding_attrs
 from dream.observability._tracer import NoopTracer, Tracer
 from dream.permissions import SessionLimiter
@@ -127,6 +129,12 @@ class SessionConfig:
     # Spec 13D: hard per-session limits. A fresh limiter per session means
     # counters never roll forward; ``None`` disables enforcement.
     limiter: SessionLimiter | None = None
+    # Spec 13: optional lifecycle hook executor. When set, SESSION_START fires
+    # once at session entry and STOP fires once before the terminal SessionEnd
+    # on every exit path (validator-block, abort, normal seal). Observer-only —
+    # the executor swallows crashes/timeouts, so firing can't abort the
+    # session. ``None`` disables firing, leaving the loop unchanged.
+    hook_executor: HookExecutor | None = None
 
     def __post_init__(self) -> None:
         # 0/negative would satisfy ``consecutive_timeouts >= max`` immediately
@@ -142,6 +150,21 @@ def _fire(bus: TransitionBus | None, event: TransitionEvent) -> TransitionEvent:
     if bus is not None:
         bus.fire(event)
     return event
+
+
+async def _fire_lifecycle(
+    executor: HookExecutor | None, event: HookEvent, session_id: str
+) -> None:
+    """Fire a session-scoped spec-13 lifecycle hook (SESSION_START / STOP).
+
+    A no-op when no executor is configured. ``executor.fire`` never raises —
+    it is crash-isolated and deadline-bounded — so this can't break the loop.
+    These events are distinct from the turn-FSM ``TransitionBus`` (state
+    transitions); they are the lifecycle observer seam, not the FSM seam.
+    """
+    if executor is None:
+        return
+    await executor.fire(event, {"session_id": session_id})
 
 
 def _session_transition(src: SessionState, dst: SessionState) -> TransitionEvent:
@@ -471,6 +494,11 @@ async def run_session(
     """
     session_started_at = config.now()
 
+    # Spec 13: SESSION_START fires once at session entry, before any turn work.
+    # Observer-only and crash-isolated (the executor swallows), so a faulty
+    # hook can't delay or abort the session.
+    await _fire_lifecycle(config.hook_executor, HookEvent.SESSION_START, config.session_id)
+
     # Mirror every FSM transition into the trace (Spec 12a). Registered before
     # the first ``_fire`` so the starting->orienting edge is captured too; a
     # NoopTracer makes this a cheap no-op when tracing is off.
@@ -517,6 +545,7 @@ async def run_session(
                 transitions,
                 _session_transition(SessionState.ORIENTING, SessionState.ABORTED),
             )
+            await _fire_lifecycle(config.hook_executor, HookEvent.STOP, config.session_id)
             yield SessionEnd(
                 session_id=config.session_id,
                 started_at=session_started_at,
@@ -635,6 +664,7 @@ async def run_session(
             transitions,
             _session_transition(SessionState.WORKING, SessionState.ABORTED),
         )
+        await _fire_lifecycle(config.hook_executor, HookEvent.STOP, config.session_id)
         yield SessionEnd(
             session_id=config.session_id,
             started_at=session_started_at,
@@ -668,6 +698,7 @@ async def run_session(
         session_outcome = "done"
         reason = None
 
+    await _fire_lifecycle(config.hook_executor, HookEvent.STOP, config.session_id)
     yield SessionEnd(
         session_id=config.session_id,
         started_at=session_started_at,
