@@ -9,14 +9,20 @@ and ``DockerSandbox`` (always-refuse upgrade seam) behind
 from __future__ import annotations
 
 from dream.sandbox._adapter import SandboxAdapter, SandboxResult
-from dream.sandbox._session import select_backend
+from dream.sandbox._session import (
+    SANDBOX_CONTEXT_KEY,
+    read_sandbox_adapter,
+    select_backend,
+)
 from dream.sandbox.docker_backend import DockerSandbox
 from dream.sandbox.subprocess_backend import SubprocessSandbox
 
 __all__ = [
+    "SANDBOX_CONTEXT_KEY",
     "DockerSandbox",
     "SandboxAdapter",
     "SandboxResult",
     "SubprocessSandbox",
+    "read_sandbox_adapter",
     "select_backend",
 ]

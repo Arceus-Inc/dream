@@ -90,6 +90,19 @@ def test_task_manager_and_cron_registry_wired(tmp_path: Path) -> None:
     assert isinstance(harness.config.cron_registry_path, Path)
 
 
+def test_sandbox_adapter_wired_into_session_context(tmp_path: Path) -> None:
+    # Spec 13B: the selected SandboxAdapter must ride the session's
+    # context_metadata so the ``bash`` tool executes through the one backend.
+    # v1 is the subprocess backend (docker is the gated seam, never auto-wired).
+    from dream.sandbox import SANDBOX_CONTEXT_KEY, SandboxAdapter, SubprocessSandbox
+
+    harness = _build(tmp_path)
+    engine = harness.config._engine_factory("s_sbx", SessionOptions())  # type: ignore[misc]
+    adapter = engine.dispatcher.context_metadata[SANDBOX_CONTEXT_KEY]  # type: ignore[attr-defined]
+    assert isinstance(adapter, SandboxAdapter)
+    assert isinstance(adapter, SubprocessSandbox)
+
+
 def test_wake_model_override_reaches_wake_streamer(tmp_path: Path) -> None:
     # The heartbeat fires constantly; running it on a cheap model is the
     # single biggest cost lever for an always-on agent. Default: same model.
