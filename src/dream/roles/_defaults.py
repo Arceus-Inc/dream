@@ -92,7 +92,18 @@ def default_role_manifest(name: RoleName) -> RoleManifest:
     """Return the bundled default manifest for ``name``.
 
     Raises ``ValueError`` for unknown names so the typo path is loud.
+
+    The ``"subagent"`` role is explicitly rejected here: subagent manifests
+    are always synthesised at spawn time by ``_factory._make_spawn_closure``
+    and are never loaded by name. Calling this with ``"subagent"`` is a
+    programming error; the error message explains why.
     """
+    if name == "subagent":
+        raise ValueError(
+            "role 'subagent' is synthesized at spawn time and cannot be "
+            "loaded by name; use build_harness() and let the spawn_subagent "
+            "tool construct the child manifest at runtime"
+        )
     try:
         return _DEFAULTS[name]
     except KeyError as exc:

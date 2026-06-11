@@ -16,6 +16,7 @@ from dream.tools.builtin.observability_query import QueryLogsTool, QueryMetricsT
 from dream.tools.builtin.plan_show import PlanShowTool
 from dream.tools.builtin.read_offloaded import ReadOffloadedTool
 from dream.tools.builtin.skill import SkillTool
+from dream.tools.builtin.spawn_subagent import SpawnSubagentTool
 from dream.tools.builtin.task_create import TaskCreateTool
 from dream.tools.builtin.task_get import TaskGetTool
 from dream.tools.builtin.task_output import TaskOutputTool
@@ -23,6 +24,8 @@ from dream.tools.builtin.task_stop import TaskStopTool
 
 # Canonical ordering for the model-facing tool schema. Stable across processes
 # so prompt caches downstream actually hit; alphabetical within a "phase".
+# spawn_subagent sits after the skill group (it is a meta-tool like skill,
+# but mutating rather than read-only) and before the task group.
 _DEFAULT_ORDER: tuple[str, ...] = (
     "read_file",
     "edit_file",
@@ -31,6 +34,7 @@ _DEFAULT_ORDER: tuple[str, ...] = (
     "git",
     "read_offloaded",
     "skill",
+    "spawn_subagent",
     "memory_search",
     "memory_get",
     "query_logs",
@@ -55,6 +59,7 @@ def default_registry() -> ToolRegistry:
     registry.register(GitTool(), source=ToolSource.DEFAULT)
     registry.register(ReadOffloadedTool(), source=ToolSource.DEFAULT)
     registry.register(SkillTool(), source=ToolSource.DEFAULT)
+    registry.register(SpawnSubagentTool(), source=ToolSource.DEFAULT)
     registry.register(MemorySearchTool(), source=ToolSource.DEFAULT)
     registry.register(MemoryGetTool(), source=ToolSource.DEFAULT)
     registry.register(QueryLogsTool(), source=ToolSource.DEFAULT)

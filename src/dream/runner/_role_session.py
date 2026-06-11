@@ -43,6 +43,7 @@ if TYPE_CHECKING:
     from dream.harness import Harness
 
 __all__ = [
+    "OBSERVER_METADATA_KEY",
     "ROLE_MANIFEST_METADATA_KEY",
     "ROLE_NAME_METADATA_KEY",
     "RoleSessionError",
@@ -56,6 +57,9 @@ __all__ = [
 # Namespaced so plugin metadata can't collide.
 ROLE_NAME_METADATA_KEY = "dream.role"
 ROLE_MANIFEST_METADATA_KEY = "dream.role_manifest"
+# The observer stamped by run_role so the factory can thread the same
+# observer into a child spawn's run_role call (observer bridge, spec section 5).
+OBSERVER_METADATA_KEY = "dream.observer"
 
 
 class RoleSessionError(RuntimeError):
@@ -151,6 +155,12 @@ async def run_role(
     metadata = dict(base.metadata)
     metadata[ROLE_NAME_METADATA_KEY] = manifest.name
     metadata[ROLE_MANIFEST_METADATA_KEY] = manifest
+    # Observer bridge: stamp the observer so the spawn factory can read it back
+    # and thread the same observer into any child run_role call (spec section 5).
+    # Stamping None when there is no observer is intentional — the factory
+    # checks ``isinstance(v, RunTaskObserver)`` so a None value is filtered out.
+    if observer is not None:
+        metadata[OBSERVER_METADATA_KEY] = observer
 
     effective = SessionOptions(
         model=base.model,

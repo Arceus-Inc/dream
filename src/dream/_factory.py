@@ -48,7 +48,12 @@ from dream.permissions import SessionLimits, read_sandbox_config
 from dream.plugins import load_enabled_plugins
 from dream.prompts.environment import render_runtime_info
 from dream.roles import RoleManifest
-from dream.runner._role_session import ROLE_MANIFEST_METADATA_KEY
+from dream.runner._observer import RunTaskObserver
+from dream.runner._role_session import (
+    OBSERVER_METADATA_KEY,
+    ROLE_MANIFEST_METADATA_KEY,
+    run_role,
+)
 from dream.sandbox import SANDBOX_CONTEXT_KEY, SandboxAdapter, select_backend
 from dream.services import cron as cron_service
 from dream.services.compact._orchestrator import AutoCompactState
@@ -62,6 +67,12 @@ from dream.skills import (
     build_session_skill_registry,
     render_skill_catalogue,
 )
+from dream.spawn._context import (
+    SPAWN_CONTEXT_KEY,
+    SpawnBudget,
+    SpawnContext,
+)
+from dream.spawn._outcome import SpawnOutcome
 from dream.tasks import (
     TASK_CONTEXT_KEY,
     BackgroundTaskManager,
@@ -98,6 +109,7 @@ def build_harness(
     memory: bool = True,
     mcp: bool = True,
     plugins: bool = True,
+    spawn: bool = True,
     skill_event_sink: SkillEventSink | None = None,
     policy_warning_sink: PolicyWarningSink | None = None,
     env: Mapping[str, str] | None = None,
@@ -270,6 +282,7 @@ def build_harness(
             compactor=compactor,
             capabilities=capabilities,
             harness=harness,
+            spawn=spawn,
         )
 
     config._engine_factory = _factory
@@ -484,6 +497,7 @@ def _build_session_engine(
     compactor: AutoCompactState,
     capabilities: ProviderCapabilities,
     harness: Harness,
+    spawn: bool = True,
 ) -> QueryEngine:
     """Construct one session's ``QueryEngine`` from explicit, pre-resolved deps.
 
@@ -594,6 +608,24 @@ def _build_session_engine(
         context_metadata[SKILL_CONTEXT_KEY] = skill_context
     if memory_store is not None:
         context_metadata[MEMORY_CONTEXT_KEY] = MemoryContext(store=memory_store)
+    # Spawn context (spec spawn_subagent): stash a fresh SpawnContext only when
+    # spawning is enabled AND this session is not itself a child (subagent).
+    # Belt-and-braces with the manifest's disallowed_tools; the stash rule is
+    # the primary depth-1 enforcement.
+    _stash_spawn_context = spawn and not _is_subagent_session(options)
+    if _stash_spawn_context:
+        # Read any observer stamped by run_role (observer bridge).
+        _raw_observer = options.metadata.get(OBSERVER_METADATA_KEY)
+        _observer = _raw_observer if isinstance(_raw_observer, RunTaskObserver) else None
+        spawn_context = _make_spawn_context(
+            harness=harness,
+            tool_registry=tool_registry,
+            hook_executor=hook_executor,
+            session_id=session_id,
+            parent_model=options.model or model,
+            observer=_observer,
+        )
+        context_metadata[SPAWN_CONTEXT_KEY] = spawn_context
     return build_query_engine(
         streamer=streamer,
         registry=tool_registry,
@@ -610,3 +642,192 @@ def _build_session_engine(
         model=options.model or model,
         hook_executor=hook_executor,
     )
+
+
+# ---------------------------------------------------------------------------
+# Spawn helpers
+# ---------------------------------------------------------------------------
+
+# The static framing prompt for every synthesised child session.
+# Static text (task NOT interpolated here) keeps the system-prompt prefix
+# prompt-cache friendly across spawns — see spec decision #37.
+_SUBAGENT_FRAMING = (
+    "You are a scoped subagent. You have been delegated a specific task by a parent "
+    "session. Your final message is returned verbatim to the parent agent as the tool "
+    "result — make it the complete, self-contained deliverable. "
+    "You may not spawn further subagents."
+)
+
+
+def _is_subagent_session(options: SessionOptions) -> bool:
+    """True when the session carries a subagent-named RoleManifest in its metadata.
+
+    Belt-and-braces with ``disallowed_tools``: the manifest's allow-list is
+    the primary depth-1 guard; this check prevents the SpawnContext from
+    being stashed at all, so the tool sees no context even before the
+    allow-list is consulted.
+    """
+    manifest = options.metadata.get(ROLE_MANIFEST_METADATA_KEY)
+    return isinstance(manifest, RoleManifest) and manifest.name == "subagent"
+
+
+def _make_spawn_context(
+    *,
+    harness: Harness,
+    tool_registry: ToolRegistry,
+    hook_executor: HookExecutor,
+    session_id: str,
+    parent_model: str,
+    observer: RunTaskObserver | None,
+) -> SpawnContext:
+    """Build a fresh SpawnContext for one parent session.
+
+    The closure captures ``harness`` and ``hook_executor`` by reference so
+    hooks registered after build_harness returns are still seen (same
+    pattern as the hook_executor construction above). ``observer`` is the
+    parent's bridged run observer (or ``None``): it both receives the
+    spawn.* events and is threaded into the child's ``run_role`` so the
+    child streams into the parent's transcript.
+    """
+    budget = SpawnBudget()
+    emit = observer.on_event if observer is not None else None
+
+    async def _fire_subagent_stop(payload: dict[str, Any]) -> None:
+        from dream.contracts.hook import HookEvent
+
+        await hook_executor.fire(HookEvent.SUBAGENT_STOP, payload)
+
+    async def _spawn(
+        task: str,
+        tools: list[str] | None,
+        child_model: str | None,
+        child_max_turns: int | None,
+    ) -> SpawnOutcome:
+        return await _run_spawn(
+            harness=harness,
+            tool_registry=tool_registry,
+            task=task,
+            tools=tools,
+            child_model=child_model or parent_model,
+            child_max_turns=child_max_turns,
+            parent_session_id=session_id,
+            emit=emit,
+            fire_subagent_stop=_fire_subagent_stop,
+            observer=observer,
+        )
+
+    return SpawnContext(
+        spawn=_spawn,
+        budget=budget,
+        emit=emit,
+        fire_subagent_stop=_fire_subagent_stop,
+    )
+
+
+async def _run_spawn(
+    *,
+    harness: Harness,
+    tool_registry: ToolRegistry,
+    task: str,
+    tools: list[str] | None,
+    child_model: str,
+    child_max_turns: int | None,
+    parent_session_id: str,
+    emit: Callable[[dict[str, Any]], None] | None,
+    fire_subagent_stop: Callable[[dict[str, Any]], Any],
+    observer: RunTaskObserver | None = None,
+) -> SpawnOutcome:
+    """Execute one child spawn: synthesise manifest, run_role, return outcome.
+
+    Emits spawn.started / spawn.completed observer events when emit is set —
+    including on failure (status "failed") — and fires the SUBAGENT_STOP hook
+    after the child ends either way, before any error propagates to the tool.
+
+    ``observer`` is the parent's run observer when one was bridged: the child
+    session streams into the same transcript the parent is narrating to.
+
+    The task is delivered as the child's opening user message; the static
+    ``_SUBAGENT_FRAMING`` lives in the system prompt so it is prompt-cache
+    friendly across spawns.
+    """
+    # Check requested tool names against the harness's LIVE registry (the one
+    # the child session will draw from) so late registrations — MCP adapters,
+    # plugin tools — are recognised. A fresh default registry here would
+    # false-flag them as unknown. Unknowns are reported in structured output,
+    # never silently dropped.
+    known_names = {t.name for t in tool_registry.list_tools()}
+    unknown_tools: list[str] = []
+    if tools is not None:
+        unknown_tools = [t for t in tools if t not in known_names]
+
+    manifest = RoleManifest(
+        name="subagent",
+        description="Runtime-scoped child session.",
+        system_prompt=_SUBAGENT_FRAMING,
+        tools=tuple(tools) if tools is not None else None,
+        disallowed_tools=("spawn_subagent",),
+    )
+
+    if emit is not None:
+        emit(
+            {
+                "kind": "spawn.started",
+                "parent_session_id": parent_session_id,
+            }
+        )
+
+    child_options = SessionOptions(
+        model=child_model,
+        max_turns=child_max_turns,
+    )
+
+    try:
+        result = await run_role(
+            harness,
+            manifest,
+            task,
+            options=child_options,
+            observer=observer,
+        )
+    except Exception:
+        # Observability must not lose the failure: complete the event pair and
+        # fire the lifecycle hook before the error reaches the tool (which
+        # converts it into the failure-as-data envelope).
+        if emit is not None:
+            emit(
+                {
+                    "kind": "spawn.completed",
+                    "parent_session_id": parent_session_id,
+                    "child_session_id": None,
+                    "status": "failed",
+                }
+            )
+        await fire_subagent_stop({"child_session_id": None, "status": "failed"})
+        raise
+
+    outcome = SpawnOutcome(
+        final_text=result.final_text,
+        session_id=result.session_id,
+        cost=result.cost,
+        status="completed",
+        unknown_tools=unknown_tools,
+    )
+
+    if emit is not None:
+        emit(
+            {
+                "kind": "spawn.completed",
+                "parent_session_id": parent_session_id,
+                "child_session_id": result.session_id,
+                "status": outcome.status,
+            }
+        )
+
+    await fire_subagent_stop(
+        {
+            "child_session_id": result.session_id,
+            "status": outcome.status,
+        }
+    )
+
+    return outcome

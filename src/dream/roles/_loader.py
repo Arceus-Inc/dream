@@ -26,7 +26,17 @@ def load_role_manifest(role: RoleName, *, harness_dir: Path) -> RoleManifest:
 
     ``harness_dir`` is the in-repo ``.harness`` directory (the operator-owned
     config root); the overlay lives at ``harness_dir / "roles" / f"{role}.toml"``.
+
+    Raises ``ValueError`` for ``"subagent"``: subagent manifests are always
+    synthesised at spawn time, never loaded from disk. This guard prevents
+    operators from accidentally placing a ``subagent.toml`` overlay file and
+    expecting it to be picked up.
     """
+    if role == "subagent":
+        raise ValueError(
+            "role 'subagent' is synthesized at spawn time and cannot be "
+            "loaded by name; the spawn_subagent tool builds it at runtime"
+        )
     base = default_role_manifest(role)
     overlay_path = harness_dir / "roles" / f"{role}.toml"
     if not overlay_path.is_file():

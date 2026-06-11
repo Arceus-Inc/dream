@@ -13,7 +13,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
-RoleName = Literal["planner", "generator", "evaluator"]
+RoleName = Literal["planner", "generator", "evaluator", "subagent"]
 SystemPromptMode = Literal["default", "replace", "append"]
 PermissionMode = Literal["default", "acceptEdits", "plan", "dontAsk"]
 Isolation = Literal["worktree", "remote"]
@@ -46,9 +46,13 @@ class RoleManifest(BaseModel):
 
     @model_validator(mode="after")
     def _only_generator_may_use_null_tools(self) -> RoleManifest:
-        if self.tools is None and self.name != "generator":
+        # Both the generator (tools=None means "all, tier-intersected") and
+        # the subagent role (tools=None means "inherit everything permitted")
+        # are allowed to use null tools. All other roles must declare an
+        # explicit allow-list so read-only invariants are not accidentally dropped.
+        if self.tools is None and self.name not in ("generator", "subagent"):
             raise ValueError(
-                f"tools=null is reserved for the generator role; "
+                f"tools=null is reserved for the generator/subagent roles; "
                 f"role {self.name!r} must declare an explicit allow-list"
             )
         return self
