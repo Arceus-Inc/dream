@@ -71,6 +71,7 @@ from dream.spawn._context import (
     SPAWN_CONTEXT_KEY,
     SpawnBudget,
     SpawnContext,
+    SpawnUnknownToolsError,
 )
 from dream.spawn._outcome import SpawnOutcome
 from dream.tasks import (
@@ -522,7 +523,17 @@ def _build_session_engine(
     # TurnStreamer Protocol has no tools parameter (only messages), so we
     # smuggle the schema through ``httpx_chat_completion_stream``'s
     # ``extra_params`` — splatted verbatim into every request body.
-    tools = tool_registry.list_tools()
+    #
+    # Spawn visibility: a session that cannot spawn (spawn=False, or the
+    # session IS a subagent) must not *see* spawn_subagent either — leaving it
+    # in the schema invites the model to dispatch it and burn a turn on the
+    # "unavailable" error. The same flag later gates the SpawnContext stash.
+    session_may_spawn = spawn and not _is_subagent_session(options)
+    tools = [
+        t
+        for t in tool_registry.list_tools()
+        if session_may_spawn or t.name != "spawn_subagent"
+    ]
     tools_wire: list[dict[str, Any]] = [
         {
             "type": "function",
@@ -612,8 +623,7 @@ def _build_session_engine(
     # spawning is enabled AND this session is not itself a child (subagent).
     # Belt-and-braces with the manifest's disallowed_tools; the stash rule is
     # the primary depth-1 enforcement.
-    _stash_spawn_context = spawn and not _is_subagent_session(options)
-    if _stash_spawn_context:
+    if session_may_spawn:
         # Read any observer stamped by run_role (observer bridge).
         _raw_observer = options.metadata.get(OBSERVER_METADATA_KEY)
         _observer = _raw_observer if isinstance(_raw_observer, RunTaskObserver) else None
@@ -753,18 +763,36 @@ async def _run_spawn(
     # Check requested tool names against the harness's LIVE registry (the one
     # the child session will draw from) so late registrations — MCP adapters,
     # plugin tools — are recognised. A fresh default registry here would
-    # false-flag them as unknown. Unknowns are reported in structured output,
-    # never silently dropped.
+    # false-flag them as unknown. Live models sometimes echo the OpenAI wire
+    # namespace ("functions.read_file"), so that prefix is stripped before
+    # matching. Only KNOWN names enter the manifest — an unknown name in the
+    # allow-list would silently shrink the child's toolset; instead unknowns
+    # are reported in structured output. If NOTHING usable was requested, the
+    # spawn is refused before any child runs: a tool-less child is a wasted
+    # session, and the parent needs the available names to self-correct.
     known_names = {t.name for t in tool_registry.list_tools()}
+    manifest_tools: tuple[str, ...] | None = None
     unknown_tools: list[str] = []
     if tools is not None:
-        unknown_tools = [t for t in tools if t not in known_names]
+        known: list[str] = []
+        for requested in tools:
+            name = requested.removeprefix("functions.")
+            if name in known_names:
+                if name not in known:
+                    known.append(name)
+            else:
+                unknown_tools.append(requested)
+        if not known:
+            raise SpawnUnknownToolsError(
+                unknown=unknown_tools, available=sorted(known_names)
+            )
+        manifest_tools = tuple(known)
 
     manifest = RoleManifest(
         name="subagent",
         description="Runtime-scoped child session.",
         system_prompt=_SUBAGENT_FRAMING,
-        tools=tuple(tools) if tools is not None else None,
+        tools=manifest_tools,
         disallowed_tools=("spawn_subagent",),
     )
 

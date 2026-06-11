@@ -13,6 +13,7 @@ from dream.spawn._context import (
     SPAWN_CONTEXT_KEY,
     SpawnBudget,
     SpawnContext,
+    SpawnUnknownToolsError,
     read_spawn_context,
 )
 from dream.spawn._outcome import SpawnOutcome
@@ -23,5 +24,6 @@ __all__ = [
     "SpawnBudget",
     "SpawnContext",
     "SpawnOutcome",
+    "SpawnUnknownToolsError",
     "read_spawn_context",
 ]

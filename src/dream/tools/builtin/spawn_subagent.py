@@ -23,7 +23,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from dream.contracts.tool import ToolResult
-from dream.spawn._context import read_spawn_context
+from dream.spawn._context import SpawnUnknownToolsError, read_spawn_context
 from dream.tools._base import BaseTool, ToolDeclaration
 from dream.tools._context import ToolExecutionContext
 from dream.tools.builtin._errors import tool_error as _err
@@ -103,6 +103,18 @@ class SpawnSubagentTool(BaseTool):
                 args.tools,
                 args.model,
                 args.max_turns,
+            )
+        except SpawnUnknownToolsError as exc:
+            # No usable tools were requested — refused BEFORE a child ran.
+            # Recoverable: the parent re-calls with names from the list.
+            return _err(
+                f"No child was spawned: {exc}",
+                root_cause="none of the requested tool names exist in this harness",
+                safe_retry=(
+                    "re-call spawn_subagent with exact names from: "
+                    f"{', '.join(exc.available)}"
+                ),
+                stop_condition="do not retry with the same tool names",
             )
         except Exception as exc:
             # Child failure is data, not an exception: parent turn continues.

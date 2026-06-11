@@ -26,6 +26,25 @@ MAX_SPAWNS_PER_SESSION = 16
 """Hard cap: a parent session may spawn at most this many children."""
 
 
+class SpawnUnknownToolsError(ValueError):
+    """No usable tool names were requested for a child.
+
+    Raised by the spawn closure BEFORE any child session starts, so the
+    parent's turn gets a recoverable tool error (with the available names)
+    instead of paying for a doomed, tool-less child. Live models sometimes
+    emit wire-format names (``functions.read_file``); the closure normalizes
+    those first — this error means nothing survived even after normalization.
+    """
+
+    def __init__(self, *, unknown: list[str], available: list[str]) -> None:
+        self.unknown = unknown
+        self.available = available
+        super().__init__(
+            f"none of the requested tools exist: {unknown!r}; "
+            f"available tools include {available!r}"
+        )
+
+
 class SpawnBudget:
     """Mutable per-session counter that enforces the spawn cap.
 
@@ -102,5 +121,6 @@ __all__ = [
     "SpawnBudget",
     "SpawnClosure",
     "SpawnContext",
+    "SpawnUnknownToolsError",
     "read_spawn_context",
 ]

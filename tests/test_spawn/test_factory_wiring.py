@@ -151,3 +151,46 @@ def test_subagent_manifest_disallows_spawn_subagent(tmp_path: Path) -> None:
         manifest=subagent_manifest,
     )
     assert "spawn_subagent" not in allowed
+
+
+# ---------------------------------------------------------------------------
+# wire-schema visibility: a session that cannot spawn must not SEE the tool
+# (otherwise the model dispatches it and burns a turn on the unavailable error)
+# ---------------------------------------------------------------------------
+
+
+def _skill_available_tools(engine: Any) -> frozenset[str]:
+    """The per-session available-tool set — built from the same filtered tool
+    list as the wire schema, so it is the observable proxy for what the model
+    can see."""
+    from dream.skills import SKILL_CONTEXT_KEY
+
+    skill_ctx = engine.dispatcher.context_metadata.get(SKILL_CONTEXT_KEY)
+    assert skill_ctx is not None, "skills must be wired for this probe"
+    return skill_ctx.available_tools
+
+
+def test_spawn_tool_visible_in_default_session(tmp_path: Path) -> None:
+    harness = _build(tmp_path)
+    engine = _get_engine(harness)
+    assert "spawn_subagent" in _skill_available_tools(engine)
+
+
+def test_spawn_tool_hidden_when_spawn_false(tmp_path: Path) -> None:
+    harness = _build(tmp_path, spawn=False)
+    engine = _get_engine(harness)
+    assert "spawn_subagent" not in _skill_available_tools(engine)
+
+
+def test_spawn_tool_hidden_in_subagent_session(tmp_path: Path) -> None:
+    harness = _build(tmp_path)
+    manifest = RoleManifest(
+        name="subagent",
+        description="child",
+        system_prompt="x",
+        tools=None,
+        disallowed_tools=("spawn_subagent",),
+    )
+    options = SessionOptions(metadata={ROLE_MANIFEST_METADATA_KEY: manifest})
+    engine = _get_engine(harness, "s_child", options)
+    assert "spawn_subagent" not in _skill_available_tools(engine)
