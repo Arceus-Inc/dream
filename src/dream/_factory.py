@@ -37,9 +37,13 @@ from dream.hooks import HookExecutor, collect_hooks
 from dream.mcp import McpClientManager, mcp_paths, setup_mcp_session
 from dream.memory import (
     MEMORY_CONTEXT_KEY,
+    TASK_MEMORY_CONTEXT_KEY,
     FileMemoryStore,
     MemoryContext,
+    TaskMemoryContext,
+    WorkingMemory,
     project_memory_dir,
+    proposals_dir,
     render_memory_catalogue,
     scan_memory_dir,
 )
@@ -70,7 +74,7 @@ from dream.tasks import (
 from dream.tasks._cron import CRON_MANIFEST_DIR, load_cron_manifests
 from dream.tools._base import BaseTool
 from dream.tools._registry import ToolRegistry, ToolSource
-from dream.tools.builtin import default_registry
+from dream.tools.builtin import default_registry, register_task_memory_tools
 from dream.wake import HeartbeatTool
 
 __all__ = ["PolicyWarningSink", "SkillEventSink", "build_harness"]
@@ -96,6 +100,7 @@ def build_harness(
     skill_registry: SkillRegistry | None = None,
     skills: bool = True,
     memory: bool = True,
+    working_memory: bool = False,
     mcp: bool = True,
     plugins: bool = True,
     skill_event_sink: SkillEventSink | None = None,
@@ -124,6 +129,14 @@ def build_harness(
     catalogue lands in the system prompt and the ``memory_search`` /
     ``memory_get`` tools read from it. Pass ``memory=False`` to omit it.
 
+    ``working_memory`` (default off) opts into the task-memory tier (spec 11a):
+    it registers the ``working_memory_read`` / ``working_memory_write`` /
+    ``working_memory_append`` scratchpad tools plus the outbound
+    ``memory_propose`` seam, and wires a per-session
+    :class:`~dream.memory.TaskMemoryContext` (a ``working-memory.md`` under the
+    task sidecar + the durable ``_proposals/`` queue). Default-off keeps the
+    standard tool surface byte-identical.
+
     ``mcp`` and ``plugins`` wire the two *async* action surfaces (Spec 06 / 13):
     the per-repo MCP allowlist is admitted, connected, and its tools registered;
     enabled repo-local plugins are loaded (tier-gated) and their tools / hooks /
@@ -145,6 +158,11 @@ def build_harness(
         raise ValueError("api_key must be a non-empty string")
     resolved_env: Mapping[str, str] = env if env is not None else os.environ
     tool_registry = registry if registry is not None else default_registry()
+    # Task memory (spec 11a) is opt-in: only register its tools when asked so
+    # the default tool surface stays unchanged. The per-session context is
+    # wired below in ``_build_session_engine`` (it needs the session id).
+    if working_memory:
+        register_task_memory_tools(tool_registry)
     compactor = AutoCompactState()
     # Resolve the home root from env so ``DREAM_HOME`` overrides are honoured
     # for task storage / sidecars (#43); hardcoding ``Path.home()`` would write
@@ -265,6 +283,7 @@ def build_harness(
             skill_registry=skill_registry,
             skill_event_sink=skill_event_sink,
             memory_store=memory_store,
+            working_memory=working_memory,
             task_context=task_context,
             sandbox_adapter=sandbox_adapter,
             compactor=compactor,
@@ -479,6 +498,7 @@ def _build_session_engine(
     skill_registry: SkillRegistry | None,
     skill_event_sink: SkillEventSink | None,
     memory_store: FileMemoryStore | None,
+    working_memory: bool,
     task_context: TaskSessionContext,
     sandbox_adapter: SandboxAdapter,
     compactor: AutoCompactState,
@@ -594,6 +614,17 @@ def _build_session_engine(
         context_metadata[SKILL_CONTEXT_KEY] = skill_context
     if memory_store is not None:
         context_metadata[MEMORY_CONTEXT_KEY] = MemoryContext(store=memory_store)
+    # Task memory (spec 11a): a ``working-memory.md`` under the task sidecar
+    # (so it dies with the worktree, #02) plus the durable ``_proposals/`` queue
+    # in the dream home (so a proposal survives that teardown). Wired only when
+    # ``working_memory=True`` registered the tools; the session_id keys the
+    # sidecar dir, matching the tracer above.
+    if working_memory:
+        context_metadata[TASK_MEMORY_CONTEXT_KEY] = TaskMemoryContext(
+            working_memory=WorkingMemory(paths.sidecar(session_id) / "working-memory.md"),
+            proposals_dir=proposals_dir(paths.home, working_dir),
+            source_ref=f"session://{session_id}",
+        )
     return build_query_engine(
         streamer=streamer,
         registry=tool_registry,

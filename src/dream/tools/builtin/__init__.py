@@ -14,12 +14,18 @@ from dream.tools.builtin.memory_get import MemoryGetTool
 from dream.tools.builtin.memory_search import MemorySearchTool
 from dream.tools.builtin.observability_query import QueryLogsTool, QueryMetricsTool
 from dream.tools.builtin.plan_show import PlanShowTool
+from dream.tools.builtin.propose_memory import MemoryProposeTool
 from dream.tools.builtin.read_offloaded import ReadOffloadedTool
 from dream.tools.builtin.skill import SkillTool
 from dream.tools.builtin.task_create import TaskCreateTool
 from dream.tools.builtin.task_get import TaskGetTool
 from dream.tools.builtin.task_output import TaskOutputTool
 from dream.tools.builtin.task_stop import TaskStopTool
+from dream.tools.builtin.working_memory import (
+    WorkingMemoryAppendTool,
+    WorkingMemoryReadTool,
+    WorkingMemoryWriteTool,
+)
 
 # Canonical ordering for the model-facing tool schema. Stable across processes
 # so prompt caches downstream actually hit; alphabetical within a "phase".
@@ -69,4 +75,20 @@ def default_registry() -> ToolRegistry:
     return registry
 
 
-__all__ = ["default_registry"]
+def register_task_memory_tools(registry: ToolRegistry) -> None:
+    """Register the opt-in task-memory tools (spec 11a) into ``registry``.
+
+    Kept out of :func:`default_registry` so the default tool surface is
+    unchanged unless ``build_harness(working_memory=True)`` opts in. Idempotent:
+    a no-op if already present, so a caller-supplied registry reused across
+    ``build_harness`` calls does not collide.
+    """
+    if registry.get("working_memory_read") is not None:
+        return
+    registry.register(WorkingMemoryReadTool(), source=ToolSource.DEFAULT)
+    registry.register(WorkingMemoryWriteTool(), source=ToolSource.DEFAULT)
+    registry.register(WorkingMemoryAppendTool(), source=ToolSource.DEFAULT)
+    registry.register(MemoryProposeTool(), source=ToolSource.DEFAULT)
+
+
+__all__ = ["default_registry", "register_task_memory_tools"]

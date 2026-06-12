@@ -112,6 +112,62 @@ def test_memory_tools_in_default_registry() -> None:
     assert "memory_get" in names
 
 
+_TASK_MEMORY_TOOLS = {
+    "working_memory_read",
+    "working_memory_write",
+    "working_memory_append",
+    "memory_propose",
+}
+
+
+def test_build_harness_default_omits_task_memory_tools(tmp_path: Path) -> None:
+    # Task memory is opt-in: the default surface must stay unchanged.
+    from dream.tools.builtin import default_registry
+
+    registry = default_registry()
+    _build(tmp_path, registry=registry)
+    names = {t.name for t in registry.list_tools()}
+    assert names.isdisjoint(_TASK_MEMORY_TOOLS)
+
+
+def test_build_harness_working_memory_flag_registers_tools(tmp_path: Path) -> None:
+    from dream.tools.builtin import default_registry
+
+    registry = default_registry()
+    _build(tmp_path, registry=registry, working_memory=True)
+    names = {t.name for t in registry.list_tools()}
+    assert _TASK_MEMORY_TOOLS <= names
+
+
+def test_build_harness_working_memory_wires_context(tmp_path: Path) -> None:
+    from dream.memory import TASK_MEMORY_CONTEXT_KEY, TaskMemoryContext
+
+    harness = _build(tmp_path, working_memory=True)
+    engine = harness.config._engine_factory("s_probe", SessionOptions())  # type: ignore[misc]
+    context = engine.dispatcher.context_metadata[TASK_MEMORY_CONTEXT_KEY]  # type: ignore[attr-defined]
+    assert isinstance(context, TaskMemoryContext)
+    assert context.working_memory.path.name == "working-memory.md"
+    assert context.proposals_dir.name == "_proposals"
+
+
+def test_build_harness_default_omits_task_memory_context(tmp_path: Path) -> None:
+    from dream.memory import TASK_MEMORY_CONTEXT_KEY
+
+    harness = _build(tmp_path)
+    engine = harness.config._engine_factory("s_probe", SessionOptions())  # type: ignore[misc]
+    assert TASK_MEMORY_CONTEXT_KEY not in engine.dispatcher.context_metadata  # type: ignore[attr-defined]
+
+
+def test_register_task_memory_tools_is_idempotent() -> None:
+    from dream.tools.builtin import default_registry, register_task_memory_tools
+
+    registry = default_registry()
+    register_task_memory_tools(registry)
+    register_task_memory_tools(registry)  # second call must not raise a collision
+    names = {t.name for t in registry.list_tools()}
+    assert _TASK_MEMORY_TOOLS <= names
+
+
 def test_build_harness_is_public() -> None:
     import dream
 
