@@ -21,19 +21,49 @@ from dream.memory._context import (
     read_memory_context,
 )
 from dream.memory._paths import project_memory_dir
+from dream.memory._proposals import (
+    InvalidSlugError,
+    proposals_dir,
+    validate_slug,
+    write_proposal,
+)
 from dream.memory._scan import scan_memory_dir
 from dream.memory._search import search_records
+from dream.memory._task_context import (
+    TASK_MEMORY_CONTEXT_KEY,
+    TaskMemoryContext,
+    put_task_memory_context,
+    read_task_memory_context,
+)
+from dream.memory._working import (
+    DEFAULT_CAP_BYTES,
+    CompressionOutcome,
+    Compressor,
+    WorkingMemory,
+)
 
 __all__ = [
+    "DEFAULT_CAP_BYTES",
     "MEMORY_CONTEXT_KEY",
+    "TASK_MEMORY_CONTEXT_KEY",
+    "CompressionOutcome",
+    "Compressor",
     "FileMemoryStore",
+    "InvalidSlugError",
     "MemoryContext",
+    "TaskMemoryContext",
+    "WorkingMemory",
     "memory_description",
     "project_memory_dir",
+    "proposals_dir",
     "put_memory_context",
+    "put_task_memory_context",
     "read_memory_context",
+    "read_task_memory_context",
     "render_memory_catalogue",
     "scan_memory_dir",
+    "validate_slug",
+    "write_proposal",
 ]
 
 
