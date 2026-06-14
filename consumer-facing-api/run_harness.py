@@ -24,6 +24,7 @@ Component inputs:
                   Copied into <workspace>/plugins/ and enabled.
   --mcp-allowlist a .toml copied to <workspace>/.harness/mcp-allowlist.toml.
   --no-skills / --no-memory / --no-mcp / --no-plugins   disable a surface.
+  --working-memory   opt into the task scratchpad + memory_propose seam (off by default).
   --sandbox-tier  read-only | repo-write | repo-write+net-allowlist | unrestricted
 """
 
@@ -75,6 +76,10 @@ def parse_args() -> argparse.Namespace:
     toggles.add_argument("--no-memory", action="store_true")
     toggles.add_argument("--no-mcp", action="store_true")
     toggles.add_argument("--no-plugins", action="store_true")
+    toggles.add_argument(
+        "--working-memory", action="store_true",
+        help="opt into the task scratchpad + memory_propose seam (off by default)",
+    )
 
     run = parser.add_argument_group("run knobs")
     run.add_argument("--sandbox-tier", choices=TIERS, default="repo-write")
@@ -184,6 +189,7 @@ async def run(args: argparse.Namespace) -> int:
         max_turns=args.max_turns,
         skills=not args.no_skills,
         memory=not args.no_memory,
+        working_memory=args.working_memory,
         mcp=not args.no_mcp,
         plugins=not args.no_plugins,
         wake_model=args.wake_model,

@@ -42,6 +42,7 @@ planner → sprint → evaluator loop until the task is done or blocked.
 | `examples/06_hooks_and_observer.py` | hooks / observability | Lifecycle hooks firing inside the engine + streaming run events. |
 | `examples/07_custom_heads.py` | orchestration | Overriding a head (custom evaluator) while the rest stays stock. |
 | `examples/08_full_surface.py` | everything | All components in a single `run_task`. |
+| `examples/09_working_memory.py` | working memory | The opt-in task scratchpad + the `memory_propose` outbound seam (read the proposals queue your repo would drain). |
 
 Each example is standalone:
 
