@@ -25,6 +25,7 @@ from dream.contracts.provider import (
 )
 from dream.contracts.skill import Skill
 from dream.contracts.tool import Tool, ToolContext, ToolResult
+from dream.engine._cost import UsageSnapshot
 from dream.errors import (
     CompactionError,
     DreamError,
@@ -109,6 +110,7 @@ __all__ = [
     "ToolUseResult",
     "ToolUseStart",
     "TurnComplete",
+    "UsageSnapshot",
     "__version__",
     "build_harness",
     "tail_events",

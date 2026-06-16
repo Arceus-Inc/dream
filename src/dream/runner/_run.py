@@ -8,11 +8,12 @@ cross-role handoff events.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+from dream.engine._cost import UsageSnapshot
 from dream.planner import (
     LedgerStep,
     PlannerCallable,
@@ -92,6 +93,7 @@ class RunTaskResult:
     final_ledger: PlannerLedger
     sprints: tuple[SprintRunResult, ...]
     events: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    usage_by_model: Mapping[str, UsageSnapshot] = field(default_factory=dict)
 
 
 def _find_next_work(ledger: PlannerLedger) -> LedgerStep | None:

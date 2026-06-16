@@ -248,10 +248,19 @@ class Harness:
         single :class:`~dream.runner.StdioObserver` (or custom hook) sees
         every macro and streaming event.
         """
+        from dataclasses import replace as _replace
+
         from dream.runner._run import run_task as _run_task
+        from dream.runner._usage import UsageMeter
 
         root = worktree_root if worktree_root is not None else self.config.working_dir
         effective_task_id = task_id if task_id is not None else _mint_task_id()
+
+        # Wrap the caller's observer (may be None) in a UsageMeter so token
+        # counts are accumulated from every role.session.closed event the
+        # runner emits. The meter forwards all events to the inner observer,
+        # so the caller's observer still sees every event it expects.
+        meter = UsageMeter(observer)
 
         planner, generator_execute, evaluator_propose, generator_respond, evaluator_run = (
             self._resolve_heads(
@@ -262,16 +271,16 @@ class Harness:
                 evaluator_run=evaluator_run,
                 intent=intent,
                 harness_dir=harness_dir,
-                observer=observer,
+                observer=meter,
                 worktree_root=root,
             )
         )
 
         # ``kwargs`` is hand-built (rather than passing real keyword args) so the
         # facade forwards ONLY the optionals the caller actually set — defaults
-        # for ``max_sprints`` / ``verification_steps`` / ``goal_for_step`` /
-        # ``observer`` live in ``runner.run_task``, not here. See
-        # ``test_run_task_omits_unspecified_optionals``.
+        # for ``max_sprints`` / ``verification_steps`` / ``goal_for_step`` live
+        # in ``runner.run_task``, not here. The meter is always forwarded as
+        # ``observer`` so it meters head events and fans out to the user observer.
         kwargs: dict[str, Any] = {
             "task_id": effective_task_id,
             "intent": intent,
@@ -281,6 +290,7 @@ class Harness:
             "evaluator_propose": evaluator_propose,
             "generator_respond": generator_respond,
             "evaluator_run": evaluator_run,
+            "observer": meter,
         }
         if max_sprints is not None:
             kwargs["max_sprints"] = max_sprints
@@ -288,9 +298,8 @@ class Harness:
             kwargs["verification_steps"] = verification_steps
         if goal_for_step is not None:
             kwargs["goal_for_step"] = goal_for_step
-        if observer is not None:
-            kwargs["observer"] = observer
-        return await _run_task(**kwargs)
+        result = await _run_task(**kwargs)
+        return _replace(result, usage_by_model=meter.usage_by_model)
 
     def _resolve_heads(
         self,

@@ -141,6 +141,12 @@ class Session:
         # ``send`` may be in flight at a time (#33).
         self._active = False
 
+    @property
+    def model(self) -> str:
+        """The model id the bound engine runs under (\"\" when no engine)."""
+        engine = self._engine
+        return engine.model if engine is not None else ""
+
     def compaction_settings(self) -> CompactionSettings | None:
         """Read-only view of the bound engine's compaction config.
 

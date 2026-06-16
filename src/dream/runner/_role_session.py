@@ -223,7 +223,14 @@ async def run_role(
                 "kind": "role.session.closed",
                 "role": role_label,
                 "session_id": session.id,
-                "cost_usd": getattr(session.cost, "cost_usd", None),
+                "model": session.model,
+                "usage": {
+                    "input_tokens": session.cost.input_tokens,
+                    "output_tokens": session.cost.output_tokens,
+                    "cache_read_tokens": session.cost.cache_read_tokens,
+                    "cache_write_tokens": session.cost.cache_write_tokens,
+                },
+                "cost_usd": session.cost.cost_usd,
             }
         )
 

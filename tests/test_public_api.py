@@ -30,6 +30,8 @@ EXPECTED_PUBLIC_API: frozenset[str] = frozenset({
     "ExecPlan", "ExecPlanLedger", "ExecPlanStatus",
     # types
     "MessageRole", "StopReason",
+    # token metering
+    "UsageSnapshot",
     # factory
     "build_harness",
     # runtime (spec 15 P1) + control plane (P2)
@@ -53,3 +55,12 @@ def test_module_exposes_all() -> None:
 def test_version_is_string() -> None:
     assert isinstance(dream.__version__, str)
     assert dream.__version__.count(".") >= 2
+
+
+def test_usage_snapshot_importable_and_usable() -> None:
+    from dream import UsageSnapshot
+
+    snap = UsageSnapshot()
+    assert snap.total_tokens == 0
+    snap2 = UsageSnapshot(input_tokens=3, output_tokens=7)
+    assert snap2.total_tokens == 10

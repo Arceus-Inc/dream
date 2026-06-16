@@ -349,3 +349,96 @@ async def test_run_role_raises_when_no_engine_factory_configured() -> None:
     harness = Harness(HarnessConfig())  # no factory hook
     with pytest.raises(NotImplementedError):
         await harness.run_role("planner", "intent")
+
+
+# --- run_role: role.session.closed event shape (piece 2) -------------------
+
+
+def _harness_with_model(model: str) -> Harness:
+    """Harness whose engine factory always uses the given model id."""
+    streamer = FakeStreamer(
+        turns=[
+            FakeTurn(
+                text_chunks=["hi"],
+                usage=UsageSnapshot(
+                    input_tokens=10, output_tokens=5,
+                    cache_read_tokens=2, cache_write_tokens=1,
+                ),
+            )
+        ]
+    )
+
+    def _factory(session_id: str, options: SessionOptions) -> QueryEngine:
+        return QueryEngine(
+            streamer=streamer,
+            dispatcher=FakeDispatcher(),
+            session_id=session_id,
+            working_dir=Path("/tmp"),
+            model=model,
+        )
+
+    config = HarnessConfig(_engine_factory=_factory)  # type: ignore[call-arg]
+    return Harness(config)
+
+
+async def test_role_session_closed_event_includes_model() -> None:
+    from dream.runner._observer import _CapturingObserver
+
+    harness = _harness_with_model("claude-3-5-sonnet")
+    observer = _CapturingObserver()
+
+    await harness.run_role("planner", "intent", observer=observer)
+
+    closed_events = [e for e in observer.events if e.get("kind") == "role.session.closed"]
+    assert len(closed_events) == 1
+    assert closed_events[0]["model"] == "claude-3-5-sonnet"
+
+
+async def test_role_session_closed_event_includes_usage_dict() -> None:
+    from dream.runner._observer import _CapturingObserver
+
+    harness = _harness_with_model("gpt-4o")
+    observer = _CapturingObserver()
+
+    await harness.run_role("planner", "intent", observer=observer)
+
+    closed_events = [e for e in observer.events if e.get("kind") == "role.session.closed"]
+    assert len(closed_events) == 1
+    ev = closed_events[0]
+    usage = ev["usage"]
+    assert isinstance(usage, dict)
+    assert usage["input_tokens"] == 10
+    assert usage["output_tokens"] == 5
+    assert usage["cache_read_tokens"] == 2
+    assert usage["cache_write_tokens"] == 1
+
+
+async def test_role_session_closed_event_includes_cost_usd() -> None:
+    from dream.runner._observer import _CapturingObserver
+
+    harness = _harness_with_model("m")
+    observer = _CapturingObserver()
+
+    await harness.run_role("planner", "intent", observer=observer)
+
+    closed_events = [e for e in observer.events if e.get("kind") == "role.session.closed"]
+    assert len(closed_events) == 1
+    ev = closed_events[0]
+    assert "cost_usd" in ev
+    assert ev["cost_usd"] == 0.0
+
+
+async def test_role_session_closed_event_no_getattr_used() -> None:
+    """Behavioural: all four token keys are present via direct field access."""
+    from dream.runner._observer import _CapturingObserver
+
+    harness = _harness_with_model("m")
+    observer = _CapturingObserver()
+
+    await harness.run_role("planner", "intent", observer=observer)
+
+    closed_events = [e for e in observer.events if e.get("kind") == "role.session.closed"]
+    ev = closed_events[0]
+    # All four sub-keys must be present under "usage"
+    for key in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"):
+        assert key in ev["usage"], f"missing key: {key}"
