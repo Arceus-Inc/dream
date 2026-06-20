@@ -97,7 +97,7 @@ That one `build_harness` call auto-wired, with no extra configuration:
 
 - **Skills** — any `docs/skills/*/SKILL.md` in the workspace is catalogued in
   the system prompt; the agent loads playbooks on demand with the `skill` tool.
-- **Workspace memory** — durable facts under the project memory dir are
+- **Workspace memory (read)** — durable facts under the project memory dir are
   catalogued and readable via `memory_search` / `memory_get`.
 - **Sandboxed shell** — the `bash` tool executes through a sandbox adapter,
   confined to the workspace, gated by the tier in `.harness/sandbox.toml`.
@@ -113,8 +113,17 @@ That one `build_harness` call auto-wired, with no extra configuration:
   evaluation escalates to `blocked` after 2 strikes instead of burning your
   sprint budget, with the evaluator's feedback recorded on the step.
 
-Each of those is a boolean parameter if you want it off:
-`build_harness(..., skills=False, memory=False, mcp=False, plugins=False)`.
+One surface is **off by default** — opt in with `working_memory=True`:
+
+- **Working memory (task scratchpad)** — the agent gets `working_memory_read/
+  write/append` (a `working-memory.md` that lives and dies with the worktree)
+  plus `memory_propose`, an outbound seam to nominate durable facts for your
+  repo to promote (dream proposes, never promotes). See
+  [SDK_GUIDE.md](SDK_GUIDE.md) and `examples/09_working_memory.py`.
+
+Each surface is a boolean parameter:
+`build_harness(..., skills=False, memory=False, mcp=False, plugins=False,
+working_memory=True)`.
 
 ## Next
 

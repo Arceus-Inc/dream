@@ -46,7 +46,8 @@ def build_harness(
     registry: ToolRegistry | None = None,      # bring your own tool registry
     skill_registry: SkillRegistry | None = None,
     skills: bool = True,             # auto-discover workspace SKILL.md files
-    memory: bool = True,             # workspace memory + memory_* tools
+    memory: bool = True,             # workspace memory (read) + memory_* tools
+    working_memory: bool = False,    # opt-in task scratchpad + memory_propose seam
     mcp: bool = True,                # connect .harness/mcp-allowlist.toml
     plugins: bool = True,            # load .harness/plugins-enabled.toml
     skill_event_sink=None,           # callback when a skill body loads
@@ -163,6 +164,47 @@ Records are markdown with `name`/`description` frontmatter. Their catalogue
 goes into the system prompt; the agent pulls full records with
 `memory_search` / `memory_get`. Writing memories is **deliberately your
 repo's job** (curation is policy, not mechanism).
+
+### Working memory — the task-memory tier (opt-in)
+
+The read side above is the *durable* store (employee/team/company facts your repo
+curates). Separately, `build_harness(working_memory=True)` opts the agent into
+its **own task scratchpad** — dream's one and only memory tier (spec 11a). It adds
+four `safe`/tier-0 tools and a per-session `TaskMemoryContext`:
+
+| Tool | Use |
+|---|---|
+| `working_memory_read` | Read the task scratchpad — what the agent figured out, open questions, things to remember later in *this* task. |
+| `working_memory_write` | Replace the scratchpad wholesale. |
+| `working_memory_append` | Append one note line. |
+| `memory_propose` | **Outbound seam:** nominate a durable fact (`slug` + `content` + `rationale`) for promotion. Queued for review — *not* applied now. |
+
+Two storage locations, two lifetimes:
+
+- The scratchpad is a single `working-memory.md` under the **task sidecar**
+  (`.dream/sidecars/{session-id}/`). It **lives and dies with the worktree** —
+  it is the agent's mid-task cognition, not a durable record. Capped at 50 KB
+  with optional in-place compression (you may inject a `Compressor`).
+- `memory_propose` writes to a durable **`_proposals/` queue under the dream
+  home** (`~/.dream`), which **survives worktree teardown**.
+
+The boundary is deliberate: **dream proposes, never promotes.** A task can
+*nominate* a fact worth remembering across tasks, but dream never decides its
+fate — promotion is a higher clock (employee/team/company) that belongs to your
+repo (`lattice`/`chorus`/`horizon` under Model A). Your repo drains the queue and
+applies a `MemoryWriter`:
+
+```python
+from dream.memory import proposals_dir
+
+# where the agent's proposals land — your curation loop reads these
+queue = proposals_dir(paths.home, working_dir)   # ~/.dream/.../_proposals/
+for proposal in queue.glob("*.md"):
+    ...  # review → promote into the durable store, or discard
+```
+
+Default-off keeps the standard tool surface byte-identical; pass
+`working_memory=True` to turn it on. See `examples/09_working_memory.py`.
 
 ### Plugins (repo-local extensions)
 
