@@ -29,6 +29,12 @@ from dream.contracts.provider import (
 from dream.contracts.skill import Skill
 from dream.contracts.tool import Tool, ToolContext, ToolResult
 
+# The cross-repo contract version — the single coordination point across
+# dream, chorus, lattice, and horizon (chorus spec 05 §2). Follows semver:
+# a breaking Protocol change here is a dream MAJOR bump and a coordinated
+# sibling release. Internals beneath these Protocols may churn freely.
+__contract_version__ = "0.1.0"
+
 __all__ = [
     "ExecPlan",
     "ExecPlanLedger",
@@ -53,4 +59,5 @@ __all__ = [
     "Tool",
     "ToolContext",
     "ToolResult",
+    "__contract_version__",
 ]

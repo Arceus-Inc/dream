@@ -8,12 +8,15 @@ cross-role handoff events.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
+import asyncio
+from collections.abc import Awaitable, Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 from dream.engine._cost import UsageSnapshot
+from dream.errors import RunPhase, RunTaskError, TaskCancelled
 from dream.planner import (
     LedgerStep,
     PlannerCallable,
@@ -364,6 +367,23 @@ async def _run_evaluator_phase(
     )
 
 
+@contextmanager
+def _phase(phase: RunPhase) -> Iterator[None]:
+    """Surface any loop fault as a typed :class:`RunTaskError` naming ``phase``.
+
+    A cooperative :class:`TaskCancelled`, an ``asyncio.CancelledError``, and an
+    already-typed :class:`RunTaskError` propagate untouched — they are not
+    loop faults to relabel. Every other exception is wrapped with its original
+    ``cause`` attached (chorus spec 05 §5).
+    """
+    try:
+        yield
+    except (asyncio.CancelledError, TaskCancelled, RunTaskError):
+        raise
+    except Exception as exc:
+        raise RunTaskError(str(exc) or repr(exc), phase=phase, cause=exc) from exc
+
+
 async def run_task(
     *,
     task_id: str,
@@ -402,12 +422,13 @@ async def run_task(
     _emit({"kind": "planner.started", "task_id": task_id})
 
     # 1. Planner — runs once, writes both artefacts.
-    planner_result = await run_planner(
-        task_id=task_id,
-        intent=intent,
-        worktree_root=root,
-        planner=planner,
-    )
+    with _phase("plan"):
+        planner_result = await run_planner(
+            task_id=task_id,
+            intent=intent,
+            worktree_root=root,
+            planner=planner,
+        )
 
     events: list[dict[str, Any]] = list(planner_result.events)
     ledger_path = planner_result.ledger_path
@@ -429,36 +450,38 @@ async def run_task(
     # evaluator phase (2c/2d). The generator phase returns ``step is None``
     # once no pending work remains, which stops the loop.
     for sprint_number in range(1, max_sprints + 1):
-        gen = await _run_generator_phase(
-            root=root,
-            task_id=task_id,
-            ledger_path=ledger_path,
-            sprint_number=sprint_number,
-            ledger=ledger,
-            evaluator_propose=evaluator_propose,
-            generator_respond=generator_respond,
-            generator_execute=generator_execute,
-            verification_steps=verification_steps,
-            goal_provider=goal_provider,
-            emit=_emit,
-        )
+        with _phase("sprint"):
+            gen = await _run_generator_phase(
+                root=root,
+                task_id=task_id,
+                ledger_path=ledger_path,
+                sprint_number=sprint_number,
+                ledger=ledger,
+                evaluator_propose=evaluator_propose,
+                generator_respond=generator_respond,
+                generator_execute=generator_execute,
+                verification_steps=verification_steps,
+                goal_provider=goal_provider,
+                emit=_emit,
+            )
         ledger = gen.ledger
         if gen.step is None:
             break
         step = gen.step
 
-        evl = await _run_evaluator_phase(
-            root=root,
-            task_id=task_id,
-            ledger_path=ledger_path,
-            sprint_number=sprint_number,
-            step=step,
-            enabled=gen.enabled,
-            contract=gen.contract,
-            ledger=ledger,
-            evaluator_run=evaluator_run,
-            emit=_emit,
-        )
+        with _phase("evaluate"):
+            evl = await _run_evaluator_phase(
+                root=root,
+                task_id=task_id,
+                ledger_path=ledger_path,
+                sprint_number=sprint_number,
+                step=step,
+                enabled=gen.enabled,
+                contract=gen.contract,
+                ledger=ledger,
+                evaluator_run=evaluator_run,
+                emit=_emit,
+            )
         ledger = evl.ledger
 
         sprint_events = gen.events + evl.events

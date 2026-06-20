@@ -33,7 +33,9 @@ from dream.errors import (
     PermissionError,
     PluginError,
     ProviderError,
+    RunTaskError,
     SandboxError,
+    TaskCancelled,
 )
 from dream.events import (
     Compacted,
@@ -93,6 +95,7 @@ __all__ = [
     "ProviderError",
     "ProviderEvent",
     "ProviderUsage",
+    "RunTaskError",
     "Runtime",
     "RuntimeBootBlockedError",
     "RuntimeBusyError",
@@ -103,6 +106,7 @@ __all__ = [
     "SessionOptions",
     "Skill",
     "StopReason",
+    "TaskCancelled",
     "TextDelta",
     "Tool",
     "ToolContext",
