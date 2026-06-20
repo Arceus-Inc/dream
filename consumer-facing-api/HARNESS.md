@@ -20,8 +20,8 @@ only; which agents exist and what they work on is the consuming repo's policy.
 - `build_harness()` (`src/dream/_factory.py`) — the one public
   construct-and-run factory: streamer + tools + permission gate + skills +
   memory + sandbox + hooks + tasks/cron wired behind explicit parameters
-  (`skills/memory/mcp/plugins` booleans). No env-var coupling; credentials
-  are always explicit.
+  (`skills/memory/mcp/plugins` booleans, plus opt-in `working_memory`). No
+  env-var coupling; credentials are always explicit.
 - **Async-open chokepoint** — `Harness._ensure_open()`: MCP connect and
   plugin import are async I/O, so they run exactly once at the first
   `start_session` (every path funnels through it), with teardown on
@@ -132,6 +132,18 @@ minimum sandbox tier required. Errors follow a three-part contract
 | `cron_show` | safe / 0 | Full config of one cron job. |
 | `plan_show` | safe / 0 | Render the exec-plan (spec + ledger) for a task id — how a session orients mid-task. |
 
+### 5a.1 Task-memory tools — opt-in (`build_harness(working_memory=True)`)
+
+Off by default; registered only when opted in, so the default surface above stays
+byte-identical. The task-memory tier (spec 11a) — dream's *one* memory clock. See §8.1.
+
+| Tool | Risk / tier | Use case |
+|---|---|---|
+| `working_memory_read` | safe / 0 | Read the task scratchpad (`working-memory.md`) — what the agent figured out, open questions, things to remember later in *this* task. |
+| `working_memory_write` | safe / 0 | Replace the scratchpad wholesale (50 KB cap, in-place compression past it). |
+| `working_memory_append` | safe / 0 | Append one note line to the scratchpad. |
+| `memory_propose` | safe / 0 | Outbound seam: nominate a durable fact (`slug`/`content`/`rationale`) into the `_proposals/` queue for the consuming repo to promote. dream proposes, never promotes. |
+
 ### 5b. Dynamically registered (MCP, on connect)
 
 | Tool | Use case |
@@ -196,6 +208,25 @@ demand. Writing/curation is deliberately the consuming repo's job.
 `FileMemoryStore` over `project_memory_dir(home, working_dir)`,
 `render_memory_catalogue`, `MemoryContext` on `context_metadata`, the
 `memory_search`/`memory_get` tools, `memory=False` opt-out.
+
+### 8.1 Task memory — the write side dream *does* own (opt-in)
+
+**Concept.** dream owns exactly one memory tier (spec 11a): **task memory** — a
+single free-form scratchpad that lives and dies with the worktree, plus one
+*outbound* seam (`memory_propose`) that lets a task nominate a durable fact
+*without deciding its fate*. The clock test: anything above the task clock
+(scoring, consolidation, the wiki, governance) is **not** dream's job —
+employee/team/company tiers belong to `lattice`/`chorus`/`horizon`. **dream
+proposes; the consuming repo promotes.**
+
+**Implemented** (`src/dream/memory/_working.py`, `_proposals.py`, `_task_context.py`;
+tools `working_memory.py`, `propose_memory.py`): `WorkingMemory` over a
+`working-memory.md` under the task sidecar (`.dream/sidecars/{session}/`) — 50 KB
+cap, in-place compression via an injected async `Compressor`, history append and a
+garbage-rollback guard so a bad write never destroys the notes; `memory_propose` →
+`validate_slug` + `write_proposal` into a durable `_proposals/` queue under the
+dream home (survives worktree teardown); the four §5a.1 tools registered only on
+`working_memory=True`; a per-session `TaskMemoryContext` on `context_metadata`.
 
 ## 9. MCP, plugins, hooks — the extension surfaces
 
@@ -283,6 +314,7 @@ Per-session `context_metadata` (dispatcher → every tool's `ctx.metadata`):
 | `TASK_CONTEXT_KEY` | `TaskSessionContext` — task manager, cron registry path, plans root for the `task_*`/`cron_*`/`plan_show` tools. |
 | `SKILL_CONTEXT_KEY` | `SkillContext` — registry + available-tool set for the `skill` tool. |
 | `MEMORY_CONTEXT_KEY` | `MemoryContext` — store for `memory_search`/`memory_get`. |
+| `TASK_MEMORY_CONTEXT_KEY` | `TaskMemoryContext` — the session's `WorkingMemory` + `_proposals/` dir for the `working_memory_*`/`memory_propose` tools (only when `working_memory=True`). |
 | `SANDBOX_CONTEXT_KEY` | The `SandboxAdapter` the `bash` tool executes through. |
 
 ---
