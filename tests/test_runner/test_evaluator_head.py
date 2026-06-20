@@ -495,6 +495,23 @@ async def test_intent_includes_verification_steps() -> None:
     assert "axe http://localhost" in prompt
 
 
+async def test_intent_tells_the_evaluator_it_has_no_shell_and_judges_on_evidence() -> None:
+    """The evaluator is the read-only triplet (roles/_defaults: no writers, no shell). Verification
+    commands are run *for* it by the harness oracle. The prompt must say so, so the model judges each
+    criterion from readable code + oracle evidence and does NOT withhold a ``pass`` merely because it
+    could not personally execute a command (the failure mode that strands correct work on needs-changes).
+    """
+    harness, streamer = _harness_with_reply(_verdict())
+    head = make_evaluator_head(harness)
+
+    await head("task-001", 1, _contract(), _step())
+
+    prompt = streamer.last_user_text.lower()
+    assert "no shell" in prompt  # the evaluator's own capability is stated
+    assert "run for you" in prompt  # the oracle runs verification commands on its behalf
+    assert "withhold" in prompt  # … and it must not withhold a pass for inability to execute
+
+
 async def test_intent_explains_verdict_envelope() -> None:
     """The model must know what envelope to emit."""
     harness, streamer = _harness_with_reply(_verdict())
