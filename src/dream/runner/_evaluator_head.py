@@ -125,6 +125,14 @@ def _format_contract_block(contract: SprintContract) -> str:
     ]
     parts += [f"- {ac}" for ac in contract.acceptance_criteria]
 
+    if contract.rubric:
+        parts += [
+            "",
+            "REVIEW RUBRIC  (judge the artefact against this; it must hold for a 'pass')",
+            "-" * 60,
+            contract.rubric,
+        ]
+
     if contract.verification_steps:
         parts += [
             "",

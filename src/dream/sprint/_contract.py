@@ -94,6 +94,7 @@ class SprintContract:
     evaluator_enabled: bool = True
     imposed: bool = False
     negotiation_log: tuple[NegotiationEntry, ...] = field(default_factory=tuple)
+    rubric: str = ""
 
     def __post_init__(self) -> None:
         if not self.acceptance_criteria:
@@ -128,6 +129,7 @@ class SprintContract:
             "evaluator_enabled": self.evaluator_enabled,
             "imposed": self.imposed,
             "negotiation_log": [e.to_dict() for e in self.negotiation_log],
+            "rubric": self.rubric,
         }
 
     @classmethod
@@ -149,6 +151,7 @@ class SprintContract:
             negotiation_log=tuple(
                 NegotiationEntry.from_dict(e) for e in data.get("negotiation_log", ())
             ),
+            rubric=str(data.get("rubric", "")),
         )
 
     def save(self, path: str | Path) -> None:

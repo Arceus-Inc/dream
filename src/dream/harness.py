@@ -231,6 +231,7 @@ class Harness:
         verification_steps: tuple[dict[str, str], ...] | None = None,
         goal_for_step: SprintGoalProvider | None = None,
         observer: RunTaskObserver | None = None,
+        rubric: str | None = None,
     ) -> RunTaskResult:
         """Run an end-to-end task: planner → bounded sprint loop.
 
@@ -298,6 +299,8 @@ class Harness:
             kwargs["verification_steps"] = verification_steps
         if goal_for_step is not None:
             kwargs["goal_for_step"] = goal_for_step
+        if rubric is not None:
+            kwargs["rubric"] = rubric
         result = await _run_task(**kwargs)
         return _replace(result, usage_by_model=meter.usage_by_model)
 

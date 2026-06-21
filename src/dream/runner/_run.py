@@ -160,6 +160,7 @@ async def _run_generator_phase(
     verification_steps: tuple[dict[str, str], ...],
     goal_provider: SprintGoalProvider,
     emit: Callable[[dict[str, Any]], None],
+    rubric: str = "",
 ) -> _GeneratorPhaseResult:
     """Phase 2a+2b: claim a step under the generator lock, negotiate (if the
     evaluator is enabled), commit the contract, and run the generator seam.
@@ -222,6 +223,7 @@ async def _run_generator_phase(
                 goal=goal_provider(step, sprint_number),
                 verification_steps=verification_steps,
                 evaluator_enabled=True,
+                rubric=rubric,
             )
             contract_path = sprint_contract_path(
                 root, task_id=task_id, sprint_number=sprint_number
@@ -398,6 +400,7 @@ async def run_task(
     verification_steps: tuple[dict[str, str], ...] = (),
     goal_for_step: SprintGoalProvider | None = None,
     observer: RunTaskObserver | None = None,
+    rubric: str = "",
 ) -> RunTaskResult:
     """Compose a full task: planner → bounded sprint loop → done/blocked.
 
@@ -463,6 +466,7 @@ async def run_task(
                 verification_steps=verification_steps,
                 goal_provider=goal_provider,
                 emit=_emit,
+                rubric=rubric,
             )
         ledger = gen.ledger
         if gen.step is None:

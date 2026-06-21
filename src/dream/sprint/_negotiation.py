@@ -257,6 +257,7 @@ def build_contract_from_negotiation(
     evaluator_enabled: bool = True,
     scope_includes: tuple[str, ...] = (),
     scope_excludes: tuple[str, ...] = (),
+    rubric: str = "",
 ) -> SprintContract:
     """Assemble a :class:`SprintContract` from a negotiation outcome."""
     return SprintContract(
@@ -270,4 +271,5 @@ def build_contract_from_negotiation(
         evaluator_enabled=evaluator_enabled,
         imposed=result.imposed,
         negotiation_log=result.log,
+        rubric=rubric,
     )
