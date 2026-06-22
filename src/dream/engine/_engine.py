@@ -27,6 +27,7 @@ from typing import Any
 
 from dream.contracts.provider import ProviderCapabilities
 from dream.engine._loop import ToolDispatcher, TurnStreamer
+from dream.engine._orientation import OrientationConfig
 from dream.engine._records import TurnRecord
 from dream.engine._session import SessionConfig
 from dream.engine._tool_dispatch import DispatchRecord, EngineToolDispatcher, PermissionGate
@@ -72,6 +73,10 @@ class QueryEngine:
     # loop and PRE/POST_TOOL_USE fire around each dispatch. ``None`` disables
     # all firing, leaving the loop byte-for-byte unchanged.
     hook_executor: HookExecutor | None = None
+    # spec 15 §4.2: optional orientation ritual run once at session start (``run_session`` calls it when
+    # set). chorus uses it to prepend ``AGENTS.md`` to every beat so an employee reads the cross-child
+    # contract before writing. ``None`` leaves the session loop byte-for-byte unchanged (the default).
+    orientation: OrientationConfig | None = None
 
     def make_session_config(
         self,
@@ -99,6 +104,7 @@ class QueryEngine:
             model=self.model,
             limiter=SessionLimiter(self.limits) if self.limits is not None else None,
             hook_executor=self.hook_executor,
+            orientation=self.orientation,
         )
 
 
@@ -122,6 +128,7 @@ def build_query_engine(
     tracer: Tracer | None = None,
     model: str = "",
     hook_executor: HookExecutor | None = None,
+    orientation: OrientationConfig | None = None,
 ) -> QueryEngine:
     """Wrap a ``ToolRegistry`` in the canonical dispatcher and bind a streamer.
 
@@ -154,6 +161,7 @@ def build_query_engine(
         model=model,
         limits=limits,
         hook_executor=hook_executor,
+        orientation=orientation,
     )
 
 
