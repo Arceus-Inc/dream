@@ -1,0 +1,127 @@
+"""Subagent declaration — the chorus-side data model.
+
+A ``Subagent`` is a thin overlay declaration projected onto dream's existing
+``TeammateSpawnConfig`` at beat-build time. The declaration is durable (lives on
+the role / in the registry); the spawn config is ephemeral (minted per dispatch).
+
+Spec §03: One chorus declaration, projected onto dream's spawn handle.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+PermissionDelta = tuple[str, ...]
+"""Tighten-only permission overlay — a tuple of permission tokens to *remove*
+from the parent's set. Never widens."""
+
+
+@dataclass(frozen=True)
+class Subagent:
+    """Chorus-side subagent declaration.
+
+    Declared on the role (Tier-1) or in the shared SubagentRegistry (Tier-2).
+    Projected onto dream's TeammateSpawnConfig at dispatch time.
+    """
+
+    name: str
+    """Sanitized identifier — 'reviewer', 'query_orchestrator', etc."""
+
+    description: str
+    """What it's for (used in the spawn tool's schema for model discovery)."""
+
+    tools: tuple[str, ...]
+    """Capability-minimized allow-list — must be a subset of the parent's tools."""
+
+    skills: tuple[str, ...] = ()
+    """Authored know-how the subagent consults (skill names)."""
+
+    permission_overlay: PermissionDelta = ()
+    """Tighten-only (never widen) — permissions to *drop* from the parent."""
+
+    depth: int = 1
+    """Dream depth slot; must be > parent.depth. V1 is flat: always 1."""
+
+    model: str | None = None
+    """Optional cheaper model for the subagent. None → parent model."""
+
+    spawned_by: tuple[str, ...] = ()
+    """Which parents may dispatch it (Tier-2 gating). Empty → any parent."""
+
+    system_prompt: str | None = None
+    """Optional custom system prompt. None → generated from name+description."""
+
+    max_turns: int = 8
+    """Maximum turn budget for the subagent before forced termination."""
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise ValueError("Subagent.name must be a non-empty string")
+        if not self.description:
+            raise ValueError("Subagent.description must be a non-empty string")
+        if isinstance(self.tools, str):
+            raise TypeError("Subagent.tools must be a sequence of strings, not a bare string")
+        if self.depth < 1:
+            raise ValueError(f"Subagent.depth must be >= 1; got {self.depth}")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "description": self.description,
+            "tools": list(self.tools),
+            "skills": list(self.skills),
+            "permission_overlay": list(self.permission_overlay),
+            "depth": self.depth,
+            "model": self.model,
+            "spawned_by": list(self.spawned_by),
+            "system_prompt": self.system_prompt,
+            "max_turns": self.max_turns,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Subagent:
+        return cls(
+            name=data["name"],
+            description=data["description"],
+            tools=tuple(data["tools"]),
+            skills=tuple(data.get("skills") or ()),
+            permission_overlay=tuple(data.get("permission_overlay") or ()),
+            depth=data.get("depth", 1),
+            model=data.get("model"),
+            spawned_by=tuple(data.get("spawned_by") or ()),
+            system_prompt=data.get("system_prompt"),
+            max_turns=data.get("max_turns", 8),
+        )
+
+
+@dataclass(frozen=True)
+class SubagentSet:
+    """The resolved set of subagents available to one beat.
+
+    Built by the harness factory: merges Tier-1 (role-owned) and Tier-2
+    (shared registry) subagents, intersects each with the parent's live
+    toolset/permissions, and freezes the result.
+    """
+
+    agents: dict[str, Subagent] = field(default_factory=dict)
+    """name → Subagent mapping. Immutable after construction."""
+
+    def get(self, name: str) -> Subagent | None:
+        return self.agents.get(name)
+
+    def names(self) -> list[str]:
+        return list(self.agents.keys())
+
+    def descriptions(self) -> dict[str, str]:
+        """Return {name: description} for tool-schema generation."""
+        return {name: sa.description for name, sa in self.agents.items()}
+
+    def __contains__(self, name: str) -> bool:
+        return name in self.agents
+
+    def __len__(self) -> int:
+        return len(self.agents)
+
+    def __bool__(self) -> bool:
+        return bool(self.agents)

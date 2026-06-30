@@ -21,6 +21,7 @@ from dream.tools.builtin.task_create import TaskCreateTool
 from dream.tools.builtin.task_get import TaskGetTool
 from dream.tools.builtin.task_output import TaskOutputTool
 from dream.tools.builtin.task_stop import TaskStopTool
+from dream.tools.builtin.spawn_subagent import SpawnSubagentTool
 from dream.tools.builtin.working_memory import (
     WorkingMemoryAppendTool,
     WorkingMemoryReadTool,
@@ -91,4 +92,4 @@ def register_task_memory_tools(registry: ToolRegistry) -> None:
     registry.register(MemoryProposeTool(), source=ToolSource.DEFAULT)
 
 
-__all__ = ["default_registry", "register_task_memory_tools"]
+__all__ = ["SpawnSubagentTool", "default_registry", "register_task_memory_tools"]

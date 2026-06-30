@@ -144,6 +144,28 @@ byte-identical. The task-memory tier (spec 11a) — dream's *one* memory clock. 
 | `working_memory_append` | safe / 0 | Append one note line to the scratchpad. |
 | `memory_propose` | safe / 0 | Outbound seam: nominate a durable fact (`slug`/`content`/`rationale`) into the `_proposals/` queue for the consuming repo to promote. dream proposes, never promotes. |
 
+### 5a.2 Subagent tool — opt-in (`build_harness(subagents=...)`)
+
+Off by default; registered only when a `SubagentSet` is provided, so the default
+surface stays byte-identical. Subagents are capability-minimized, ephemeral
+teammates dispatched mid-beat.
+
+| Tool | Risk / tier | Use case |
+|---|---|---|
+| `spawn_subagent` | safe / 0 | Dispatch a named subagent with a bounded task prompt. The subagent runs to completion (own turn budget, strict tool subset, tightened permissions) and returns its output text. Fail-closed: unknown names are refused. Spawn cap: 10 per beat. |
+
+**Data model** (`src/dream/subagents/`):
+- `Subagent` — frozen declaration: name, description, tools (⊆ parent), skills,
+  permission_overlay (tighten-only), depth (v1: always 1), model override, max_turns.
+- `SubagentSet` — resolved {name → Subagent} for one beat, built from Tier-1
+  (role-owned) + Tier-2 (shared `SubagentRegistry`) agents.
+- `SubagentRegistry` — kernel-level registry for Tier-2 shared capability agents.
+- `project_subagent` — projection: Subagent → `TeammateSpawnConfig` with capability
+  minimization (tools ∩ parent, permissions - overlay).
+
+**Observability:** emits `subagent.spawn` + `subagent.complete` trace events into
+the OTel JSONL.
+
 ### 5b. Dynamically registered (MCP, on connect)
 
 | Tool | Use case |

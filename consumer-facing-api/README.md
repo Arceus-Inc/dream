@@ -43,6 +43,7 @@ planner → sprint → evaluator loop until the task is done or blocked.
 | `examples/07_custom_heads.py` | orchestration | Overriding a head (custom evaluator) while the rest stays stock. |
 | `examples/08_full_surface.py` | everything | All components in a single `run_task`. |
 | `examples/09_working_memory.py` | working memory | The opt-in task scratchpad + the `memory_propose` outbound seam (read the proposals queue your repo would drain). |
+| `examples/10_subagents.py` | subagents | Capability-minimized ephemeral teammates dispatched mid-beat via `spawn_subagent`. |
 
 Each example is standalone:
 

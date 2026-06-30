@@ -43,6 +43,11 @@ class RoleManifest(BaseModel):
     memory_scope: MemoryScope = "project"
     effort: Effort = "medium"
     color: str = "neutral"
+    subagents: tuple[str, ...] = ()
+    """Tier-1 role-owned subagent names declared on this role.
+    Resolved from the SubagentRegistry at beat-build time."""
+    shared_subagents: tuple[str, ...] = ()
+    """Tier-2 shared subagent names this role may dispatch (from SubagentRegistry)."""
 
     @model_validator(mode="after")
     def _only_generator_may_use_null_tools(self) -> RoleManifest:

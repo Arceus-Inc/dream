@@ -257,23 +257,19 @@ class EngineToolDispatcher:
     ) -> PermissionRequest:
         """Build the gate request from the tool's per-call effects.
 
-        Fallback (Spec 13C rollout): a *mutating* tool that reports no path,
-        command, or network effect (e.g. ``task_stop``, ``mcp_auth`` and MCP
-        adapters whose side effect is process/credential state, not a file)
-        would otherwise produce a request the checker cannot classify, fall
-        through to ``ASK``, and be denied — breaking those tools under the
-        default policy. We anchor such a request to the in-repo working dir so
-        the checker sees a WRITE effect: still tier-gated (an untrusted tool is
-        asked, a promoted one runs), never silently allowed.
+        Fallback (Spec 13C rollout): a *mutating* tool that reports no path
+        or network effect (e.g. ``bash`` running ``pytest -q``,
+        ``task_stop``, ``mcp_auth``, and MCP adapters whose side effect is
+        process/credential state, not a file) would otherwise produce a
+        request the checker cannot classify, fall through to ``ASK``, and be
+        denied — breaking those tools under the default policy. We anchor
+        such a request to the in-repo working dir so the checker sees a
+        WRITE effect: still tier-gated (an untrusted tool is asked, a
+        promoted one runs), never silently allowed.
         """
         effects = tool.effects_for(input)
         target_paths = effects.target_paths
-        if (
-            not is_read_only
-            and not target_paths
-            and effects.command is None
-            and effects.network_host is None
-        ):
+        if not is_read_only and not target_paths and effects.network_host is None:
             target_paths = (self.working_dir,)
         return PermissionRequest(
             tool_name=name,
