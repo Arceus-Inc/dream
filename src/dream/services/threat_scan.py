@@ -53,6 +53,7 @@ _NOISE_DIRS = frozenset(
 _TEXT_SUFFIXES = {
     ".md",
     ".json",
+    ".jsonc",
     ".txt",
     ".toml",
     ".yaml",
@@ -61,9 +62,13 @@ _TEXT_SUFFIXES = {
     ".ini",
     ".py",
     ".js",
+    ".jsx",
     ".ts",
+    ".tsx",
     ".env",
     ".sh",
+    ".bash",
+    ".zsh",
     # Credential-bearing formats — the whole point of the secret gate.
     ".pem",
     ".key",
@@ -83,6 +88,25 @@ _TEXT_SUFFIXES = {
     ".java",
     ".php",
     ".pl",
+    # Additional source file extensions — secrets leak into any language.
+    ".rs",
+    ".c",
+    ".cpp",
+    ".h",
+    ".cs",
+    ".swift",
+    ".kt",
+    ".kts",
+    ".scala",
+    ".r",
+    ".lua",
+    ".ex",
+    ".exs",
+    ".vue",
+    ".svelte",
+    ".gradle",
+    ".cmake",
+    ".dockerfile",
 }
 # Extensionless files that commonly hold credentials. Matched by exact
 # (lower-cased) name so the scanner doesn't have to sniff every binary blob.
@@ -96,6 +120,10 @@ _CREDENTIAL_FILENAMES = frozenset(
         ".netrc",
         ".pgpass",
         ".htpasswd",
+        ".npmrc",
+        ".pypirc",
+        ".dockercfg",
+        ".gitcredentials",
     }
 )
 _MAX_FILE_BYTES = 1_000_000
@@ -107,6 +135,11 @@ _SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("jwt", re.compile(r"eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")),
     ("openai_key", re.compile(r"sk-[A-Za-z0-9]{20,}")),
     ("github_token", re.compile(r"gh[pous]_[A-Za-z0-9]{36}")),
+    ("slack_token", re.compile(r"xox[bpras]-[A-Za-z0-9-]{10,}")),
+    ("stripe_secret_key", re.compile(r"[sr]k_live_[A-Za-z0-9]{20,}")),
+    ("google_api_key", re.compile(r"AIza[A-Za-z0-9_-]{35}")),
+    ("heroku_api_key", re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")),
+    ("azure_storage_key", re.compile(r"DefaultEndpointsProtocol=https;AccountName=[^;]+;AccountKey=[^;]+")),
 )
 
 

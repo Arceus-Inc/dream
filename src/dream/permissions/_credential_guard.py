@@ -34,9 +34,14 @@ BUILTIN_CREDENTIAL_PATTERNS: tuple[str, ...] = (
     "~/.kube/config",
     "~/.docker/config.json",
     "~/.netrc",
+    "~/.npmrc",
+    "~/.pypirc",
+    "~/.config/pip/pip.conf",
+    "~/.gradle/gradle.properties",
     "**/id_rsa",
     "**/id_ed25519",
     "**/*.pem",
+    "**/.harness/credentials.toml",
     "**/.harness/mcp-credentials.toml",
     # Governance-policy inputs (Spec 13B/13C): every file the permission
     # pipeline reads policy from. An agent editing these edits its own
