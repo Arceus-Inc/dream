@@ -2,9 +2,9 @@
 
 `build_harness(subagents=...)` wires a `SubagentSet` — declared subagent
 templates the parent agent dispatches via the `spawn_subagent` tool. Each
-subagent is a capability-minimized, ephemeral teammate: it runs bounded work
-(own turn budget, strict tool subset, tightened permissions), returns plain
-text, and dissolves. Nothing persists.
+subagent runs as a **real bounded session** with its own tool access (read_file,
+grep, bash, etc.), turn budget, and capability-minimized permissions. It returns
+plain text and dissolves. Nothing persists.
 
 Two tiers:
 
@@ -14,18 +14,16 @@ Two tiers:
   can pull in — e.g. a researcher, a copy editor.
 
 Capability minimization (narrower-wins): a subagent's tools and permissions
-are *always* a subset of its parent. Permission overlays can only tighten,
-never widen. `allow_permission_prompts=False` always — fail-closed.
+are *always* a subset of its parent. ``spawn_subagent`` is always disallowed
+to prevent recursive spawning (v1 flat depth).
 
 Observability: the `spawn_subagent` tool emits `subagent.spawn` and
 `subagent.complete` trace events into the OTel-shaped JSONL trace, so the
 full subagent lifecycle appears alongside llm.call / tool.call events.
+The evaluator can find these via ``query_logs(all_sessions=True)``.
 
-Oracle: the agent calls `spawn_subagent(name=..., prompt=...)` and the
-tool returns the subagent's output — the model could only produce this
-tool call by knowing the SubagentSet the harness wired.
-
-Run:  uv run python consumer-facing-api/examples/10_subagents.py
+Run:  DREAM_MODEL=... DREAM_API_KEY=... DREAM_BASE_URL=... \\
+      uv run python consumer-facing-api/examples/10_subagents.py
 """
 
 from __future__ import annotations
@@ -44,19 +42,20 @@ from dream.subagents._projection import build_subagent_set
 def _build_subagents() -> SubagentSet:
     """Wire a simple subagent set: one role-owned reviewer + one shared researcher."""
 
-    # Tier-1: role-owned — a code reviewer with read-only tools
+    # Tier-1: role-owned — a code reviewer that can read and inspect code
     reviewer = Subagent(
         name="reviewer",
         description=(
             "Reviews code changes for correctness, style, and edge cases. "
-            "Returns a structured review with findings and suggestions."
+            "Reads the actual files, runs grep to find patterns, and returns "
+            "a structured review with findings and suggestions."
         ),
         tools=("read_file", "grep", "bash", "git"),
         depth=1,
         max_turns=6,
     )
 
-    # Tier-2: shared capability agent — a researcher
+    # Tier-2: shared capability agent — a researcher that explores the codebase
     researcher = Subagent(
         name="researcher",
         description=(
@@ -86,8 +85,12 @@ async def main() -> None:
 
     print(f"workspace: {workspace}")
     print(f"subagents: {subagent_set.names()}")
-    print(f"  reviewer — {subagent_set.get('reviewer').description[:60]}...")
-    print(f"  researcher — {subagent_set.get('researcher').description[:60]}...")
+    reviewer = subagent_set.get("reviewer")
+    researcher = subagent_set.get("researcher")
+    if reviewer:
+        print(f"  reviewer  — {reviewer.description[:60]}...")
+    if researcher:
+        print(f"  researcher — {researcher.description[:60]}...")
     print()
 
     harness = build_harness(
@@ -95,7 +98,7 @@ async def main() -> None:
         api_key=creds["api_key"],
         base_url=creds["base_url"],
         working_dir=workspace,
-        subagents=subagent_set,  # opt-in — off by default
+        subagents=subagent_set,
     )
 
     async with harness:
