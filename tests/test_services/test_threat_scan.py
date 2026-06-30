@@ -71,6 +71,31 @@ def test_secret_detected_in_extensionless_credentials_file(tmp_path: Path) -> No
     assert "secret" in _codes(threat_scan(_paths(tmp_path)))
 
 
+def test_slack_token_detected(tmp_path: Path) -> None:
+    _write(tmp_path, "src/config.py", 'SLACK = "xoxb-1234567890-abcdef"\n')
+    assert "secret" in _codes(threat_scan(_paths(tmp_path)))
+
+
+def test_stripe_key_detected(tmp_path: Path) -> None:
+    _write(tmp_path, "src/billing.py", 'STRIPE = "sk_live_abcdefghijklmnopqrst1234"\n')
+    assert "secret" in _codes(threat_scan(_paths(tmp_path)))
+
+
+def test_google_api_key_detected(tmp_path: Path) -> None:
+    _write(tmp_path, "src/maps.py", 'KEY = "AIzaSyA0123456789_abcdefghijklmnopqrstu"\n')
+    assert "secret" in _codes(threat_scan(_paths(tmp_path)))
+
+
+def test_secret_detected_in_rust_file(tmp_path: Path) -> None:
+    _write(tmp_path, "src/main.rs", f'let key = "{FAKE_AWS}";\n')
+    assert "secret" in _codes(threat_scan(_paths(tmp_path)))
+
+
+def test_secret_detected_in_npmrc(tmp_path: Path) -> None:
+    _write(tmp_path, ".npmrc", f"//registry.npmjs.org/:_authToken={FAKE_AWS}\n")
+    assert "secret" in _codes(threat_scan(_paths(tmp_path)))
+
+
 # --- world_writable -------------------------------------------------------
 
 # ``chmod(0o666)`` does not reliably set the world-writable bit on non-POSIX

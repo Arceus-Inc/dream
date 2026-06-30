@@ -117,6 +117,18 @@ def test_harness_policy_files_are_guarded(tmp_path: Path, policy_file: str) -> N
     assert is_credential_path(tmp_path / ".harness" / policy_file, tmp_path)
 
 
+def test_npmrc_is_credential(tmp_path: Path) -> None:
+    assert is_credential_path(Path.home() / ".npmrc", tmp_path)
+
+
+def test_pypirc_is_credential(tmp_path: Path) -> None:
+    assert is_credential_path(Path.home() / ".pypirc", tmp_path)
+
+
+def test_harness_credentials_toml_is_credential(tmp_path: Path) -> None:
+    assert is_credential_path(tmp_path / ".harness" / "credentials.toml", tmp_path)
+
+
 def test_other_harness_files_stay_writable(tmp_path: Path) -> None:
     # The guard covers policy inputs, not the whole .harness dir — role
     # overlays, cron manifests etc. remain legitimate agent surfaces.
