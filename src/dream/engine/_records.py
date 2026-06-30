@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Any, Literal
 
 from dream.engine._cost import UsageSnapshot
+from dream.utils.fs import compact_json
 
 VerificationResult = Literal["pass", "fail", "skipped"]
 TurnOutcome = Literal["complete", "timeout", "aborted"]
@@ -59,7 +60,7 @@ def to_jsonl_line(rec: TurnRecord | SessionEnd) -> str:
         payload = {"kind": "session_end", **payload}
     else:  # pragma: no cover — exhaustive over the union
         raise TypeError(f"unknown record type: {type(rec).__name__}")
-    return json.dumps(payload, separators=(",", ":"))
+    return compact_json(payload, default=None)
 
 
 def _decode_datetime(value: str) -> datetime:

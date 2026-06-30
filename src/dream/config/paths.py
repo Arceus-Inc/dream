@@ -56,8 +56,14 @@ def _checked_segment(value: str, *, label: str) -> str:
 
 
 def _checked_task_id(task_id: str) -> str:
-    """Reject task ids that could escape the ``.dream/`` roots (path traversal)."""
-    return _checked_segment(task_id, label="task_id")
+    """Reject task ids that could escape the ``.dream/`` roots (path traversal).
+
+    Delegates to the canonical :func:`dream.utils.identifiers.checked_task_id`
+    which also rejects ``:`` (Windows drive / NTFS alternate-data-stream syntax).
+    """
+    from dream.utils.identifiers import checked_task_id
+
+    return checked_task_id(task_id)
 
 
 @dataclass(frozen=True)

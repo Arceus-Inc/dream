@@ -1,4 +1,4 @@
-"""Atomic file-write helpers (spec 01).
+"""Atomic file-write helpers and shared JSON I/O utilities (spec 01).
 
 Every harness-initiated write goes through here: write to a same-directory temp
 file, fsync it, then ``os.replace`` it over the destination. ``os.replace`` is
@@ -11,12 +11,26 @@ leaves the destination untouched and an orphan ``{name}.tmp.{uuid}`` that
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import uuid
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any, TypeVar
 
-__all__ = ["atomic_write_bytes", "atomic_write_text", "clean_orphan_temp_files"]
+__all__ = [
+    "atomic_write_bytes",
+    "atomic_write_text",
+    "clean_orphan_temp_files",
+    "compact_json",
+    "is_json_drop_file",
+    "load_json_file",
+    "save_json_file",
+    "try_load_json_file",
+]
+
+_T = TypeVar("_T")
 
 # Temp files are named ``{name}.tmp.{uuid4().hex}`` (32 lowercase hex chars).
 # Orphan cleanup matches that exact scheme so it never deletes unrelated files
@@ -95,3 +109,84 @@ def _fsync_dir(directory: Path) -> None:
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+# ---------------------------------------------------------------------------
+# JSON I/O helpers — shared across drop-dir queues, artefact files, and
+# observability sinks.
+# ---------------------------------------------------------------------------
+
+
+def save_json_file(
+    path: str | os.PathLike[str],
+    data: dict[str, Any],
+    *,
+    trailing_newline: bool = True,
+    mode: int | None = None,
+) -> None:
+    """Atomically write *data* as pretty-printed JSON.
+
+    Wraps :func:`atomic_write_text` so callers don't repeat the
+    ``json.dumps(…, indent=2) + "\\n"`` boilerplate.
+    """
+    text = json.dumps(data, indent=2)
+    if trailing_newline:
+        text += "\n"
+    atomic_write_text(path, text, mode=mode)
+
+
+def load_json_file(path: str | os.PathLike[str]) -> dict[str, Any]:
+    """Read a UTF-8 JSON file and return the parsed dict.
+
+    Raises the usual ``OSError`` / ``json.JSONDecodeError`` on failure.
+    """
+    raw = Path(path).read_text(encoding="utf-8")
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"expected a JSON object in {path}, got {type(data).__name__}"
+        )
+    return data
+
+
+def compact_json(payload: dict[str, Any], *, default: Callable[..., Any] | None = str) -> str:
+    """Serialize *payload* to a single compact JSON line (no whitespace).
+
+    Used by JSONL sinks and audit-trail writers.  ``default`` is
+    forwarded to :func:`json.dumps`; pass ``None`` to disable.
+    """
+    return json.dumps(payload, separators=(",", ":"), default=default)
+
+
+def is_json_drop_file(path: Path) -> bool:
+    """Return whether *path* looks like a valid drop-dir JSON file.
+
+    Rejects dot-files, non-``.json`` suffixes, atomic-write temp
+    artefacts (``*.tmp.*``), and non-regular files.  Shared by the
+    command inbox, mailbox, wake-note store, and permission queue.
+    """
+    name = path.name
+    if name.startswith(".") or path.suffix != ".json" or ".tmp." in name:
+        return False
+    return path.is_file()
+
+
+def try_load_json_file(
+    path: Path,
+    constructor: Callable[[dict[str, Any]], _T],
+) -> _T | None:
+    """Best-effort load: read JSON from *path*, pass the dict to
+    *constructor*, and return ``None`` on any expected failure.
+
+    Catches ``OSError``, ``json.JSONDecodeError``, ``KeyError``,
+    ``ValueError``, and ``TypeError`` — the set every drop-dir reader
+    in the codebase already swallowed individually.
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    try:
+        return constructor(data)
+    except (KeyError, ValueError, TypeError):
+        return None

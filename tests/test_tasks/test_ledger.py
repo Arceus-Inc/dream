@@ -370,12 +370,12 @@ def test_write_ledger_uses_atomic_helper(tmp_path: Path, monkeypatch) -> None:
     import dream.tasks._ledger as mod
 
     calls: list[Path] = []
-    real = mod.atomic_write_text
+    real = mod.save_json_file
 
-    def spy(path, text, **kw):  # type: ignore[no-untyped-def]
+    def spy(path, data, **kw):  # type: ignore[no-untyped-def]
         calls.append(Path(path))
-        real(path, text, **kw)
+        real(path, data, **kw)
 
-    monkeypatch.setattr(mod, "atomic_write_text", spy)
+    monkeypatch.setattr(mod, "save_json_file", spy)
     write_ledger(tmp_path / "T1.json", _ledger(entries=(_entry(id="a"),)))
     assert calls == [tmp_path / "T1.json"]

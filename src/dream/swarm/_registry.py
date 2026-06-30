@@ -20,7 +20,6 @@ Two registries with two very different lifetimes:
 
 from __future__ import annotations
 
-import json
 import os
 import time
 from collections.abc import Callable
@@ -37,7 +36,7 @@ from dream.swarm._spawn import (
 from dream.swarm.in_process import InProcessExecutor, InProcessFactory
 from dream.swarm.subprocess_backend import ArgvBuilder, SubprocessExecutor
 from dream.tasks._manager import BackgroundTaskManager
-from dream.utils.fs import atomic_write_text
+from dream.utils.fs import load_json_file, save_json_file
 
 __all__ = [
     "BackendRegistry",
@@ -160,13 +159,11 @@ class TeamFile:
         )
 
     def save(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(path, json.dumps(self.to_dict(), indent=2) + "\n")
+        save_json_file(path, self.to_dict())
 
     @classmethod
     def load(cls, path: Path) -> TeamFile:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return cls.from_dict(data)
+        return cls.from_dict(load_json_file(path))
 
 
 # --- TeamRegistry --------------------------------------------------------

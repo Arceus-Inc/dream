@@ -27,13 +27,13 @@ from typing import Any
 
 from dream.planner._artefacts import (
     PlannerLedger,
-    _checked_task_id,
     planner_ledger_path,
     planner_spec_path,
 )
 from dream.swarm._handoff import HandoffArtefact, handoff_event
 from dream.utils.file_lock import exclusive_file_lock
 from dream.utils.fs import atomic_write_text
+from dream.utils.identifiers import checked_task_id as _checked_task_id
 
 __all__ = [
     "PlannerAlreadyRan",

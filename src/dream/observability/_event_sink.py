@@ -20,6 +20,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from dream.utils.fs import compact_json
+
 
 class EventSink:
     """Thread-safe append-only JSONL writer with optional size rotation.
@@ -50,7 +52,7 @@ class EventSink:
             "pid": os.getpid(),
             "type": event_type,
         }
-        line = json.dumps(record, default=str, separators=(",", ":"))
+        line = compact_json(record)
         with self._lock:
             self._rotate_if_needed(len(line) + 1)
             with self._path.open("a", encoding="utf-8") as fh:

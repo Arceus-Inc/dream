@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, get_args
 
+from dream.utils.fs import load_json_file
+
 from ._checks import checked_sprint_number, checked_task_id
 
 __all__ = [
@@ -162,7 +164,7 @@ def load_pending_carry_items(
     records: list[tuple[int, EvaluationRecord]] = []
     for f in evals_dir.glob("sprint-*.json"):
         try:
-            rec = EvaluationRecord.from_dict(json.loads(f.read_text(encoding="utf-8")))
+            rec = EvaluationRecord.from_dict(load_json_file(f))
         except (OSError, ValueError, KeyError):
             continue
         records.append((rec.sprint_number, rec))
