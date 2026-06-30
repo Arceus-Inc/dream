@@ -879,7 +879,11 @@ def _cron_usage() -> None:
 
 
 def _cron_list(registry: Path, rest: list[str]) -> None:
-    jobs = load_cron_jobs(registry)
+    try:
+        jobs = load_cron_jobs(registry)
+    except Exception as exc:
+        print(f"[error] cannot load cron registry: {exc}")
+        return
     if not jobs:
         print("(no cron jobs)")
         return

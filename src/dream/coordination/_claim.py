@@ -68,6 +68,12 @@ class ClaimManager:
         self._max_concurrent_runs = max_concurrent_runs
         self._lease_ms = int(lease_seconds * 1000)
         self._mirror: ClaimMirror = mirror or NoopClaimMirror()
+        self._last_mirror_error: str | None = None
+
+    @property
+    def last_mirror_error(self) -> str | None:
+        """Most recent mirror failure (best-effort ops), or None if clean."""
+        return self._last_mirror_error
 
     def claim(self, task_id: str) -> ClaimResult:
         """Win ownership of ``task_id``; deny if a live owner already holds it."""
@@ -182,8 +188,8 @@ class ClaimManager:
         # failure must not raise. Mirrors the catch in ``_safe_grant_mirror``.
         try:
             self._mirror.on_release(task_id)
-        except Exception:
-            return
+        except Exception as exc:
+            self._last_mirror_error = f"release({task_id}): {type(exc).__name__}: {exc}"
 
     def get(self, task_id: str) -> Claim | None:
         return self._board.read(task_id)

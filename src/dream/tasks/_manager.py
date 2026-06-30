@@ -32,7 +32,7 @@ import inspect
 import os
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from uuid import uuid4
 
@@ -117,6 +117,14 @@ def register_one_shot_completion(
         _fire(current)
 
 
+@dataclass(frozen=True)
+class _ListenerFailure:
+    """Diagnostic record for a listener that raised during notification."""
+
+    task_id: str
+    error: str
+
+
 def _task_id(task_type: TaskType) -> str:
     return f"{task_type}-{uuid4().hex[:8]}"
 
@@ -156,6 +164,9 @@ class BackgroundTaskManager:
         # watcher checks this and skips its own listener notification so we
         # don't fire twice for the same terminal transition.
         self._suppress_watcher_notify: set[str] = set()
+        # Bounded ring of recent listener failures for diagnostics.
+        self._listener_failures: list[_ListenerFailure] = []
+        self._max_listener_failures: int = 32
 
     # --- creation ---------------------------------------------------------
 
@@ -458,10 +469,9 @@ class BackgroundTaskManager:
                     fh.write(chunk)
 
     async def _notify_listeners(self, task: TaskRecord) -> None:
-        # Listener exceptions are intentionally swallowed: one bad listener
-        # must not block the others or crash the supervisor. Visibility
-        # belongs in the (not-yet-shipped) typed Events stream, not in
-        # ad-hoc logging — see Spec 00 rule 4.
+        # One bad listener must not block the others or crash the supervisor.
+        # Failures are recorded in ``_listener_failures`` for diagnostic
+        # retrieval (typed event stream will supersede this — Spec 00 rule 4).
         for listener in list(self._listeners.values()):
             try:
                 result = listener(task)
@@ -470,8 +480,8 @@ class BackgroundTaskManager:
                 # native coroutines like ``asyncio.iscoroutine`` does.
                 if inspect.isawaitable(result):
                     await result
-            except Exception:
-                pass
+            except Exception as exc:
+                self._record_listener_failure(task.id, exc)
 
     async def _notify_start_listeners(self, task: TaskRecord) -> None:
         for listener in list(self._start_listeners.values()):
@@ -479,5 +489,17 @@ class BackgroundTaskManager:
                 result = listener(task)
                 if inspect.isawaitable(result):
                     await result
-            except Exception:
-                pass
+            except Exception as exc:
+                self._record_listener_failure(task.id, exc)
+
+    def _record_listener_failure(self, task_id: str, exc: Exception) -> None:
+        self._listener_failures.append(
+            _ListenerFailure(task_id=task_id, error=repr(exc))
+        )
+        if len(self._listener_failures) > self._max_listener_failures:
+            self._listener_failures = self._listener_failures[-self._max_listener_failures:]
+
+    @property
+    def listener_failures(self) -> list[_ListenerFailure]:
+        """Recent listener failures, oldest-first (bounded to last 32)."""
+        return list(self._listener_failures)

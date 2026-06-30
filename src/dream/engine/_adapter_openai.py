@@ -339,6 +339,11 @@ class NoOpDispatcher:
 
 # --- httpx-backed production stream factory --------------------------------
 
+# A single malformed SSE line can happen transiently (proxy quirks, partial
+# flushes); raising immediately would be too fragile.  But repeated failures
+# indicate a systematic issue that must surface rather than be swallowed.
+_MAX_MALFORMED_SSE_CHUNKS = 3
+
 
 def httpx_chat_completion_stream(
     *,
@@ -380,6 +385,7 @@ def httpx_chat_completion_stream(
         }
 
         async def _iter() -> AsyncIterator[dict[str, Any]]:
+            malformed_count = 0
             async with (
                 httpx.AsyncClient(timeout=timeout_seconds) as client,
                 client.stream("POST", url, json=body, headers=headers) as response,
@@ -393,8 +399,16 @@ def httpx_chat_completion_stream(
                         return
                     try:
                         yield json.loads(payload)
-                    except json.JSONDecodeError:
-                        continue
+                    except json.JSONDecodeError as json_err:
+                        malformed_count += 1
+                        if malformed_count > _MAX_MALFORMED_SSE_CHUNKS:
+                            from dream.errors import ProviderError
+
+                            raise ProviderError(
+                                f"stream produced {malformed_count} malformed SSE chunks; "
+                                f"last payload: {payload[:200]!r}",
+                                code="dream.provider.malformed_stream",
+                            ) from json_err
 
         return _iter()
 

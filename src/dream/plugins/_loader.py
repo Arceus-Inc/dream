@@ -67,14 +67,25 @@ class PluginLoadReport:
 
 
 def read_enabled_names(repo: Path) -> tuple[tuple[str, str | None], ...]:
-    """Return ``(name, version_pin)`` pairs from ``.harness/plugins-enabled.toml``."""
+    """Return ``(name, version_pin)`` pairs from ``.harness/plugins-enabled.toml``.
+
+    Raises :class:`PluginManifestError` when the file exists but cannot be
+    read or parsed, so the caller can surface the issue in its load report
+    rather than silently returning no plugins.
+    """
     enabled_path = repo / ".harness" / "plugins-enabled.toml"
     if not enabled_path.exists():
         return ()
     try:
         data = tomllib.loads(enabled_path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError):
-        return ()
+    except OSError as exc:
+        raise PluginManifestError(
+            f"cannot read plugins-enabled.toml: {exc}"
+        ) from exc
+    except tomllib.TOMLDecodeError as exc:
+        raise PluginManifestError(
+            f"invalid plugins-enabled.toml: {exc}"
+        ) from exc
     entries = data.get("plugin", [])
     if not isinstance(entries, list):
         return ()
@@ -96,8 +107,14 @@ def load_enabled_plugins(
     loaded: list[Plugin] = []
     failed: list[FailedPlugin] = []
     warnings: list[str] = []
+    try:
+        enabled = read_enabled_names(repo)
+    except PluginManifestError as exc:
+        return PluginLoadReport(
+            failed=(FailedPlugin(name="<registry>", reason=str(exc)),),
+        )
     allowed = _TIER_CAPABILITIES.get(tier, frozenset())
-    for name, pin in read_enabled_names(repo):
+    for name, pin in enabled:
         outcome = _load_one(
             repo,
             name,
