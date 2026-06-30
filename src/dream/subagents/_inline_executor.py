@@ -95,7 +95,7 @@ def _build_subagent_manifest(agent: Subagent) -> RoleManifest:
     )
 
     return RoleManifest(
-        name="generator",
+        name="subagent",
         description=agent.description,
         system_prompt=system_prompt,
         system_prompt_mode="replace",

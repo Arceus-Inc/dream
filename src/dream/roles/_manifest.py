@@ -1,8 +1,9 @@
 """``RoleManifest`` pydantic value object (Spec 10 §Artefact shapes).
 
-The shape is fixed by the spec: name is one of three canonical strings,
-``tools=null`` is reserved to the generator (meaning "all, intersected with
-the active sandbox tier"), and ``permission_mode`` deliberately omits
+The shape is fixed by the spec: name is one of four canonical strings
+(planner / generator / evaluator / subagent), ``tools=null`` is reserved
+to the generator (meaning "all, intersected with the active sandbox
+tier"), and ``permission_mode`` deliberately omits
 ``bypassPermissions`` — there is no v1 role that may bypass the permission
 gate.
 """
@@ -13,7 +14,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
-RoleName = Literal["planner", "generator", "evaluator"]
+RoleName = Literal["planner", "generator", "evaluator", "subagent"]
 SystemPromptMode = Literal["default", "replace", "append"]
 PermissionMode = Literal["default", "acceptEdits", "plan", "dontAsk"]
 Isolation = Literal["worktree", "remote"]
