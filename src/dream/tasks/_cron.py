@@ -94,7 +94,7 @@ def validate_timezone(tz: str | None) -> bool:
         from zoneinfo import ZoneInfo
 
         ZoneInfo(tz)
-    except Exception:
+    except (KeyError, ImportError):
         return False
     return True
 
@@ -163,7 +163,7 @@ class CronJob(BaseModel):
 def _parse_job(payload: dict[str, Any]) -> CronJob | None:
     try:
         return CronJob.model_validate(payload)
-    except Exception:
+    except (ValueError, TypeError, KeyError):
         return None
 
 
@@ -177,16 +177,24 @@ def _registry_lock_path(registry_path: Path) -> Path:
 
 
 def load_cron_jobs(registry_path: str | Path) -> list[CronJob]:
-    """Load and parse the registry. Tolerant of missing or corrupt files."""
+    """Load and parse the registry.
+
+    Returns an empty list when the file is missing. Raises
+    :class:`CronJobError` when it exists but is unreadable or contains
+    invalid JSON, so callers can distinguish "no jobs" from "corrupt
+    registry".
+    """
     path = Path(registry_path)
     if not path.exists():
         return []
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return []
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CronJobError(f"cannot load cron registry {path}: {exc}") from exc
     if not isinstance(data, list):
-        return []
+        raise CronJobError(
+            f"cron registry {path} must contain a JSON array, got {type(data).__name__}"
+        )
     jobs: list[CronJob] = []
     for raw in data:
         if not isinstance(raw, dict):

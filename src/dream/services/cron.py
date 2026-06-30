@@ -40,6 +40,7 @@ from uuid import uuid4
 from dream.tasks._cron import (
     CRON_MANIFEST_DIR,
     CronJob,
+    CronJobError,
     CronManifest,
     default_cron_manifests,
     get_cron_job,
@@ -176,8 +177,14 @@ def ensure_registry_seeded(
     Existing registry entries are left alone — operators may have toggled
     ``enabled`` or edited the schedule via ``cron_toggle`` / ``cron_create``
     and we don't want bootstrap to clobber that on the next startup.
+
+    A corrupt registry is treated as empty — all manifests get seeded and
+    the next ``save_cron_jobs`` call overwrites the corrupt file.
     """
-    existing = {j.name for j in load_cron_jobs(registry_path)}
+    try:
+        existing: set[str] = {j.name for j in load_cron_jobs(registry_path)}
+    except CronJobError:
+        existing = set()
     added: list[CronJob] = []
     for manifest in manifests:
         if manifest.name in existing:
@@ -334,11 +341,11 @@ async def cron_tick_loop(
                     mark_job_run(registry_path, job.name, success=False)
         except asyncio.CancelledError:
             raise
-        except Exception:
-            # Outer-loop fault (e.g. registry corruption). Print to stderr
-            # so the operator running the REPL sees *something*; loop
-            # continues because killing the scheduler silently is worse.
+        except Exception as exc:
+            # Outer-loop fault (e.g. registry corruption). Include the
+            # exception so the operator can diagnose rather than just
+            # seeing a generic message.
             sys.stderr.write(
-                "cron scheduler tick raised; continuing\n"
+                f"cron scheduler tick raised ({type(exc).__name__}: {exc}); continuing\n"
             )
         await asyncio.sleep(poll_seconds)

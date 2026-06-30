@@ -17,7 +17,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from dream.contracts.tool import ToolResult
-from dream.tasks._cron import CronJob, load_cron_jobs
+from dream.tasks._cron import CronJob, CronJobError, load_cron_jobs
 from dream.tools._base import BaseTool, ToolDeclaration
 from dream.tools._context import ToolExecutionContext
 from dream.tools.builtin._errors import tool_error as _err
@@ -57,7 +57,15 @@ class CronListTool(BaseTool):
                 stop_condition="do not retry until cron is enabled in this session",
             )
 
-        jobs = load_cron_jobs(registry)
+        try:
+            jobs = load_cron_jobs(registry)
+        except CronJobError as exc:
+            return _err(
+                f"Failed to load cron registry: {exc}",
+                root_cause="cron registry is corrupt or unreadable",
+                safe_retry="fix or delete the registry file and retry",
+                stop_condition="do not retry until registry is repaired",
+            )
         if not jobs:
             return ToolResult(
                 content="No cron jobs configured.",

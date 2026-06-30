@@ -12,7 +12,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from dream.contracts.tool import ToolResult
-from dream.tasks._cron import CronJob, get_cron_job
+from dream.tasks._cron import CronJob, CronJobError, get_cron_job
 from dream.tools._base import BaseTool, ToolDeclaration
 from dream.tools._context import ToolExecutionContext
 from dream.tools.builtin._errors import tool_error as _err
@@ -57,9 +57,10 @@ class CronShowTool(BaseTool):
 
         try:
             job = get_cron_job(registry, args.name)
-        except OSError as exc:
-            # Permission denied, path-is-a-directory, transient IO — keep the
-            # tool contract recoverable instead of leaking an engine failure.
+        except (OSError, CronJobError) as exc:
+            # Permission denied, path-is-a-directory, corrupt JSON, transient
+            # IO — keep the tool contract recoverable instead of leaking an
+            # engine failure.
             return _err(
                 f"Failed to read the cron registry: {exc}",
                 root_cause=str(exc),

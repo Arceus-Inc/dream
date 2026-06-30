@@ -118,10 +118,11 @@ def test_load_cron_jobs_returns_empty_when_missing(tmp_path: Path) -> None:
     assert load_cron_jobs(tmp_path / "missing.json") == []
 
 
-def test_load_cron_jobs_returns_empty_on_corrupt_json(tmp_path: Path) -> None:
+def test_load_cron_jobs_raises_on_corrupt_json(tmp_path: Path) -> None:
     path = tmp_path / "registry.json"
     path.write_text("{not json", encoding="utf-8")
-    assert load_cron_jobs(path) == []
+    with pytest.raises(CronJobError, match="cannot load cron registry"):
+        load_cron_jobs(path)
 
 
 def test_save_cron_jobs_round_trip_sorted_by_name(tmp_path: Path) -> None:
