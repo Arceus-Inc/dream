@@ -15,6 +15,21 @@ from dream.subagents._declaration import Subagent, SubagentSet
 from dream.swarm._spawn import TeammateSpawnConfig
 
 
+def intersect_tools(
+    agent_tools: tuple[str, ...], parent_tools: frozenset[str] | None
+) -> tuple[str, ...]:
+    """Capability minimization (§05): ``agent_tools ∩ parent_tools`` — narrower-wins.
+
+    A subagent can only ever *drop* tools, never widen past the parent's live
+    allow-list. ``parent_tools is None`` means the parent had no role restriction
+    (the full registry surface), so the agent keeps its declared tools unchanged.
+    Order is preserved from the agent's declaration (deterministic).
+    """
+    if parent_tools is None:
+        return agent_tools
+    return tuple(t for t in agent_tools if t in parent_tools)
+
+
 @dataclass(frozen=True)
 class SubagentResult:
     """Result returned by a subagent dispatch.
@@ -46,11 +61,14 @@ def project_subagent(
     """Project a chorus Subagent declaration into a dream TeammateSpawnConfig.
 
     Applies capability minimization (§05):
-    - tools: agent.tools ∩ parent_tools (strict subset)
+    - tools: agent.tools ∩ parent_tools (strict subset — narrower-wins)
     - permissions: parent_permissions minus agent.permission_overlay (tighten-only)
 
     The prompt is the bounded task text from the dispatch call.
     """
+    # Tools: narrower-wins intersection with the parent's live allow-list.
+    minimized_tools = intersect_tools(agent.tools, parent_tools)
+
     # Permission overlay: tighten-only — remove specified permissions
     minimized_permissions = tuple(
         p for p in parent_permissions if p not in agent.permission_overlay
@@ -78,6 +96,7 @@ def project_subagent(
         system_prompt=system_prompt,
         system_prompt_mode="replace",
         permissions=minimized_permissions,
+        tools=minimized_tools,
         plan_mode_required=False,
         allow_permission_prompts=False,
         task_type="in_process_teammate",

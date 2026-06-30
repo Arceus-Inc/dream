@@ -17,7 +17,7 @@ from dream.events import ToolUseResult, ToolUseStart
 from dream.roles._manifest import RoleManifest
 from dream.session import SessionOptions
 from dream.subagents._declaration import Subagent
-from dream.subagents._projection import SubagentResult
+from dream.subagents._projection import SubagentResult, intersect_tools
 
 if TYPE_CHECKING:
     from dream.harness import Harness
@@ -28,19 +28,24 @@ async def run_subagent_inline(
     *,
     prompt: str,
     harness: Harness,
+    parent_tools: frozenset[str] | None = None,
 ) -> SubagentResult:
     """Execute a subagent as a real bounded session with tools.
 
-    Creates a synthetic ``RoleManifest`` scoped to the subagent's declared
-    tools and runs it through ``harness.run_role()``. The subagent:
+    Creates a synthetic ``RoleManifest`` scoped to the subagent's
+    capability-minimized tools and runs it through ``harness.run_role()``. The
+    subagent:
 
     - Gets a real engine session with actual tool dispatch
-    - Has capability-minimized tools (only ``agent.tools``)
+    - Has capability-minimized tools — ``agent.tools ∩ parent_tools`` (§05:
+      narrower-wins; can only drop, never widen past the parent's allow-list).
+      ``parent_tools is None`` means the parent had no role restriction, so the
+      agent keeps its declared tools.
     - Cannot spawn sub-subagents (``spawn_subagent`` is disallowed)
     - Is bounded by ``agent.max_turns``
     - Returns plain text (concatenation of all assistant text deltas)
     """
-    manifest = _build_subagent_manifest(agent)
+    manifest = _build_subagent_manifest(agent, parent_tools=parent_tools)
     options = SessionOptions(max_turns=agent.max_turns)
 
     try:
@@ -78,13 +83,18 @@ async def run_subagent_inline(
         )
 
 
-def _build_subagent_manifest(agent: Subagent) -> RoleManifest:
+def _build_subagent_manifest(
+    agent: Subagent, *, parent_tools: frozenset[str] | None = None
+) -> RoleManifest:
     """Build a synthetic RoleManifest for the subagent.
 
     Uses the ``generator`` role name (it needs tools) with the subagent's
-    declared tool allow-list. ``spawn_subagent`` is always disallowed to
-    prevent recursive spawning (v1 flat depth).
+    capability-minimized tool allow-list — ``agent.tools ∩ parent_tools`` (§05:
+    narrower-wins, can only drop, never widen past the parent). ``spawn_subagent``
+    is always disallowed to prevent recursive spawning (v1 flat depth).
     """
+    effective_tools = intersect_tools(agent.tools, parent_tools)
+
     system_prompt = agent.system_prompt or (
         f"You are {agent.name}, a specialized subagent.\n\n"
         f"Role: {agent.description}\n\n"
@@ -99,7 +109,7 @@ def _build_subagent_manifest(agent: Subagent) -> RoleManifest:
         description=agent.description,
         system_prompt=system_prompt,
         system_prompt_mode="replace",
-        tools=agent.tools,
+        tools=effective_tools,
         disallowed_tools=("spawn_subagent",),
         skills=agent.skills,
         permission_mode="dontAsk",

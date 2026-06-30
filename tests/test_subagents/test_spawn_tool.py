@@ -11,6 +11,7 @@ from dream.subagents._projection import SubagentResult
 from dream.tools._context import ToolExecutionContext
 from dream.tools.builtin.spawn_subagent import (
     HARNESS_KEY,
+    MAX_SPAWNS_PER_BEAT,
     SUBAGENT_SET_CONTEXT_KEY,
     SpawnSubagentTool,
 )
@@ -109,3 +110,32 @@ class TestSpawnSubagentTool:
         assert tool.name == "spawn_subagent"
         assert tool.declaration.risk == "safe"
         assert tool.declaration.tier_required == 0
+
+    async def test_spawn_cap_is_per_session_not_per_tool(self) -> None:
+        """The spawn cap lives in ctx.metadata, not on the singleton tool.
+
+        Regression guard for the cross-session DoS: a single tool instance is
+        shared across every session in the harness registry. The cap must reset
+        with each fresh session (ctx) — exhausting it on one beat must NOT
+        permanently deny subagents to every later beat.
+        """
+        tool = SpawnSubagentTool()  # the shared singleton
+        mock_result = SubagentResult(name="reviewer", output="ok", success=True)
+
+        with patch(
+            "dream.subagents._inline_executor.run_subagent_inline",
+            return_value=mock_result,
+        ):
+            # Session 1: spend the whole cap, then the next spawn is denied.
+            ctx1 = _make_ctx(subagent_set=_simple_subagent_set(), harness=AsyncMock())
+            for _ in range(MAX_SPAWNS_PER_BEAT):
+                r = await tool.execute({"name": "reviewer", "prompt": "x"}, ctx1)
+                assert not r.is_error
+            capped = await tool.execute({"name": "reviewer", "prompt": "x"}, ctx1)
+            assert capped.is_error
+            assert "cap" in capped.content.lower()
+
+            # Session 2: a fresh ctx resets the counter on the SAME tool instance.
+            ctx2 = _make_ctx(subagent_set=_simple_subagent_set(), harness=AsyncMock())
+            fresh = await tool.execute({"name": "reviewer", "prompt": "x"}, ctx2)
+            assert not fresh.is_error, "fresh session must not inherit the prior cap"

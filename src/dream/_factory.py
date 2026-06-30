@@ -649,6 +649,8 @@ def _build_session_engine(
     if subagents is not None and subagents:
         from dream.tools.builtin.spawn_subagent import (
             HARNESS_KEY,
+            PARENT_TOOLS_KEY,
+            SPAWN_COUNT_KEY,
             SUBAGENT_SET_CONTEXT_KEY,
             TRACER_KEY,
         )
@@ -656,6 +658,13 @@ def _build_session_engine(
         context_metadata[SUBAGENT_SET_CONTEXT_KEY] = subagents
         context_metadata[TRACER_KEY] = tracer
         context_metadata[HARNESS_KEY] = harness
+        # Per-session spawn counter — seeded fresh here so the cap is per-beat and
+        # never accumulates on the shared tool instance (the cross-session DoS).
+        context_metadata[SPAWN_COUNT_KEY] = [0]
+        # Parent's live tool allow-list, for capability minimization (§05): the
+        # subagent's tools are intersected with this. ``None`` = no role restriction
+        # (full surface), so the subagent keeps its declared tools.
+        context_metadata[PARENT_TOOLS_KEY] = role_allowed
     return build_query_engine(
         streamer=streamer,
         registry=tool_registry,

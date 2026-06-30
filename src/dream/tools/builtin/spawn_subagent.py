@@ -38,6 +38,13 @@ PARENT_PERMISSIONS_KEY = "dream.parent_permissions"
 TEAM_KEY = "dream.team"
 TRACER_KEY = "dream.tracer"
 HARNESS_KEY = "dream.harness"
+# Per-session spawn counter — a mutable container ([int]) the factory seeds fresh
+# per session in ``context_metadata`` (like the working-memory tier), so the cap
+# is per-beat and resets naturally. NEVER instance state on the tool (the tool is
+# a singleton in the harness-wide registry; instance state would accumulate across
+# every session and become a permanent cross-session cap). See CONTRIBUTING.md
+# "No module-level mutable state".
+SPAWN_COUNT_KEY = "dream.subagent_spawn_count"
 
 # V1 spawn cap per beat — cheap early guard; gate-2 (budget) is the cost backstop.
 MAX_SPAWNS_PER_BEAT = 10
@@ -66,9 +73,6 @@ class SpawnSubagentTool(BaseTool):
     )
     declaration = ToolDeclaration(risk="safe", tier_required=0, timeout_seconds=300.0)
     input_model = SpawnSubagentInput
-
-    def __init__(self) -> None:
-        self._spawn_count: int = 0
 
     async def execute(self, input: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
         args = SpawnSubagentInput.model_validate(input)
@@ -100,9 +104,16 @@ class SpawnSubagentTool(BaseTool):
                 },
             )
 
-        # --- Spawn cap guard ---
-        self._spawn_count += 1
-        if self._spawn_count > MAX_SPAWNS_PER_BEAT:
+        # --- Spawn cap guard (per-session, via context metadata) ---
+        # The counter is a mutable container the factory seeds per session, so the
+        # cap is per-beat. Default to a local [0] when absent (e.g. a bare test ctx)
+        # rather than carrying state on the shared tool instance.
+        counter: list[int] | None = ctx.metadata.get(SPAWN_COUNT_KEY)
+        if counter is None:
+            counter = [0]
+            ctx.metadata[SPAWN_COUNT_KEY] = counter
+        counter[0] += 1
+        if counter[0] > MAX_SPAWNS_PER_BEAT:
             return ToolResult(
                 content=(
                     f"Spawn cap exceeded ({MAX_SPAWNS_PER_BEAT} per beat). "
@@ -146,12 +157,19 @@ class SpawnSubagentTool(BaseTool):
             )
 
         # --- Execute the subagent as a real bounded session ---
+        # Capability minimization (§05): the subagent's tools are intersected with
+        # the parent's live allow-list inside the executor — narrower-wins, can only
+        # drop. ``None`` means the parent had no role restriction (full surface), so
+        # the subagent keeps its declared tools.
         from dream.subagents._inline_executor import run_subagent_inline
+
+        parent_tools: frozenset[str] | None = ctx.metadata.get(PARENT_TOOLS_KEY)
 
         result = await run_subagent_inline(
             agent,
             prompt=args.prompt,
             harness=harness,
+            parent_tools=parent_tools,
         )
 
         elapsed = time.time() - spawn_time

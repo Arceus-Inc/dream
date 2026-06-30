@@ -48,8 +48,9 @@ class TestProjectSubagent:
             cwd="/",
             prompt="go",
         )
-        # "bash" and "nuke_everything" are NOT in parent_tools, so dropped
-        assert config.permissions == ()
+        # "bash" and "nuke_everything" are NOT in parent_tools, so dropped.
+        # Order is preserved from the agent's declaration.
+        assert config.tools == ("read_file", "grep")
 
     def test_permission_overlay_tightens(self) -> None:
         """Permission overlay removes tokens from parent — never widens."""
