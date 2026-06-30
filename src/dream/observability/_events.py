@@ -14,6 +14,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal, cast, get_args
 
+from dream.utils.fs import compact_json
+
 TraceEventType = Literal[
     "llm.call",
     "tool.call",
@@ -56,7 +58,7 @@ def to_jsonl_line(event: TraceEvent) -> str:
         "parent_span_id": event.parent_span_id,
         "attributes": dict(event.attributes),
     }
-    return json.dumps(payload, separators=(",", ":"), default=str)
+    return compact_json(payload)
 
 
 def from_jsonl_line(line: str) -> TraceEvent:

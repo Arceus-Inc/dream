@@ -15,7 +15,6 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from dream.config.paths import _checked_task_id
 from dream.contracts.tool import ToolResult
 from dream.tasks._fsm import PLAN_STATES, plan_dir
 from dream.tasks._ledger import LedgerState
@@ -24,6 +23,7 @@ from dream.tools._base import BaseTool, ToolDeclaration
 from dream.tools._context import ToolExecutionContext
 from dream.tools.builtin._errors import tool_error as _err
 from dream.tools.builtin._task_context import require_task_context
+from dream.utils.identifiers import checked_task_id as _checked_task_id
 
 
 class PlanShowInput(BaseModel):

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal
 
+from dream.utils.fs import compact_json
 from dream.wake._source import WakeSource, wake_source_from_dict, wake_source_to_dict
 
 HeartbeatAction = Literal["skip", "run"]
@@ -59,7 +60,7 @@ def _encode(rec: HeartbeatDecision) -> dict[str, Any]:
 def to_jsonl_line(rec: HeartbeatDecision) -> str:
     """Serialize one decision to a single jsonl line, with ``kind`` prefix."""
     payload = {"kind": "heartbeat-decision", **_encode(rec)}
-    return json.dumps(payload, separators=(",", ":"))
+    return compact_json(payload, default=None)
 
 
 def from_jsonl_line(line: str) -> HeartbeatDecision:

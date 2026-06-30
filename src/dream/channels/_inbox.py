@@ -9,12 +9,11 @@ caller) so a bad write can't wedge the channel forever.
 from __future__ import annotations
 
 import contextlib
-import json
 from dataclasses import dataclass
 from pathlib import Path
 
 from dream.channels._commands import Command, command_from_dict
-from dream.utils.fs import atomic_write_text
+from dream.utils.fs import is_json_drop_file, save_json_file, try_load_json_file
 
 __all__ = ["CommandInbox"]
 
@@ -32,7 +31,7 @@ class CommandInbox:
         """Atomically write ``command`` into the inbox; return the file path."""
         self.inbox_dir.mkdir(parents=True, exist_ok=True)
         dest = self.inbox_dir / f"{command.timestamp:.6f}_{command.id}.json"
-        atomic_write_text(dest, json.dumps(command.to_dict(), indent=2))
+        save_json_file(dest, command.to_dict(), trailing_newline=False)
         return dest
 
     def drain(self) -> list[Command]:
@@ -46,9 +45,9 @@ class CommandInbox:
             return []
         commands: list[Command] = []
         for path in sorted(self.inbox_dir.iterdir()):
-            if not _is_command_file(path):
+            if not is_json_drop_file(path):
                 continue
-            command = _try_load(path)
+            command = try_load_json_file(path, command_from_dict)
             if command is not None:
                 commands.append(command)
             with contextlib.suppress(OSError):
@@ -57,19 +56,3 @@ class CommandInbox:
         return commands
 
 
-def _is_command_file(path: Path) -> bool:
-    name = path.name
-    if name.startswith(".") or path.suffix != ".json" or ".tmp." in name:
-        return False
-    return path.is_file()
-
-
-def _try_load(path: Path) -> Command | None:
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    try:
-        return command_from_dict(data)
-    except (KeyError, ValueError, TypeError):
-        return None

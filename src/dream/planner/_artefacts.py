@@ -14,12 +14,12 @@ runs-once orchestration.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal
 
-from dream.utils.fs import atomic_write_text
+from dream.utils.fs import load_json_file, save_json_file
+from dream.utils.identifiers import checked_task_id as _checked_task_id
 
 __all__ = [
     "LedgerStep",
@@ -32,19 +32,6 @@ __all__ = [
 
 StepStatus = Literal["pending", "in_progress", "done", "blocked"]
 _VALID_STATUSES: frozenset[str] = frozenset({"pending", "in_progress", "done", "blocked"})
-
-
-def _checked_task_id(task_id: str) -> str:
-    if (
-        not task_id
-        or task_id in {".", ".."}
-        or "/" in task_id
-        or "\\" in task_id
-        or "\x00" in task_id
-        or Path(task_id).is_absolute()
-    ):
-        raise ValueError(f"unsafe task_id: {task_id!r}")
-    return task_id
 
 
 @dataclass(frozen=True)
@@ -136,11 +123,11 @@ class PlannerLedger:
         )
 
     def save(self, path: str | Path) -> None:
-        atomic_write_text(path, json.dumps(self.to_dict(), indent=2) + "\n")
+        save_json_file(path, self.to_dict())
 
     @classmethod
     def load(cls, path: str | Path) -> PlannerLedger:
-        return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
+        return cls.from_dict(load_json_file(path))
 
 
 def planner_spec_path(worktree_root: str | Path, task_id: str) -> Path:

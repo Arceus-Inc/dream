@@ -7,12 +7,11 @@ offload contract so the report stays small — inline text is truncated and an
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
 from dream.services.tool_outputs import offload_tool_output
-from dream.utils.fs import atomic_write_text
+from dream.utils.fs import save_json_file
 from dream.verification._types import RepoVerificationStep, VerificationReport
 
 
@@ -22,7 +21,7 @@ def write_report(report: VerificationReport, path: str | Path, *, scratch_dir: P
         "status": report.status,
         "steps": [_serialise_step(step, scratch_dir, index) for index, step in enumerate(report.steps)],
     }
-    atomic_write_text(path, json.dumps(payload, indent=2, sort_keys=False))
+    save_json_file(path, payload, trailing_newline=False)
 
 
 def _serialise_step(

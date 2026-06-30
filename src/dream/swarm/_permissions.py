@@ -31,13 +31,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
-import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from dream.utils.fs import atomic_write_text
+from dream.utils.fs import is_json_drop_file, save_json_file, try_load_json_file
 
 __all__ = ["PermissionMailbox", "PermissionRequest", "PermissionResponse"]
 
@@ -136,7 +135,7 @@ class PermissionMailbox:
         """Atomically write a pending request; return its on-disk path."""
         self.pending_dir.mkdir(parents=True, exist_ok=True)
         dest = self._pending_path(request.request_id)
-        atomic_write_text(dest, json.dumps(request.to_dict(), indent=2))
+        save_json_file(dest, request.to_dict(), trailing_newline=False)
         return dest
 
     def read_resolved(self, request_id: str) -> PermissionResponse | None:
@@ -144,14 +143,7 @@ class PermissionMailbox:
         path = self._resolved_path(request_id)
         if not path.is_file():
             return None
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return None
-        try:
-            return PermissionResponse.from_dict(data)
-        except (KeyError, ValueError, TypeError):
-            return None
+        return try_load_json_file(path, PermissionResponse.from_dict)
 
     async def wait_for_response(
         self,
@@ -184,9 +176,9 @@ class PermissionMailbox:
             return []
         out: list[PermissionRequest] = []
         for path in sorted(self.pending_dir.iterdir()):
-            if not _is_request_file(path):
+            if not is_json_drop_file(path):
                 continue
-            req = _try_load_request(path)
+            req = try_load_json_file(path, PermissionRequest.from_dict)
             if req is not None:
                 out.append(req)
         out.sort(key=lambda r: r.created_at)
@@ -196,7 +188,7 @@ class PermissionMailbox:
         path = self._pending_path(request_id)
         if not path.is_file():
             return None
-        return _try_load_request(path)
+        return try_load_json_file(path, PermissionRequest.from_dict)
 
     def resolve(
         self,
@@ -224,9 +216,10 @@ class PermissionMailbox:
             allow_once=bool(allow_once),
         )
         self.resolved_dir.mkdir(parents=True, exist_ok=True)
-        atomic_write_text(
+        save_json_file(
             self._resolved_path(request_id),
-            json.dumps(response.to_dict(), indent=2),
+            response.to_dict(),
+            trailing_newline=False,
         )
         # Resolved file is now on disk; remove pending. A failure here leaves
         # the pending file behind (leader retry is a KeyError because the
@@ -237,24 +230,3 @@ class PermissionMailbox:
 
 
 # --- helpers ------------------------------------------------------
-
-
-def _is_request_file(path: Path) -> bool:
-    if not path.is_file():
-        return False
-    if path.suffix != ".json":
-        return False
-    if path.name.startswith("."):
-        return False
-    return ".tmp." not in path.name
-
-
-def _try_load_request(path: Path) -> PermissionRequest | None:
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    try:
-        return PermissionRequest.from_dict(data)
-    except (KeyError, ValueError, TypeError):
-        return None

@@ -19,7 +19,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from dream.utils.fs import atomic_write_text
+from dream.utils.fs import atomic_write_text, is_json_drop_file
 
 __all__ = ["WakeNote", "WakeNoteStore"]
 
@@ -59,7 +59,7 @@ class WakeNoteStore:
         """How many notes are queued (a peek — consumes nothing)."""
         if not self.notes_dir.is_dir():
             return 0
-        return sum(1 for path in self.notes_dir.iterdir() if _is_note_file(path))
+        return sum(1 for path in self.notes_dir.iterdir() if is_json_drop_file(path))
 
     def drain(self) -> list[WakeNote]:
         """Read + delete every pending note, oldest-first.
@@ -71,7 +71,7 @@ class WakeNoteStore:
             return []
         notes: list[WakeNote] = []
         for path in sorted(self.notes_dir.iterdir()):
-            if not _is_note_file(path):
+            if not is_json_drop_file(path):
                 continue
             note = _try_load(path)
             if note is not None:
@@ -80,13 +80,6 @@ class WakeNoteStore:
                 path.unlink()
         notes.sort(key=lambda n: n.created_at)
         return notes
-
-
-def _is_note_file(path: Path) -> bool:
-    name = path.name
-    if name.startswith(".") or path.suffix != ".json" or ".tmp." in name:
-        return False
-    return path.is_file()
 
 
 def _try_load(path: Path) -> WakeNote | None:

@@ -18,9 +18,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from dream.config.paths import _checked_task_id
 from dream.tasks._ledger import Ledger, read_ledger, write_ledger
 from dream.utils.fs import atomic_write_text
+from dream.utils.identifiers import checked_task_id as _checked_task_id
 
 __all__ = [
     "EXEC_PLAN_SECTIONS",

@@ -16,12 +16,11 @@ negotiation result) and ultimately in the runner (slice 10-G).
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
-from dream.utils.fs import atomic_write_text
+from dream.utils.fs import load_json_file, save_json_file
 
 from ._checks import checked_sprint_number, checked_task_id
 
@@ -155,11 +154,11 @@ class SprintContract:
         )
 
     def save(self, path: str | Path) -> None:
-        atomic_write_text(path, json.dumps(self.to_dict(), indent=2) + "\n")
+        save_json_file(path, self.to_dict())
 
     @classmethod
     def load(cls, path: str | Path) -> SprintContract:
-        return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
+        return cls.from_dict(load_json_file(path))
 
 
 def sprint_contract_path(

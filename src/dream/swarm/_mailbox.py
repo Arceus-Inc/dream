@@ -13,14 +13,13 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
-import json
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, get_args
 
-from dream.utils.fs import atomic_write_text
+from dream.utils.fs import is_json_drop_file, save_json_file, try_load_json_file
 
 __all__ = [
     "Mailbox",
@@ -230,7 +229,7 @@ class Mailbox:
         self.inbox_dir.mkdir(parents=True, exist_ok=True)
         filename = f"{message.timestamp:.6f}_{message.id}.json"
         dest = self.inbox_dir / filename
-        atomic_write_text(dest, json.dumps(message.to_dict(), indent=2))
+        save_json_file(dest, message.to_dict(), trailing_newline=False)
         return dest
 
     # read ------------------------------------------------------------
@@ -244,9 +243,9 @@ class Mailbox:
         if not self.inbox_dir.is_dir():
             return []
         return [
-            (path, _try_load(path))
+            (path, try_load_json_file(path, MailboxMessage.from_dict))
             for path in sorted(self.inbox_dir.iterdir())
-            if _is_message_file(path)
+            if is_json_drop_file(path)
         ]
 
     def read_all(self) -> list[MailboxMessage]:
@@ -270,31 +269,4 @@ class Mailbox:
         return messages
 
 
-# --- helpers --------------------------------------------------------
 
-
-def _is_message_file(path: Path) -> bool:
-    name = path.name
-    if name.startswith("."):
-        return False  # lockfiles and similar
-    if not path.is_file():
-        return False
-    if path.suffix != ".json":
-        return False
-    # Belt and braces: skip ``foo.json.tmp.<hex>`` orphans from atomic_write.
-    return ".tmp." not in name
-
-
-def _try_load(path: Path) -> MailboxMessage | None:
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    try:
-        return MailboxMessage.from_dict(data)
-    except (KeyError, ValueError, TypeError):
-        return None

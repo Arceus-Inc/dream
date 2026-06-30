@@ -24,7 +24,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from dream.utils.fs import atomic_write_text
+from dream.utils.fs import save_json_file
 
 __all__ = [
     "LEDGER_SCHEMA_PATH",
@@ -241,8 +241,7 @@ def write_ledger(path: str | Path, ledger: Ledger) -> None:
     """Serialise the ledger to ``path`` atomically, with ``$schema`` set."""
     payload: dict[str, Any] = {"$schema": LEDGER_SCHEMA_URI}
     payload.update(ledger.model_dump(mode="json"))
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_text(path, json.dumps(payload, indent=2, sort_keys=False))
+    save_json_file(path, payload, trailing_newline=False)
 
 
 def read_ledger(path: str | Path) -> Ledger:

@@ -37,6 +37,7 @@ from dream.channels import (
 )
 from dream.config.paths import DreamPaths
 from dream.observability import tail_events
+from dream.utils.fs import compact_json
 
 __all__ = ["main", "parse_args"]
 
@@ -107,7 +108,7 @@ def main(
 
     if args.subcommand == "events":
         for record in tail_events(events_path, last=args.last):
-            out.write(json.dumps(record, separators=(",", ":")) + "\n")
+            out.write(compact_json(record) + "\n")
         return EXIT_OK
 
     try:
