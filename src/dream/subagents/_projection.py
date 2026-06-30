@@ -29,6 +29,8 @@ class SubagentResult:
     success: bool = True
     error: str | None = None
     turns_used: int = 0
+    tool_calls: int = 0
+    tool_errors: int = 0
 
 
 def project_subagent(

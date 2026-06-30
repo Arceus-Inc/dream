@@ -15,32 +15,29 @@ a static decomposition.
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
 from dream.contracts.tool import ToolResult
 from dream.observability._tracer import Tracer
 from dream.subagents._declaration import SubagentSet
-from dream.subagents._projection import SubagentResult, project_subagent
-from dream.swarm._spawn import TeammateSpawnConfig
 from dream.tools._base import BaseTool, ToolDeclaration
 from dream.tools._context import ToolExecutionContext
 
-# Context metadata key for the SubagentSet
+if TYPE_CHECKING:
+    from dream.harness import Harness
+
+# ---------------------------------------------------------------------------
+# Context metadata keys — typed constants instead of bare strings.
+# ---------------------------------------------------------------------------
 SUBAGENT_SET_CONTEXT_KEY = "dream.subagent_set"
-# Context metadata key for the parent session id
 PARENT_SESSION_KEY = "dream.parent_session_id"
-# Context metadata key for parent tools
 PARENT_TOOLS_KEY = "dream.parent_tools"
-# Context metadata key for parent permissions
 PARENT_PERMISSIONS_KEY = "dream.parent_permissions"
-# Context metadata key for the team name
 TEAM_KEY = "dream.team"
-# Context metadata key for the tracer
 TRACER_KEY = "dream.tracer"
-# Context metadata key for the InProcessFactory (the callback that runs a subagent)
-SUBAGENT_EXECUTOR_KEY = "dream.subagent_executor"
+HARNESS_KEY = "dream.harness"
 
 # V1 spawn cap per beat — cheap early guard; gate-2 (budget) is the cost backstop.
 MAX_SPAWNS_PER_BEAT = 10
@@ -63,9 +60,9 @@ class SpawnSubagentTool(BaseTool):
     name = "spawn_subagent"
     description = (
         "Spawn a capability-minimized subagent to perform a bounded task. "
-        "The subagent runs to completion and returns its output text. "
-        "Use this when you need to delegate focused, bounded work to a "
-        "specialized teammate."
+        "The subagent runs to completion with its own tool access and returns "
+        "its output text. Use this when you need to delegate focused, bounded "
+        "work to a specialized teammate."
     )
     declaration = ToolDeclaration(risk="safe", tier_required=0, timeout_seconds=300.0)
     input_model = SpawnSubagentInput
@@ -119,23 +116,18 @@ class SpawnSubagentTool(BaseTool):
                 },
             )
 
-        # --- Retrieve context values ---
-        parent_session_id = ctx.metadata.get(PARENT_SESSION_KEY, ctx.session_id)
-        parent_tools: frozenset[str] = ctx.metadata.get(PARENT_TOOLS_KEY, frozenset())
-        parent_permissions: tuple[str, ...] = ctx.metadata.get(PARENT_PERMISSIONS_KEY, ())
-        team = ctx.metadata.get(TEAM_KEY, "default")
-        executor = ctx.metadata.get(SUBAGENT_EXECUTOR_KEY)
-
-        # --- Project Subagent → TeammateSpawnConfig ---
-        config = project_subagent(
-            agent,
-            parent_session_id=parent_session_id,
-            parent_tools=parent_tools,
-            parent_permissions=parent_permissions,
-            team=team,
-            cwd=str(ctx.working_dir),
-            prompt=args.prompt,
-        )
+        # --- Retrieve harness from context ---
+        harness: Harness | None = ctx.metadata.get(HARNESS_KEY)
+        if harness is None:
+            return ToolResult(
+                content="No harness wired for subagent execution.",
+                is_error=True,
+                metadata={
+                    "root_cause": "no_harness",
+                    "safe_retry": "Subagent execution requires a wired harness.",
+                    "stop_condition": "Cannot spawn subagents without a harness.",
+                },
+            )
 
         # --- Emit observability event: subagent.spawn ---
         tracer: Tracer | None = ctx.metadata.get(TRACER_KEY)
@@ -149,16 +141,18 @@ class SpawnSubagentTool(BaseTool):
                     "depth": agent.depth,
                     "tools": list(agent.tools),
                     "model": agent.model or "parent_model",
-                    "parent_session_id": parent_session_id,
+                    "parent_session_id": ctx.session_id,
                 },
             )
 
-        # --- Execute the subagent ---
-        if executor is None:
-            # No executor wired — run a simulated in-process execution
-            result = await self._run_inline(config, agent, ctx)
-        else:
-            result = await self._run_with_executor(executor, config, agent, ctx)
+        # --- Execute the subagent as a real bounded session ---
+        from dream.subagents._inline_executor import run_subagent_inline
+
+        result = await run_subagent_inline(
+            agent,
+            prompt=args.prompt,
+            harness=harness,
+        )
 
         elapsed = time.time() - spawn_time
 
@@ -170,6 +164,8 @@ class SpawnSubagentTool(BaseTool):
                     "subagent_name": args.name,
                     "success": result.success,
                     "turns_used": result.turns_used,
+                    "tool_calls": result.tool_calls,
+                    "tool_errors": result.tool_errors,
                     "elapsed_seconds": round(elapsed, 2),
                     "error": result.error,
                 },
@@ -193,40 +189,14 @@ class SpawnSubagentTool(BaseTool):
             content=result.output,
             is_error=False,
             metadata={
-                "summary": f"subagent {args.name!r} completed in {result.turns_used} turns",
+                "summary": (
+                    f"subagent {args.name!r} completed in {result.turns_used} turn(s), "
+                    f"{result.tool_calls} tool call(s)"
+                ),
                 "subagent_name": args.name,
                 "turns_used": result.turns_used,
+                "tool_calls": result.tool_calls,
+                "tool_errors": result.tool_errors,
                 "elapsed_seconds": round(elapsed, 2),
             },
         )
-
-    async def _run_inline(
-        self,
-        config: TeammateSpawnConfig,
-        agent: Any,
-        ctx: ToolExecutionContext,
-    ) -> SubagentResult:
-        """Run the subagent inline using the InProcessExecutor pattern.
-
-        When a full executor is not wired (e.g. in simple/test harnesses),
-        this path runs the subagent's bounded work as a direct engine call
-        within the parent's process. The subagent gets its own session with
-        the capability-minimized toolset.
-        """
-        from dream.subagents._inline_executor import run_subagent_inline
-
-        return await run_subagent_inline(config, agent, ctx)
-
-    async def _run_with_executor(
-        self,
-        executor: Any,
-        config: TeammateSpawnConfig,
-        agent: Any,
-        ctx: ToolExecutionContext,
-    ) -> SubagentResult:
-        """Run the subagent through the wired executor (InProcess/Subprocess)."""
-        from dream.subagents._inline_executor import run_subagent_inline
-
-        # V1: always use inline execution regardless of executor type.
-        # The executor is available for future subprocess/remote backends.
-        return await run_subagent_inline(config, agent, ctx)

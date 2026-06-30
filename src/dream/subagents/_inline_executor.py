@@ -1,125 +1,107 @@
-"""Inline subagent executor — runs a subagent within the parent process.
+"""Inline subagent executor — runs a subagent as a real bounded session.
 
-V1 profile: the reasoner. In-process, shared parent worktree, serial join.
-The subagent gets its own session with capability-minimized tools and runs
-to completion bounded by max_turns.
+The subagent gets its own ``Harness.run_role`` session with capability-
+minimized tools and runs to completion bounded by ``max_turns``. It is a
+real agent that can call ``read_file``, ``grep``, ``bash``, etc. — not a
+single-shot LLM call.
 
-Spec §09 v1: in-process, shared worktree, read parent scope, write nothing,
-plain text result, flat depth, serial join, per-beat spawn-count cap.
+Spec §09 v1: in-process, shared worktree, serial join, flat depth.
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import TYPE_CHECKING
 
+from dream.events import ToolUseResult, ToolUseStart
+from dream.roles._manifest import RoleManifest
+from dream.session import SessionOptions
 from dream.subagents._declaration import Subagent
 from dream.subagents._projection import SubagentResult
-from dream.swarm._spawn import TeammateSpawnConfig
-from dream.tools._context import ToolExecutionContext
+
+if TYPE_CHECKING:
+    from dream.harness import Harness
 
 
 async def run_subagent_inline(
-    config: TeammateSpawnConfig,
     agent: Subagent,
-    ctx: ToolExecutionContext,
+    *,
+    prompt: str,
+    harness: Harness,
 ) -> SubagentResult:
-    """Execute a subagent inline within the parent's process.
+    """Execute a subagent as a real bounded session with tools.
 
-    This is the v1 reasoner profile: the subagent runs as a bounded agent
-    loop using the parent's engine factory (if available) or a simplified
-    prompt-response cycle. The result is plain text joined back into the
-    parent turn.
+    Creates a synthetic ``RoleManifest`` scoped to the subagent's declared
+    tools and runs it through ``harness.run_role()``. The subagent:
 
-    The subagent:
-    - Has its own turn budget (agent.max_turns)
-    - Cannot spawn sub-subagents (fail-closed; spawn tool not in its toolset)
-    - Reads the parent's worktree but writes nothing persistent
-    - Returns plain text output
+    - Gets a real engine session with actual tool dispatch
+    - Has capability-minimized tools (only ``agent.tools``)
+    - Cannot spawn sub-subagents (``spawn_subagent`` is disallowed)
+    - Is bounded by ``agent.max_turns``
+    - Returns plain text (concatenation of all assistant text deltas)
     """
-    # Try to get the engine factory from context for a full agent loop
-    engine_factory = ctx.metadata.get("dream.engine_factory")
+    manifest = _build_subagent_manifest(agent)
+    options = SessionOptions(max_turns=agent.max_turns)
 
-    if engine_factory is not None:
-        return await _run_with_engine(config, agent, ctx, engine_factory)
+    try:
+        result = await harness.run_role(
+            manifest,
+            prompt,
+            options=options,
+        )
+        # Count tool calls from the event stream for observability
+        tool_calls = sum(
+            1 for ev in result.events if isinstance(ev, ToolUseStart)
+        )
+        tool_errors = sum(
+            1
+            for ev in result.events
+            if isinstance(ev, ToolUseResult) and ev.is_error
+        )
+        return SubagentResult(
+            name=agent.name,
+            output=result.final_text,
+            success=True,
+            turns_used=tool_calls or 1,
+            tool_calls=tool_calls,
+            tool_errors=tool_errors,
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        return SubagentResult(
+            name=agent.name,
+            output="",
+            success=False,
+            error=f"{type(exc).__name__}: {exc}",
+            turns_used=0,
+        )
 
-    # Fallback: use the LLM directly for a single-turn response
-    llm_callable = ctx.metadata.get("dream.llm_callable")
-    if llm_callable is not None:
-        return await _run_with_llm(config, agent, ctx, llm_callable)
 
-    # No engine or LLM available — return a structured error
-    return SubagentResult(
-        name=agent.name,
-        output="",
-        success=False,
-        error="No engine or LLM callable wired for subagent execution",
-        turns_used=0,
+def _build_subagent_manifest(agent: Subagent) -> RoleManifest:
+    """Build a synthetic RoleManifest for the subagent.
+
+    Uses the ``generator`` role name (it needs tools) with the subagent's
+    declared tool allow-list. ``spawn_subagent`` is always disallowed to
+    prevent recursive spawning (v1 flat depth).
+    """
+    system_prompt = agent.system_prompt or (
+        f"You are {agent.name}, a specialized subagent.\n\n"
+        f"Role: {agent.description}\n\n"
+        f"You are an ephemeral teammate spawned to do bounded work. "
+        f"Complete the task described in the prompt using your available "
+        f"tools, then return a clear, concise result. "
+        f"You cannot spawn subagents yourself."
     )
 
-
-async def _run_with_engine(
-    config: TeammateSpawnConfig,
-    agent: Subagent,
-    ctx: ToolExecutionContext,
-    engine_factory: Any,
-) -> SubagentResult:
-    """Run the subagent through a full engine loop."""
-    try:
-        # The engine factory creates a bounded session for the subagent
-        result_text = await engine_factory(config)
-        return SubagentResult(
-            name=agent.name,
-            output=result_text if isinstance(result_text, str) else str(result_text),
-            success=True,
-            turns_used=1,  # simplified; real impl tracks turns
-        )
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        return SubagentResult(
-            name=agent.name,
-            output="",
-            success=False,
-            error=f"{type(exc).__name__}: {exc}",
-            turns_used=0,
-        )
-
-
-async def _run_with_llm(
-    config: TeammateSpawnConfig,
-    agent: Subagent,
-    ctx: ToolExecutionContext,
-    llm_callable: Any,
-) -> SubagentResult:
-    """Run the subagent as a direct LLM call (simplified single-turn)."""
-    try:
-        # Build the messages for the subagent
-        messages = [
-            {"role": "system", "content": config.system_prompt or ""},
-            {"role": "user", "content": config.prompt},
-        ]
-
-        # Call the LLM
-        response = await llm_callable(
-            messages=messages,
-            model=config.model,
-        )
-        output = response if isinstance(response, str) else str(response)
-
-        return SubagentResult(
-            name=agent.name,
-            output=output,
-            success=True,
-            turns_used=1,
-        )
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        return SubagentResult(
-            name=agent.name,
-            output="",
-            success=False,
-            error=f"{type(exc).__name__}: {exc}",
-            turns_used=0,
-        )
+    return RoleManifest(
+        name="generator",
+        description=agent.description,
+        system_prompt=system_prompt,
+        system_prompt_mode="replace",
+        tools=agent.tools,
+        disallowed_tools=("spawn_subagent",),
+        skills=agent.skills,
+        permission_mode="dontAsk",
+        effort="medium",
+    )

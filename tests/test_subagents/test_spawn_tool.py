@@ -4,31 +4,28 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 from dream.subagents._declaration import Subagent, SubagentSet
+from dream.subagents._projection import SubagentResult
 from dream.tools._context import ToolExecutionContext
 from dream.tools.builtin.spawn_subagent import (
-    PARENT_PERMISSIONS_KEY,
-    PARENT_SESSION_KEY,
-    PARENT_TOOLS_KEY,
+    HARNESS_KEY,
     SUBAGENT_SET_CONTEXT_KEY,
-    TEAM_KEY,
     SpawnSubagentTool,
 )
 
 
 def _make_ctx(
     subagent_set: SubagentSet | None = None,
-    parent_tools: frozenset[str] | None = None,
+    harness: Any = None,
 ) -> ToolExecutionContext:
     """Build a ToolExecutionContext with subagent context wired."""
     metadata: dict[str, Any] = {}
     if subagent_set is not None:
         metadata[SUBAGENT_SET_CONTEXT_KEY] = subagent_set
-    metadata[PARENT_SESSION_KEY] = "test-session-id"
-    metadata[PARENT_TOOLS_KEY] = parent_tools or frozenset({"read_file", "grep"})
-    metadata[PARENT_PERMISSIONS_KEY] = ("read",)
-    metadata[TEAM_KEY] = "test-team"
+    if harness is not None:
+        metadata[HARNESS_KEY] = harness
     return ToolExecutionContext(
         working_dir=Path("/tmp/test"),
         session_id="test-session",
@@ -64,35 +61,48 @@ class TestSpawnSubagentTool:
         assert "not found" in result.content
         assert "reviewer" in result.content
 
-    async def test_valid_spawn_no_executor(self) -> None:
-        """Without an engine/LLM, the tool returns a structured error."""
+    async def test_no_harness_returns_error(self) -> None:
+        """Without a harness wired, the tool returns a structured error."""
         tool = SpawnSubagentTool()
         ctx = _make_ctx(
             subagent_set=_simple_subagent_set(),
-            parent_tools=frozenset({"read_file", "grep", "bash"}),
+            harness=None,
         )
         result = await tool.execute({"name": "reviewer", "prompt": "review this code"}, ctx)
         assert result.is_error
-        assert "No engine or LLM" in result.content
+        assert "harness" in result.content.lower()
 
-    async def test_valid_spawn_with_llm(self) -> None:
-        """With an LLM callable, the tool executes the subagent."""
+    async def test_valid_spawn_with_harness(self) -> None:
+        """With a harness wired, the tool creates a real bounded session."""
         tool = SpawnSubagentTool()
-        ctx = _make_ctx(
-            subagent_set=_simple_subagent_set(),
-            parent_tools=frozenset({"read_file", "grep", "bash"}),
+        mock_harness = AsyncMock()
+
+        mock_result = SubagentResult(
+            name="reviewer",
+            output="LGTM — no issues found.",
+            success=True,
+            turns_used=3,
+            tool_calls=2,
+            tool_errors=0,
         )
 
-        async def mock_llm(messages: list[dict], model: str | None = None) -> str:
-            return "LGTM — no issues found in this code."
+        with patch(
+            "dream.subagents._inline_executor.run_subagent_inline",
+            return_value=mock_result,
+        ):
+            ctx = _make_ctx(
+                subagent_set=_simple_subagent_set(),
+                harness=mock_harness,
+            )
+            result = await tool.execute(
+                {"name": "reviewer", "prompt": "review this code"}, ctx
+            )
 
-        ctx.metadata["dream.llm_callable"] = mock_llm
-
-        result = await tool.execute({"name": "reviewer", "prompt": "review this code"}, ctx)
         assert not result.is_error
         assert "LGTM" in result.content
         assert result.metadata["subagent_name"] == "reviewer"
-        assert result.metadata["turns_used"] == 1
+        assert result.metadata["turns_used"] == 3
+        assert result.metadata["tool_calls"] == 2
 
     def test_tool_declaration(self) -> None:
         tool = SpawnSubagentTool()

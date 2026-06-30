@@ -499,40 +499,6 @@ def _assemble_system_prompt(
     return "\n\n".join(parts)
 
 
-def _make_subagent_llm_callable(*, api_key: str, base_url: str, model: str) -> Callable[..., Any]:
-    """Build an async LLM callable for subagent inline execution.
-
-    Returns a simple non-streaming chat completion callable that subagents
-    use for their bounded work (v1 reasoner profile). Uses the same endpoint
-    credentials as the parent harness.
-    """
-    default_model = model
-
-    async def _call(
-        messages: list[dict[str, Any]],
-        model: str | None = None,
-        **kwargs: Any,
-    ) -> str:
-        import httpx
-
-        effective_model = model or default_model
-        url = f"{base_url.rstrip('/')}/chat/completions"
-        body: dict[str, Any] = {
-            "model": effective_model,
-            "messages": messages,
-        }
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(url, json=body, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-            return data["choices"][0]["message"]["content"]
-
-    return _call
-
 
 def _build_session_engine(
     session_id: str,
@@ -678,29 +644,18 @@ def _build_session_engine(
             proposals_dir=proposals_dir(paths.home, working_dir),
             source_ref=f"session://{session_id}",
         )
-    # Subagents: wire the SubagentSet + parent context into context_metadata so
-    # the spawn_subagent tool can access them at dispatch time.
+    # Subagents: wire the SubagentSet + harness reference into context_metadata
+    # so the spawn_subagent tool can create real bounded sessions.
     if subagents is not None and subagents:
         from dream.tools.builtin.spawn_subagent import (
-            PARENT_PERMISSIONS_KEY,
-            PARENT_SESSION_KEY,
-            PARENT_TOOLS_KEY,
+            HARNESS_KEY,
             SUBAGENT_SET_CONTEXT_KEY,
-            TEAM_KEY,
             TRACER_KEY,
         )
 
         context_metadata[SUBAGENT_SET_CONTEXT_KEY] = subagents
-        context_metadata[PARENT_SESSION_KEY] = session_id
-        context_metadata[PARENT_TOOLS_KEY] = frozenset(t.name for t in tools)
-        context_metadata[PARENT_PERMISSIONS_KEY] = ()
-        context_metadata[TEAM_KEY] = "default"
         context_metadata[TRACER_KEY] = tracer
-        # Wire a simple LLM callable for subagent inline execution (v1 reasoner
-        # profile). Uses a non-streaming chat completion to the same endpoint.
-        context_metadata["dream.llm_callable"] = _make_subagent_llm_callable(
-            api_key=api_key, base_url=base_url, model=model
-        )
+        context_metadata[HARNESS_KEY] = harness
     return build_query_engine(
         streamer=streamer,
         registry=tool_registry,
