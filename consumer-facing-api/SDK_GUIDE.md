@@ -50,6 +50,7 @@ def build_harness(
     working_memory: bool = False,    # opt-in task scratchpad + memory_propose seam
     mcp: bool = True,                # connect .harness/mcp-allowlist.toml
     plugins: bool = True,            # load .harness/plugins-enabled.toml
+    subagents: SubagentSet | None = None,  # opt-in ephemeral teammates via spawn_subagent
     skill_event_sink=None,           # callback when a skill body loads
     policy_warning_sink=None,        # operator-facing policy warnings
     env: Mapping[str, str] | None = None,      # host resolution only, never creds
@@ -205,6 +206,65 @@ for proposal in queue.glob("*.md"):
 
 Default-off keeps the standard tool surface byte-identical; pass
 `working_memory=True` to turn it on. See `examples/09_working_memory.py`.
+
+### Subagents (ephemeral teammates, opt-in)
+
+`build_harness(subagents=...)` wires a `SubagentSet` — declared subagent templates
+the parent agent dispatches via the `spawn_subagent` tool. Each subagent is a
+capability-minimized, ephemeral teammate that runs bounded work and dissolves.
+
+```python
+from dream.subagents import Subagent, SubagentRegistry, SubagentSet
+from dream.subagents._projection import build_subagent_set
+
+# Tier-1: role-owned specialist
+reviewer = Subagent(
+    name="reviewer",
+    description="Reviews code changes for correctness and style",
+    tools=("read_file", "grep", "bash", "git"),   # must be ⊆ parent's tools
+    depth=1,                                        # v1: always 1 (flat)
+    max_turns=6,
+)
+
+# Tier-2: shared capability agent (registered in kernel-level registry)
+researcher = Subagent(
+    name="researcher",
+    description="Researches a topic using codebase search and reasoning",
+    tools=("read_file", "grep", "bash"),
+    depth=1,
+    model="gpt-4o-mini",       # optional cheaper model
+    max_turns=4,
+)
+registry = SubagentRegistry()
+registry.register(researcher)
+
+# Build the resolved set for one beat
+agent_set = build_subagent_set(
+    tier1_agents=[reviewer],
+    tier2_agents=registry.resolve(("researcher",)),
+)
+
+harness = build_harness(..., subagents=agent_set)
+```
+
+The agent dispatches via tool call:
+
+```python
+# Inside a beat, the model calls:
+spawn_subagent(name="reviewer", prompt="Review the auth change for edge cases")
+# → SubagentResult: the subagent's plain-text output, joined into the parent turn
+```
+
+**Capability minimization (narrower-wins):** a subagent's tools = parent ∩ declared.
+Permission overlays can only tighten, never widen. `allow_permission_prompts=False`
+always — fail-closed. V1 is flat (depth 1 only): subagents are leaves and cannot
+themselves spawn. Per-beat spawn cap of 10.
+
+**Observability:** `subagent.spawn` and `subagent.complete` trace events land in the
+OTel-shaped JSONL alongside `llm.call`/`tool.call` events. Query with `query_logs`.
+
+Default-off keeps the standard tool surface byte-identical; pass `subagents=...` to
+turn it on. See `examples/10_subagents.py`.
 
 ### Plugins (repo-local extensions)
 

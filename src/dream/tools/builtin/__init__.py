@@ -17,6 +17,7 @@ from dream.tools.builtin.plan_show import PlanShowTool
 from dream.tools.builtin.propose_memory import MemoryProposeTool
 from dream.tools.builtin.read_offloaded import ReadOffloadedTool
 from dream.tools.builtin.skill import SkillTool
+from dream.tools.builtin.spawn_subagent import SpawnSubagentTool
 from dream.tools.builtin.task_create import TaskCreateTool
 from dream.tools.builtin.task_get import TaskGetTool
 from dream.tools.builtin.task_output import TaskOutputTool
@@ -91,4 +92,4 @@ def register_task_memory_tools(registry: ToolRegistry) -> None:
     registry.register(MemoryProposeTool(), source=ToolSource.DEFAULT)
 
 
-__all__ = ["default_registry", "register_task_memory_tools"]
+__all__ = ["SpawnSubagentTool", "default_registry", "register_task_memory_tools"]

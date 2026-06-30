@@ -67,6 +67,7 @@ from dream.skills import (
     build_session_skill_registry,
     render_skill_catalogue,
 )
+from dream.subagents._declaration import SubagentSet
 from dream.tasks import (
     TASK_CONTEXT_KEY,
     BackgroundTaskManager,
@@ -76,6 +77,7 @@ from dream.tasks._cron import CRON_MANIFEST_DIR, load_cron_manifests
 from dream.tools._base import BaseTool
 from dream.tools._registry import ToolRegistry, ToolSource
 from dream.tools.builtin import default_registry, register_task_memory_tools
+from dream.tools.builtin.spawn_subagent import SpawnSubagentTool
 from dream.wake import HeartbeatTool
 
 __all__ = ["PolicyWarningSink", "SkillEventSink", "build_harness"]
@@ -104,6 +106,7 @@ def build_harness(
     working_memory: bool = False,
     mcp: bool = True,
     plugins: bool = True,
+    subagents: SubagentSet | None = None,
     skill_event_sink: SkillEventSink | None = None,
     policy_warning_sink: PolicyWarningSink | None = None,
     env: Mapping[str, str] | None = None,
@@ -165,6 +168,11 @@ def build_harness(
     # wired below in ``_build_session_engine`` (it needs the session id).
     if working_memory:
         register_task_memory_tools(tool_registry)
+    # Subagents (chorus subagent layer): register the spawn_subagent tool when
+    # a SubagentSet is provided. The tool surface stays byte-identical when
+    # subagents is None (default off, like working_memory).
+    if subagents is not None and subagents and tool_registry.get("spawn_subagent") is None:
+        tool_registry.register(SpawnSubagentTool(), source=ToolSource.DEFAULT)
     compactor = AutoCompactState()
     # Resolve the home root from env so ``DREAM_HOME`` overrides are honoured
     # for task storage / sidecars (#43); hardcoding ``Path.home()`` would write
@@ -176,9 +184,7 @@ def build_harness(
     # boot gate's job to block (Runtime.run_boot_gates); the loader here is
     # tolerant so construction never raises on a bad skill.
     if skill_registry is None and skills:
-        skill_registry, _shadows = build_session_skill_registry(
-            working_dir, home=paths.home
-        )
+        skill_registry, _shadows = build_session_skill_registry(working_dir, home=paths.home)
     task_manager, task_context = _bootstrap_task_and_cron(working_dir, paths)
     # Spec 13B: the sandbox *tier* (read-only/repo-write/...) is read from
     # ``.harness/sandbox.toml`` and enforced at the permission gate; the
@@ -192,9 +198,7 @@ def build_harness(
     # ``.harness/tool-tier-overrides.toml`` (paths) and are independent of
     # session/role, so one assembly here covers every session in this process.
     if policy_warning_sink is not None:
-        _, policy_warnings = make_permission_gate(
-            tool_registry, paths=paths, cwd=working_dir
-        )
+        _, policy_warnings = make_permission_gate(tool_registry, paths=paths, cwd=working_dir)
         for warning in policy_warnings:
             policy_warning_sink(warning)
 
@@ -205,17 +209,13 @@ def build_harness(
     # Skills (Spec 06 slice 2): the frontmatter catalogue goes into the system
     # prompt so the model can discover skills; the SkillContext rides the
     # dispatcher's context_metadata so the `skill` tool can load bodies.
-    catalogue = (
-        render_skill_catalogue(skill_registry.list_meta()) if skill_registry else ""
-    )
+    catalogue = render_skill_catalogue(skill_registry.list_meta()) if skill_registry else ""
     # Memory (Spec 11): the read-side store over the per-project memory dir.
     # Its catalogue (id + description teasers) goes into the system prompt so
     # the model can discover durable facts; the MemoryContext rides the
     # dispatcher's context_metadata so the `memory_search` / `memory_get`
     # tools pull full records in. Disabled cleanly with ``memory=False``.
-    memory_store = (
-        FileMemoryStore(project_memory_dir(paths.home, working_dir)) if memory else None
-    )
+    memory_store = FileMemoryStore(project_memory_dir(paths.home, working_dir)) if memory else None
     memory_catalogue = (
         render_memory_catalogue(scan_memory_dir(memory_store.root))
         if memory_store is not None
@@ -292,6 +292,7 @@ def build_harness(
             capabilities=capabilities,
             harness=harness,
             orientation=orientation,
+            subagents=subagents,
         )
 
     config._engine_factory = _factory
@@ -362,9 +363,7 @@ def _make_async_opener(
     return _opener
 
 
-def _install_plugin(
-    harness: Harness, tool_registry: ToolRegistry, plugin: Plugin
-) -> None:
+def _install_plugin(harness: Harness, tool_registry: ToolRegistry, plugin: Plugin) -> None:
     """Install one loaded plugin's contributions into the live harness.
 
     ``harness.register_plugin`` already records the bundle and attaches the
@@ -500,6 +499,7 @@ def _assemble_system_prompt(
     return "\n\n".join(parts)
 
 
+
 def _build_session_engine(
     session_id: str,
     options: SessionOptions,
@@ -524,6 +524,7 @@ def _build_session_engine(
     capabilities: ProviderCapabilities,
     harness: Harness,
     orientation: bool = False,
+    subagents: SubagentSet | None = None,
 ) -> QueryEngine:
     """Construct one session's ``QueryEngine`` from explicit, pre-resolved deps.
 
@@ -582,9 +583,7 @@ def _build_session_engine(
         stream_chat_completion=httpx_chat_completion_stream(
             api_key=api_key,
             base_url=base_url,
-            extra_params={"tools": tools_wire, "tool_choice": "auto"}
-            if tools_wire
-            else None,
+            extra_params={"tools": tools_wire, "tool_choice": "auto"} if tools_wire else None,
         ),
         model=options.model or model,
         system_prompt=system_prompt,
@@ -645,6 +644,27 @@ def _build_session_engine(
             proposals_dir=proposals_dir(paths.home, working_dir),
             source_ref=f"session://{session_id}",
         )
+    # Subagents: wire the SubagentSet + harness reference into context_metadata
+    # so the spawn_subagent tool can create real bounded sessions.
+    if subagents is not None and subagents:
+        from dream.tools.builtin.spawn_subagent import (
+            HARNESS_KEY,
+            PARENT_TOOLS_KEY,
+            SPAWN_COUNT_KEY,
+            SUBAGENT_SET_CONTEXT_KEY,
+            TRACER_KEY,
+        )
+
+        context_metadata[SUBAGENT_SET_CONTEXT_KEY] = subagents
+        context_metadata[TRACER_KEY] = tracer
+        context_metadata[HARNESS_KEY] = harness
+        # Per-session spawn counter — seeded fresh here so the cap is per-beat and
+        # never accumulates on the shared tool instance (the cross-session DoS).
+        context_metadata[SPAWN_COUNT_KEY] = [0]
+        # Parent's live tool allow-list, for capability minimization (§05): the
+        # subagent's tools are intersected with this. ``None`` = no role restriction
+        # (full surface), so the subagent keeps its declared tools.
+        context_metadata[PARENT_TOOLS_KEY] = role_allowed
     return build_query_engine(
         streamer=streamer,
         registry=tool_registry,

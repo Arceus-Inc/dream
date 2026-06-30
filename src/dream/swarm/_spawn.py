@@ -70,6 +70,7 @@ class TeammateSpawnConfig:
     system_prompt: str | None = None
     system_prompt_mode: Literal["default", "replace", "append"] | None = None
     permissions: tuple[str, ...] = ()
+    tools: tuple[str, ...] = ()
     plan_mode_required: bool = False
     allow_permission_prompts: bool = False
     worktree_path: str | None = None
@@ -92,6 +93,7 @@ class TeammateSpawnConfig:
             "subscriptions",
             _coerce_tokens(self.subscriptions, field_name="subscriptions"),
         )
+        object.__setattr__(self, "tools", _coerce_tokens(self.tools, field_name="tools"))
 
 
 @dataclass(frozen=True)

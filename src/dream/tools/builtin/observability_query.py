@@ -1,10 +1,11 @@
 """``query_logs`` / ``query_metrics`` — agent-queryable observability (Spec 12b).
 
-Both are read-only tools over the current session's trace
-(``.dream/sidecars/{session}/logs/trace.jsonl``, written by 12a). They resolve
-that path from the execution context, so nothing needs injecting. Large results
-ride the engine dispatcher's existing #04 offload of ``ToolResult.content`` — the
-tools just return the text.
+Both are read-only tools over session traces
+(``.dream/sidecars/{session}/logs/trace.jsonl``, written by 12a). By default
+they query the current session's trace; when ``all_sessions=True`` they scan
+every sibling session trace in the same workspace (so the evaluator can see
+subagent events from the generator session). Large results ride the engine
+dispatcher's existing #04 offload of ``ToolResult.content``.
 """
 
 from __future__ import annotations
@@ -44,6 +45,14 @@ class QueryLogsInput(BaseModel):
     contains: str | None = Field(default=None, description="Substring line filter.")
     since: str | None = Field(default=None, description="Relative '-1h' or ISO-8601 start.")
     until: str | None = Field(default=None, description="Relative or ISO-8601 end (default: now).")
+    all_sessions: bool = Field(
+        default=False,
+        description=(
+            "Search all sibling session traces, not just this session's. "
+            "Use when looking for events from other roles (e.g. subagent events "
+            "from the generator session)."
+        ),
+    )
 
 
 class QueryMetricsInput(BaseModel):
@@ -80,7 +89,12 @@ class QueryLogsTool(BaseTool):
         except QueryError as exc:
             return _bad_query(exc)
 
-        matched = query_logs(read_events(_trace_path(ctx)), query)
+        events = (
+            _read_all_sibling_events(ctx)
+            if args.all_sessions
+            else read_events(_trace_path(ctx))
+        )
+        matched = query_logs(events, query)
         if not matched:
             return ToolResult(content="(no matching events)", metadata={"count": 0})
         body = "\n".join(to_jsonl_line(event) for event in matched)
@@ -137,6 +151,22 @@ def _until_bound(spec: str | None, *, now_ms: int) -> int:
 
 def _trace_path(ctx: ToolExecutionContext) -> Path:
     return DreamPaths.resolve(ctx.working_dir).trace_log(ctx.session_id)
+
+
+def _read_all_sibling_events(ctx: ToolExecutionContext) -> list[Any]:
+    """Read trace events from all sibling sessions in the same workspace.
+
+    Globs ``.dream/sidecars/*/logs/trace.jsonl`` so the evaluator can find
+    subagent events emitted by the generator session.
+    """
+    paths = DreamPaths.resolve(ctx.working_dir)
+    sidecars = paths.sidecars_dir
+    if not sidecars.is_dir():
+        return []
+    all_events: list[Any] = []
+    for trace_file in sorted(sidecars.glob("*/logs/trace.jsonl")):
+        all_events.extend(read_events(trace_file))
+    return all_events
 
 
 def _bad_query(exc: QueryError) -> ToolResult:

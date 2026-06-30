@@ -23,6 +23,8 @@ TraceEventType = Literal[
     "validator.finding",
     "state.transition",
     "evaluation.record",
+    "subagent.spawn",
+    "subagent.complete",
 ]
 
 _EVENT_TYPES: frozenset[str] = frozenset(get_args(TraceEventType))
