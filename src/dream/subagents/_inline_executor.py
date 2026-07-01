@@ -17,6 +17,7 @@ from dream.events import ToolUseResult, ToolUseStart
 from dream.roles._manifest import RoleManifest
 from dream.session import SessionOptions
 from dream.subagents._declaration import Subagent
+from dream.subagents._output_guard import enforce_output_schema
 from dream.subagents._projection import SubagentResult, intersect_tools
 
 if TYPE_CHECKING:
@@ -63,13 +64,19 @@ async def run_subagent_inline(
             for ev in result.events
             if isinstance(ev, ToolUseResult) and ev.is_error
         )
+        output, warning = result.final_text, None
+        if agent.output_schema is not None:
+            output, warning = await enforce_output_schema(
+                result.final_text, agent=agent, harness=harness
+            )
         return SubagentResult(
             name=agent.name,
-            output=result.final_text,
+            output=output,
             success=True,
             turns_used=tool_calls or 1,
             tool_calls=tool_calls,
             tool_errors=tool_errors,
+            warning=warning,
         )
     except asyncio.CancelledError:
         raise

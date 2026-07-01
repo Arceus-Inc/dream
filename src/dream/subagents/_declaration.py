@@ -55,6 +55,11 @@ class Subagent:
     max_turns: int = 8
     """Maximum turn budget for the subagent before forced termination."""
 
+    output_schema: dict[str, Any] | None = None
+    """Optional JSON-schema the subagent's final message is validated against at runtime. ``None`` =
+    no enforcement (free-text return, unchanged). When set, the inline executor coerces + validates the
+    output, runs a bounded reformat loop on failure, and fails open with a warning (``_output_guard``)."""
+
     def __post_init__(self) -> None:
         if not self.name:
             raise ValueError("Subagent.name must be a non-empty string")

@@ -203,8 +203,13 @@ class SpawnSubagentTool(BaseTool):
                 },
             )
 
+        # Surface an output-schema guardrail warning inline, so the parent sees the contract was not
+        # fully met (fail-open) rather than silently trusting a best-effort result.
+        content = result.output
+        if result.warning:
+            content = f"{result.warning}\n\n{content}"
         return ToolResult(
-            content=result.output,
+            content=content,
             is_error=False,
             metadata={
                 "summary": (
@@ -216,5 +221,6 @@ class SpawnSubagentTool(BaseTool):
                 "tool_calls": result.tool_calls,
                 "tool_errors": result.tool_errors,
                 "elapsed_seconds": round(elapsed, 2),
+                "output_warning": result.warning,
             },
         )

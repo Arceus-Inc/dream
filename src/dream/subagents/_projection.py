@@ -46,6 +46,8 @@ class SubagentResult:
     turns_used: int = 0
     tool_calls: int = 0
     tool_errors: int = 0
+    warning: str | None = None
+    """Set when the output-schema guardrail failed open — the output is best-effort, not validated."""
 
 
 def project_subagent(
