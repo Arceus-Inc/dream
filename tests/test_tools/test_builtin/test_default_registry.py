@@ -38,6 +38,7 @@ def test_default_registry_holds_all_default_tools() -> None:
         "cron_list",
         "cron_show",
         "plan_show",
+        "web_search",
     }
 
 
@@ -64,6 +65,7 @@ def test_default_registry_order_is_canonical() -> None:
         "cron_list",
         "cron_show",
         "plan_show",
+        "web_search",
     ]
 
 

@@ -44,6 +44,7 @@ planner → sprint → evaluator loop until the task is done or blocked.
 | `examples/08_full_surface.py` | everything | All components in a single `run_task`. |
 | `examples/09_working_memory.py` | working memory | The opt-in task scratchpad + the `memory_propose` outbound seam (read the proposals queue your repo would drain). |
 | `examples/10_subagents.py` | subagents | Capability-minimized ephemeral teammates dispatched mid-beat via `spawn_subagent`. |
+| `examples/11_web_search.py` | web search | The Tavily-backed `web_search` built-in run at the network sandbox tier; needs `DREAM_TAVILY_API_KEY`. |
 
 Each example is standalone:
 
