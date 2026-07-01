@@ -22,6 +22,7 @@ from dream.tools.builtin.task_create import TaskCreateTool
 from dream.tools.builtin.task_get import TaskGetTool
 from dream.tools.builtin.task_output import TaskOutputTool
 from dream.tools.builtin.task_stop import TaskStopTool
+from dream.tools.builtin.web_extract import WebExtractTool
 from dream.tools.builtin.web_search import WebSearchTool
 from dream.tools.builtin.working_memory import (
     WorkingMemoryAppendTool,
@@ -51,6 +52,7 @@ _DEFAULT_ORDER: tuple[str, ...] = (
     "cron_show",
     "plan_show",
     "web_search",
+    "web_extract",
 )
 
 
@@ -76,6 +78,7 @@ def default_registry() -> ToolRegistry:
     registry.register(CronShowTool(), source=ToolSource.DEFAULT)
     registry.register(PlanShowTool(), source=ToolSource.DEFAULT)
     registry.register(WebSearchTool(), source=ToolSource.DEFAULT)
+    registry.register(WebExtractTool(), source=ToolSource.DEFAULT)
     return registry
 
 
