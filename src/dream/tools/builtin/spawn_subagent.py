@@ -170,6 +170,10 @@ class SpawnSubagentTool(BaseTool):
             prompt=args.prompt,
             harness=harness,
             parent_tools=parent_tools,
+            # Depth-2: hand the SAME per-beat counter + tracer down, so a spawn-eligible child's own
+            # spawns increment this beat's cap (spans the whole tree) and stay observable.
+            spawn_counter=counter,
+            tracer=tracer,
         )
 
         elapsed = time.time() - spawn_time

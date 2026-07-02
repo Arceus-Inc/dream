@@ -98,3 +98,37 @@ class TestSubagentSet:
         }
         s = SubagentSet(agents=agents)
         assert s.descriptions() == {"reviewer": "Code reviewer"}
+
+
+class TestSpawnable:
+    """Depth-2: a subagent may declare the Tier-2 agents it can itself dispatch."""
+
+    def test_spawnable_defaults_empty(self) -> None:
+        agent = Subagent(name="strategist", description="frames the bet", tools=("read_file",))
+        assert agent.spawnable == ()
+
+    def test_carries_declared_spawnable(self) -> None:
+        child = Subagent(name="web_research", description="reads the web", tools=("web_search",))
+        parent = Subagent(
+            name="strategist",
+            description="frames the bet",
+            tools=("read_file", "spawn_subagent"),
+            spawnable=(child,),
+        )
+        assert parent.spawnable == (child,)
+
+    def test_spawnable_round_trips(self) -> None:
+        child = Subagent(name="web_research", description="reads the web", tools=("web_search",))
+        parent = Subagent(
+            name="strategist",
+            description="frames the bet",
+            tools=("read_file", "spawn_subagent"),
+            spawnable=(child,),
+        )
+        restored = Subagent.from_dict(parent.to_dict())
+        assert restored.spawnable == (child,)
+
+    def test_max_subagent_depth_is_two(self) -> None:
+        from dream.subagents._declaration import MAX_SUBAGENT_DEPTH
+
+        assert MAX_SUBAGENT_DEPTH == 2

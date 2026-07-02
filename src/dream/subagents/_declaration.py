@@ -16,6 +16,11 @@ PermissionDelta = tuple[str, ...]
 """Tighten-only permission overlay — a tuple of permission tokens to *remove*
 from the parent's set. Never widens."""
 
+MAX_SUBAGENT_DEPTH = 2
+"""Hard cap on subagent nesting. A subagent at ``depth < MAX_SUBAGENT_DEPTH`` may dispatch its
+declared ``spawnable`` children; at the cap it is always a leaf. V1 was flat (1); depth-2 lets a
+Tier-1 specialist spawn a Tier-2 orchestrator, bounded by construction."""
+
 
 @dataclass(frozen=True)
 class Subagent:
@@ -55,6 +60,12 @@ class Subagent:
     max_turns: int = 8
     """Maximum turn budget for the subagent before forced termination."""
 
+    spawnable: tuple[Subagent, ...] = ()
+    """The Tier-2 subagents THIS subagent may itself dispatch (depth-2). Empty (default) = a leaf,
+    unchanged from v1. Non-empty + ``depth < MAX_SUBAGENT_DEPTH`` makes the child spawn-eligible: it
+    keeps ``spawn_subagent`` and is handed a scoped set of exactly these agents — never the parent's
+    full roster. Each is still tool-intersected with the child, so a grandchild can only narrow."""
+
     output_schema: dict[str, Any] | None = None
     """Optional JSON-schema the subagent's final message is validated against at runtime. ``None`` =
     no enforcement (free-text return, unchanged). When set, the inline executor coerces + validates the
@@ -82,6 +93,7 @@ class Subagent:
             "spawned_by": list(self.spawned_by),
             "system_prompt": self.system_prompt,
             "max_turns": self.max_turns,
+            "spawnable": [child.to_dict() for child in self.spawnable],
         }
 
     @classmethod
@@ -97,6 +109,7 @@ class Subagent:
             spawned_by=tuple(data.get("spawned_by") or ()),
             system_prompt=data.get("system_prompt"),
             max_turns=data.get("max_turns", 8),
+            spawnable=tuple(cls.from_dict(child) for child in (data.get("spawnable") or ())),
         )
 
 

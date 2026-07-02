@@ -646,21 +646,29 @@ def _build_session_engine(
         )
     # Subagents: wire the SubagentSet + harness reference into context_metadata
     # so the spawn_subagent tool can create real bounded sessions.
-    if subagents is not None and subagents:
-        from dream.tools.builtin.spawn_subagent import (
-            HARNESS_KEY,
-            PARENT_TOOLS_KEY,
-            SPAWN_COUNT_KEY,
-            SUBAGENT_SET_CONTEXT_KEY,
-            TRACER_KEY,
-        )
+    #
+    # Depth-2 inheritance: a spawned child that may itself spawn is handed a *scoped* subagent set
+    # and the *parent's* spawn counter on ``options.metadata`` (the inline executor sets these).
+    # When present they take precedence over the harness defaults, so the child spawns only what it
+    # was scoped to and the per-beat cap spans the whole tree. Top-level sessions carry no such keys.
+    from dream.tools.builtin.spawn_subagent import (
+        HARNESS_KEY,
+        PARENT_TOOLS_KEY,
+        SPAWN_COUNT_KEY,
+        SUBAGENT_SET_CONTEXT_KEY,
+        TRACER_KEY,
+    )
 
-        context_metadata[SUBAGENT_SET_CONTEXT_KEY] = subagents
+    inherited_set = options.metadata.get(SUBAGENT_SET_CONTEXT_KEY)
+    effective_subagents = inherited_set if inherited_set is not None else subagents
+    if effective_subagents is not None and effective_subagents:
+        context_metadata[SUBAGENT_SET_CONTEXT_KEY] = effective_subagents
         context_metadata[TRACER_KEY] = tracer
         context_metadata[HARNESS_KEY] = harness
-        # Per-session spawn counter — seeded fresh here so the cap is per-beat and
-        # never accumulates on the shared tool instance (the cross-session DoS).
-        context_metadata[SPAWN_COUNT_KEY] = [0]
+        # Per-session spawn counter — inherit the parent's when spawned from a child (so the per-beat
+        # cap spans the whole tree), else seed fresh (per-beat, never accumulating on the shared tool
+        # instance — the cross-session DoS).
+        context_metadata[SPAWN_COUNT_KEY] = options.metadata.get(SPAWN_COUNT_KEY, [0])
         # Parent's live tool allow-list, for capability minimization (§05): the
         # subagent's tools are intersected with this. ``None`` = no role restriction
         # (full surface), so the subagent keeps its declared tools.

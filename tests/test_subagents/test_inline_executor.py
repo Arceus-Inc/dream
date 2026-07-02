@@ -49,7 +49,37 @@ class TestBuildSubagentManifestMinimization:
         manifest = _build_subagent_manifest(agent, parent_tools=None)
         assert manifest.tools == ("read_file", "bash")
 
-    def test_spawn_subagent_always_disallowed(self) -> None:
+    def test_leaf_disallows_spawn(self) -> None:
+        """A leaf subagent (no ``spawnable``) can never spawn — unchanged from v1."""
         agent = Subagent(name="x", description="d", tools=("read_file",))
+        manifest = _build_subagent_manifest(agent, parent_tools=None)
+        assert "spawn_subagent" in manifest.disallowed_tools
+
+
+class TestSpawnEligibility:
+    """Depth-2: a subagent with ``spawnable`` below the depth cap may itself spawn."""
+
+    def _spawner(self, depth: int) -> Subagent:
+        child = Subagent(name="web_research", description="reads the web", tools=("web_search",))
+        return Subagent(
+            name="strategist",
+            description="frames the bet",
+            tools=("read_file", "spawn_subagent"),
+            spawnable=(child,),
+            depth=depth,
+        )
+
+    def test_eligible_child_keeps_spawn_subagent(self) -> None:
+        manifest = _build_subagent_manifest(self._spawner(depth=1), parent_tools=None)
+        assert "spawn_subagent" not in manifest.disallowed_tools
+        assert "spawn_subagent" in manifest.tools
+
+    def test_child_at_depth_cap_is_a_leaf(self) -> None:
+        """At MAX_SUBAGENT_DEPTH, even a declared spawner cannot spawn (grandchild is a leaf)."""
+        manifest = _build_subagent_manifest(self._spawner(depth=2), parent_tools=None)
+        assert "spawn_subagent" in manifest.disallowed_tools
+
+    def test_no_spawnable_stays_leaf_even_below_cap(self) -> None:
+        agent = Subagent(name="x", description="d", tools=("read_file", "spawn_subagent"), depth=1)
         manifest = _build_subagent_manifest(agent, parent_tools=None)
         assert "spawn_subagent" in manifest.disallowed_tools
