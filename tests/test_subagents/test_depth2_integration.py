@@ -88,3 +88,30 @@ def test_leaf_childs_session_gets_no_spawn_context() -> None:
 
     assert harness.captured is not None
     assert SUBAGENT_SET_CONTEXT_KEY not in harness.captured.metadata  # leaf can't spawn — unchanged
+
+
+def test_run_subagent_inline_forwards_observer_to_child() -> None:
+    """The parent observer is threaded into the child session's run_role, so the child's events
+    (including a nested spawn) reach the same observer/bus."""
+
+    class _RecordingHarness(_CapturingHarness):
+        def __init__(self) -> None:
+            super().__init__()
+            self.observer = "unset"
+
+        async def run_role(self, manifest, intent, *, options=None, observer=None, **_kw):  # type: ignore[no-untyped-def]
+            self.observer = observer
+            return await super().run_role(manifest, intent, options=options)
+
+    class _Obs:
+        def on_event(self, event: dict) -> None: ...
+
+    harness = _RecordingHarness()
+    obs = _Obs()
+    asyncio.run(
+        run_subagent_inline(
+            _spawner(), prompt="frame it", harness=harness,  # type: ignore[arg-type]
+            parent_tools=None, spawn_counter=[0], tracer=None, observer=obs,
+        )
+    )
+    assert harness.observer is obs

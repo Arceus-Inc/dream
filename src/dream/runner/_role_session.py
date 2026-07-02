@@ -151,6 +151,13 @@ async def run_role(
     metadata = dict(base.metadata)
     metadata[ROLE_NAME_METADATA_KEY] = manifest.name
     metadata[ROLE_MANIFEST_METADATA_KEY] = manifest
+    # Stash the observer so the spawn tool can forward it into a child session (depth-2 visibility):
+    # a nested spawn's events then reach this same observer/bus instead of the child's isolated
+    # stream. A child run_role re-stashes it, so a grandchild inherits it too.
+    if observer is not None:
+        from dream.tools.builtin.spawn_subagent import OBSERVER_KEY
+
+        metadata[OBSERVER_KEY] = observer
 
     effective = SessionOptions(
         model=base.model,

@@ -23,6 +23,7 @@ from dream.subagents._projection import SubagentResult, intersect_tools
 
 if TYPE_CHECKING:
     from dream.harness import Harness
+    from dream.runner._observer import RunTaskObserver
 
 
 async def run_subagent_inline(
@@ -33,6 +34,7 @@ async def run_subagent_inline(
     parent_tools: frozenset[str] | None = None,
     spawn_counter: list[int] | None = None,
     tracer: object | None = None,
+    observer: RunTaskObserver | None = None,
 ) -> SubagentResult:
     """Execute a subagent as a real bounded session with tools.
 
@@ -67,6 +69,9 @@ async def run_subagent_inline(
             manifest,
             prompt,
             options=options,
+            # Forward the parent observer so this child's events (including any nested spawn) reach
+            # the same observer/bus — depth-2 visibility. ``None`` keeps the child stream isolated.
+            observer=observer,
         )
         # Count tool calls from the event stream for observability
         tool_calls = sum(

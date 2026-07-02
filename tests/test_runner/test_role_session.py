@@ -442,3 +442,30 @@ async def test_role_session_closed_event_no_getattr_used() -> None:
     # All four sub-keys must be present under "usage"
     for key in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"):
         assert key in ev["usage"], f"missing key: {key}"
+
+
+# --- observer propagation (depth-2 visibility) ------------------------------
+
+
+async def test_run_role_stashes_observer_on_session_metadata() -> None:
+    """An observer passed to run_role lands on options.metadata so a spawn tool can propagate it
+    into child sessions — making nested spawns visible on the same observer/bus."""
+    from dream.tools.builtin.spawn_subagent import OBSERVER_KEY
+
+    class _Obs:
+        def on_event(self, event: dict) -> None: ...
+
+    harness, captured = _harness()
+    obs = _Obs()
+
+    await harness.run_role("planner", "intent", observer=obs)  # type: ignore[arg-type]
+
+    assert captured[0].metadata[OBSERVER_KEY] is obs
+
+
+async def test_run_role_without_observer_sets_no_observer_key() -> None:
+    from dream.tools.builtin.spawn_subagent import OBSERVER_KEY
+
+    harness, captured = _harness()
+    await harness.run_role("planner", "intent")
+    assert OBSERVER_KEY not in captured[0].metadata

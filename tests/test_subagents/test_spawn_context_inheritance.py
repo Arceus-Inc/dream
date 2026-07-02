@@ -83,3 +83,22 @@ def test_top_level_session_seeds_fresh_counter(tmp_path: Path) -> None:
 
     # No subagents configured on this bare harness ⇒ no spawn context wired at all.
     assert SUBAGENT_SET_CONTEXT_KEY not in engine.dispatcher.context_metadata
+
+
+def test_factory_carries_incoming_observer(tmp_path: Path) -> None:
+    """An observer on options.metadata reaches the child tool context, so a nested spawn's events
+    flow to the same observer/bus (depth-2 visibility)."""
+    from dream.tools.builtin.spawn_subagent import OBSERVER_KEY
+
+    class _Obs:
+        def on_event(self, event: dict) -> None: ...
+
+    obs = _Obs()
+    options = SessionOptions(
+        metadata={SPAWN_COUNT_KEY: [0], SUBAGENT_SET_CONTEXT_KEY: _child_set(), OBSERVER_KEY: obs}
+    )
+    harness = build_default_harness(env=_env(), working_dir=tmp_path)
+    factory = harness.config._engine_factory
+    assert factory is not None
+    engine = factory("child-sid", options)
+    assert engine.dispatcher.context_metadata[OBSERVER_KEY] is obs

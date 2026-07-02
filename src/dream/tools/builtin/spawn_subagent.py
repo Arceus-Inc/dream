@@ -32,6 +32,10 @@ if TYPE_CHECKING:
 # Context metadata keys — typed constants instead of bare strings.
 # ---------------------------------------------------------------------------
 SUBAGENT_SET_CONTEXT_KEY = "dream.subagent_set"
+# The run_role observer, stashed on the session so the spawn tool can forward it into a child
+# session — that makes a NESTED spawn (depth-2) surface on the SAME observer/bus as the parent,
+# instead of vanishing into the child's isolated per-session stream.
+OBSERVER_KEY = "dream.observer"
 PARENT_SESSION_KEY = "dream.parent_session_id"
 PARENT_TOOLS_KEY = "dream.parent_tools"
 PARENT_PERMISSIONS_KEY = "dream.parent_permissions"
@@ -174,6 +178,8 @@ class SpawnSubagentTool(BaseTool):
             # spawns increment this beat's cap (spans the whole tree) and stay observable.
             spawn_counter=counter,
             tracer=tracer,
+            # Forward the run_role observer so a NESTED spawn surfaces on the same bus (depth-2).
+            observer=ctx.metadata.get(OBSERVER_KEY),
         )
 
         elapsed = time.time() - spawn_time

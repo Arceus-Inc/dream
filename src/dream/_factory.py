@@ -653,11 +653,17 @@ def _build_session_engine(
     # was scoped to and the per-beat cap spans the whole tree. Top-level sessions carry no such keys.
     from dream.tools.builtin.spawn_subagent import (
         HARNESS_KEY,
+        OBSERVER_KEY,
         PARENT_TOOLS_KEY,
         SPAWN_COUNT_KEY,
         SUBAGENT_SET_CONTEXT_KEY,
         TRACER_KEY,
     )
+
+    # The run_role observer (when present) rides into the tool context, so the spawn tool can
+    # forward it into a child session — nested spawns then surface on the same observer/bus.
+    if OBSERVER_KEY in options.metadata:
+        context_metadata[OBSERVER_KEY] = options.metadata[OBSERVER_KEY]
 
     inherited_set = options.metadata.get(SUBAGENT_SET_CONTEXT_KEY)
     effective_subagents = inherited_set if inherited_set is not None else subagents
