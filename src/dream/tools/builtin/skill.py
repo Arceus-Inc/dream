@@ -34,19 +34,22 @@ def _bundle_location(base_dir: Path, working_dir: Path) -> str:
         return str(base_dir)
 
 
-def _with_bundle_footer(body: str, base_dir: Path, working_dir: Path) -> str:
-    """Append the "where the bundled files live" footer that makes a skill's references discoverable.
+def _with_bundle_header(body: str, base_dir: Path, working_dir: Path) -> str:
+    """Prepend the "where the bundled files live" header that makes a skill's references discoverable.
 
     A skill body can name bundled files ("see ``references/sample.md``"); the model reaches them with
     its own ``read_file`` tool, but only once it knows the location. Surfacing the base dir mirrors
     Anthropic's Agent Skills contract ("the skill's base directory path is automatically provided").
+
+    The header goes *first*, not last: a large skill body is truncated/offloaded by the tool-output
+    limiter (only the head stays inline), so a trailing note would be cut away and never seen — the very
+    failure this contract exists to prevent. Leading it keeps the location inline for any body size.
     """
     location = _bundle_location(base_dir, working_dir)
     return (
-        f"{body}\n\n---\n"
         f"This skill's bundled files (references, templates, examples) live in `{location}/`. "
         f"Read any file the body names — e.g. `read_file` on `{location}/template.md` — as needed; "
-        "they are not yet in context."
+        f"they are not yet in context.\n\n---\n{body}"
     )
 
 
@@ -105,7 +108,7 @@ class SkillTool(BaseTool):
         defn = skill_ctx.registry.use_skill(meta.name, event_sink=skill_ctx.event_sink)
         content = defn.content
         if meta.base_dir is not None:
-            content = _with_bundle_footer(content, meta.base_dir, ctx.working_dir)
+            content = _with_bundle_header(content, meta.base_dir, ctx.working_dir)
         return ToolResult(
             content=content,
             metadata={"skill": meta.name, "summary": f"loaded skill {meta.name!r}"},

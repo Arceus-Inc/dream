@@ -124,6 +124,9 @@ async def test_load_surfaces_the_bundle_location_relative_to_working_dir(tmp_pat
     assert "canvas" in result.content  # the bundle's dir, relative to the working dir
     assert "read_file" in result.content  # how to reach a referenced file
     assert result.metadata["skill"] == "canvas"
+    # the location leads the body: a large body is truncated/offloaded inline, so a trailing note would
+    # be cut away — the location must sit in the head to survive.
+    assert result.content.index("read_file") < result.content.index("THE PLAYBOOK BODY")
 
 
 async def test_bundle_location_is_the_path_relative_to_the_working_dir(tmp_path: Path) -> None:
