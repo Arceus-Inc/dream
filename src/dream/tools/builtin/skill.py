@@ -13,6 +13,7 @@ Enforcement (diverges from the OpenHarness reference, which only checks
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -22,6 +23,31 @@ from dream.skills._session import read_skill_context
 from dream.tools._base import BaseTool, ToolDeclaration
 from dream.tools._context import ToolExecutionContext
 from dream.tools.builtin._errors import tool_error as _err
+
+
+def _bundle_location(base_dir: Path, working_dir: Path) -> str:
+    """The skill's bundle dir as a path ``read_file`` can use — relative to ``working_dir`` when under
+    it (the file tool's root), else the absolute path (a bundle outside the root is not read-confined)."""
+    try:
+        return str(base_dir.relative_to(working_dir))
+    except ValueError:
+        return str(base_dir)
+
+
+def _with_bundle_footer(body: str, base_dir: Path, working_dir: Path) -> str:
+    """Append the "where the bundled files live" footer that makes a skill's references discoverable.
+
+    A skill body can name bundled files ("see ``references/sample.md``"); the model reaches them with
+    its own ``read_file`` tool, but only once it knows the location. Surfacing the base dir mirrors
+    Anthropic's Agent Skills contract ("the skill's base directory path is automatically provided").
+    """
+    location = _bundle_location(base_dir, working_dir)
+    return (
+        f"{body}\n\n---\n"
+        f"This skill's bundled files (references, templates, examples) live in `{location}/`. "
+        f"Read any file the body names — e.g. `read_file` on `{location}/template.md` — as needed; "
+        "they are not yet in context."
+    )
 
 
 class SkillInput(BaseModel):
@@ -77,8 +103,11 @@ class SkillTool(BaseTool):
             )
 
         defn = skill_ctx.registry.use_skill(meta.name, event_sink=skill_ctx.event_sink)
+        content = defn.content
+        if meta.base_dir is not None:
+            content = _with_bundle_footer(content, meta.base_dir, ctx.working_dir)
         return ToolResult(
-            content=defn.content,
+            content=content,
             metadata={"skill": meta.name, "summary": f"loaded skill {meta.name!r}"},
         )
 
