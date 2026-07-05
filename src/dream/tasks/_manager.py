@@ -236,6 +236,36 @@ class BackgroundTaskManager:
     def get_task(self, task_id: str) -> TaskRecord | None:
         return self._tasks.get(task_id)
 
+    def update_task(
+        self,
+        task_id: str,
+        *,
+        description: str | None = None,
+        progress: int | None = None,
+        status_note: str | None = None,
+    ) -> TaskRecord:
+        """Update a task's description / progress / status note; return the new record.
+
+        ``progress`` and ``status_note`` ride the record's ``metadata`` map —
+        :class:`TaskRecord` has no dedicated fields for them. Unset arguments
+        leave the corresponding value untouched. Raises ``ValueError`` for an
+        unknown ``task_id``; the manager rebinds its canonical map (records are
+        frozen, so this returns a fresh ``replace``-d record).
+        """
+        task = self._require_task(task_id)
+        metadata = dict(task.metadata)
+        if progress is not None:
+            metadata["progress"] = str(progress)
+        if status_note is not None:
+            metadata["status_note"] = status_note
+        updated = replace(
+            task,
+            description=task.description if description is None else description,
+            metadata=metadata,
+        )
+        self._tasks[task_id] = updated
+        return updated
+
     def list_tasks(self, *, status: TaskStatus | None = None) -> list[TaskRecord]:
         tasks = list(self._tasks.values())
         if status is not None:

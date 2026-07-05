@@ -4,26 +4,34 @@ from __future__ import annotations
 
 from dream.tools._registry import ToolRegistry, ToolSource
 from dream.tools.builtin.bash import BashTool
+from dream.tools.builtin.cron_create import CronCreateTool
+from dream.tools.builtin.cron_delete import CronDeleteTool
 from dream.tools.builtin.cron_list import CronListTool
 from dream.tools.builtin.cron_show import CronShowTool
+from dream.tools.builtin.cron_toggle import CronToggleTool
+from dream.tools.builtin.enter_worktree import EnterWorktreeTool
+from dream.tools.builtin.exit_worktree import ExitWorktreeTool
 from dream.tools.builtin.file_edit import FileEditTool
 from dream.tools.builtin.file_read import FileReadTool
 from dream.tools.builtin.file_write import FileWriteTool
 from dream.tools.builtin.git import GitTool
 from dream.tools.builtin.glob import GlobTool
 from dream.tools.builtin.grep import GrepTool
+from dream.tools.builtin.lsp import LspTool
 from dream.tools.builtin.memory_get import MemoryGetTool
 from dream.tools.builtin.memory_search import MemorySearchTool
 from dream.tools.builtin.observability_query import QueryLogsTool, QueryMetricsTool
 from dream.tools.builtin.plan_show import PlanShowTool
 from dream.tools.builtin.propose_memory import MemoryProposeTool
 from dream.tools.builtin.read_offloaded import ReadOffloadedTool
+from dream.tools.builtin.remote_trigger import RemoteTriggerTool
 from dream.tools.builtin.skill import SkillTool
 from dream.tools.builtin.spawn_subagent import SpawnSubagentTool
 from dream.tools.builtin.task_create import TaskCreateTool
 from dream.tools.builtin.task_get import TaskGetTool
 from dream.tools.builtin.task_output import TaskOutputTool
 from dream.tools.builtin.task_stop import TaskStopTool
+from dream.tools.builtin.task_update import TaskUpdateTool
 from dream.tools.builtin.todo_write import TodoWriteTool
 from dream.tools.builtin.web_extract import WebExtractTool
 from dream.tools.builtin.web_search import WebSearchTool
@@ -44,6 +52,7 @@ _DEFAULT_ORDER: tuple[str, ...] = (
     "read_offloaded",
     "glob",
     "grep",
+    "lsp",
     "skill",
     "memory_search",
     "memory_get",
@@ -53,8 +62,15 @@ _DEFAULT_ORDER: tuple[str, ...] = (
     "task_get",
     "task_output",
     "task_stop",
+    "task_update",
     "cron_list",
     "cron_show",
+    "cron_create",
+    "cron_delete",
+    "cron_toggle",
+    "remote_trigger",
+    "enter_worktree",
+    "exit_worktree",
     "plan_show",
     "todo_write",
     "web_search",
@@ -73,6 +89,7 @@ def default_registry() -> ToolRegistry:
     registry.register(ReadOffloadedTool(), source=ToolSource.DEFAULT)
     registry.register(GlobTool(), source=ToolSource.DEFAULT)
     registry.register(GrepTool(), source=ToolSource.DEFAULT)
+    registry.register(LspTool(), source=ToolSource.DEFAULT)
     registry.register(SkillTool(), source=ToolSource.DEFAULT)
     registry.register(MemorySearchTool(), source=ToolSource.DEFAULT)
     registry.register(MemoryGetTool(), source=ToolSource.DEFAULT)
@@ -82,8 +99,15 @@ def default_registry() -> ToolRegistry:
     registry.register(TaskGetTool(), source=ToolSource.DEFAULT)
     registry.register(TaskOutputTool(), source=ToolSource.DEFAULT)
     registry.register(TaskStopTool(), source=ToolSource.DEFAULT)
+    registry.register(TaskUpdateTool(), source=ToolSource.DEFAULT)
     registry.register(CronListTool(), source=ToolSource.DEFAULT)
     registry.register(CronShowTool(), source=ToolSource.DEFAULT)
+    registry.register(CronCreateTool(), source=ToolSource.DEFAULT)
+    registry.register(CronDeleteTool(), source=ToolSource.DEFAULT)
+    registry.register(CronToggleTool(), source=ToolSource.DEFAULT)
+    registry.register(RemoteTriggerTool(), source=ToolSource.DEFAULT)
+    registry.register(EnterWorktreeTool(), source=ToolSource.DEFAULT)
+    registry.register(ExitWorktreeTool(), source=ToolSource.DEFAULT)
     registry.register(PlanShowTool(), source=ToolSource.DEFAULT)
     registry.register(TodoWriteTool(), source=ToolSource.DEFAULT)
     registry.register(WebSearchTool(), source=ToolSource.DEFAULT)
