@@ -10,6 +10,8 @@ from dream.tools.builtin.file_edit import FileEditTool
 from dream.tools.builtin.file_read import FileReadTool
 from dream.tools.builtin.file_write import FileWriteTool
 from dream.tools.builtin.git import GitTool
+from dream.tools.builtin.glob import GlobTool
+from dream.tools.builtin.grep import GrepTool
 from dream.tools.builtin.memory_get import MemoryGetTool
 from dream.tools.builtin.memory_search import MemorySearchTool
 from dream.tools.builtin.observability_query import QueryLogsTool, QueryMetricsTool
@@ -22,6 +24,7 @@ from dream.tools.builtin.task_create import TaskCreateTool
 from dream.tools.builtin.task_get import TaskGetTool
 from dream.tools.builtin.task_output import TaskOutputTool
 from dream.tools.builtin.task_stop import TaskStopTool
+from dream.tools.builtin.todo_write import TodoWriteTool
 from dream.tools.builtin.web_extract import WebExtractTool
 from dream.tools.builtin.web_search import WebSearchTool
 from dream.tools.builtin.working_memory import (
@@ -39,6 +42,8 @@ _DEFAULT_ORDER: tuple[str, ...] = (
     "bash",
     "git",
     "read_offloaded",
+    "glob",
+    "grep",
     "skill",
     "memory_search",
     "memory_get",
@@ -51,6 +56,7 @@ _DEFAULT_ORDER: tuple[str, ...] = (
     "cron_list",
     "cron_show",
     "plan_show",
+    "todo_write",
     "web_search",
     "web_extract",
 )
@@ -65,6 +71,8 @@ def default_registry() -> ToolRegistry:
     registry.register(BashTool(), source=ToolSource.DEFAULT)
     registry.register(GitTool(), source=ToolSource.DEFAULT)
     registry.register(ReadOffloadedTool(), source=ToolSource.DEFAULT)
+    registry.register(GlobTool(), source=ToolSource.DEFAULT)
+    registry.register(GrepTool(), source=ToolSource.DEFAULT)
     registry.register(SkillTool(), source=ToolSource.DEFAULT)
     registry.register(MemorySearchTool(), source=ToolSource.DEFAULT)
     registry.register(MemoryGetTool(), source=ToolSource.DEFAULT)
@@ -77,6 +85,7 @@ def default_registry() -> ToolRegistry:
     registry.register(CronListTool(), source=ToolSource.DEFAULT)
     registry.register(CronShowTool(), source=ToolSource.DEFAULT)
     registry.register(PlanShowTool(), source=ToolSource.DEFAULT)
+    registry.register(TodoWriteTool(), source=ToolSource.DEFAULT)
     registry.register(WebSearchTool(), source=ToolSource.DEFAULT)
     registry.register(WebExtractTool(), source=ToolSource.DEFAULT)
     return registry
