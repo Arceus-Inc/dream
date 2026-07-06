@@ -11,6 +11,14 @@ elsewhere in the SDK or in sibling repos.
 
 from dream.contracts.exec_plan import ExecPlan, ExecPlanLedger, ExecPlanStatus
 from dream.contracts.hook import Hook, HookEvent, HookResult, HookSpec
+from dream.contracts.horizon import (
+    GoalNode,
+    GoalStore,
+    IntakePort,
+    OutcomeEvent,
+    OutcomeFeed,
+    Priority,
+)
 from dream.contracts.memory import (
     MemoryDelta,
     MemoryRecord,
@@ -33,24 +41,31 @@ from dream.contracts.tool import Tool, ToolContext, ToolResult
 # dream, chorus, lattice, and horizon (chorus spec 05 §2). Follows semver:
 # a breaking Protocol change here is a dream MAJOR bump and a coordinated
 # sibling release. Internals beneath these Protocols may churn freely.
-__contract_version__ = "0.1.0"
+# 0.2.0: added the horizon seam (IntakePort / GoalStore / OutcomeFeed) — additive.
+__contract_version__ = "0.2.0"
 
 __all__ = [
     "ExecPlan",
     "ExecPlanLedger",
     "ExecPlanStatus",
+    "GoalNode",
+    "GoalStore",
     "Hook",
     "HookEvent",
     "HookResult",
     "HookSpec",
+    "IntakePort",
     "MemoryDelta",
     "MemoryRecord",
     "MemoryScope",
     "MemoryStore",
     "MemoryType",
     "MemoryWriter",
+    "OutcomeEvent",
+    "OutcomeFeed",
     "Plugin",
     "PluginManifest",
+    "Priority",
     "Provider",
     "ProviderCapabilities",
     "ProviderEvent",
