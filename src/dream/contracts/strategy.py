@@ -35,7 +35,7 @@ class GoalNode:
 
     id: str
     title: str
-    level: str = "objective"  # company|product|objective|key_result|initiative|task_intent
+    level: str = "goal"  # goal|task_intent — Decisions are horizon-only and never reach this seam
     status: str = "active"  # proposed|active|paused|done|archived
     parent_id: str | None = None
     owner: str | None = None
