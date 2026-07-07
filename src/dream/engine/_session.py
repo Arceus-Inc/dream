@@ -39,7 +39,7 @@ from collections.abc import (
 )
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 from dream.contracts.hook import HookEvent
 from dream.contracts.provider import ProviderCapabilities
@@ -91,7 +91,11 @@ from dream.services.compact._orchestrator import (
     auto_compact_if_needed,
     begin_turn,
 )
-from dream.services.token_estimation import estimate_conversation_tokens, utilisation
+from dream.services.token_estimation import (
+    estimate_conversation_tokens,
+    should_auto_compact,
+    utilisation,
+)
 
 
 def _default_now() -> datetime:
@@ -165,6 +169,21 @@ async def _fire_lifecycle(
     if executor is None:
         return
     await executor.fire(event, {"session_id": session_id})
+
+
+async def _fire_event(
+    executor: HookExecutor | None, event: HookEvent, payload: dict[str, Any]
+) -> None:
+    """Fire a spec-13 hook carrying a richer payload than the bare session id.
+
+    Same observer-only, crash-isolated contract as :func:`_fire_lifecycle`
+    (``fire`` never raises); a no-op when no executor is configured. Used for
+    USER_PROMPT_SUBMIT / PRE_COMPACT / POST_COMPACT whose payloads carry the
+    prompt text or the compaction token deltas.
+    """
+    if executor is None:
+        return
+    await executor.fire(event, payload)
 
 
 def _session_transition(src: SessionState, dst: SessionState) -> TransitionEvent:
@@ -331,7 +350,7 @@ async def _select_turn_driver(
     return _DriverDecision("drive", review_item=items), user_idx
 
 
-def _maybe_compact(
+async def _maybe_compact(
     transcript: list[ConversationMessage],
     config: SessionConfig,
     *,
@@ -341,12 +360,25 @@ def _maybe_compact(
 
     Returns ``(transcript, event)`` — the (possibly compacted) transcript and a
     ``CompactionDoneEvent`` to emit, or ``None`` when nothing was compacted.
+
+    Fires spec-13 ``PRE_COMPACT`` *before* the transform (gated on the same
+    threshold predicate the orchestrator uses, so it only fires on turns that
+    actually compact) and ``POST_COMPACT`` *after*, carrying the token deltas —
+    observer-only, so a hook can't stop the compaction.
     """
     if config.compactor is None:
         return transcript, None
     begin_turn(config.compactor, turn_id=f"t{turn_number}")
     pre_count = len(transcript)
     pre_tokens = estimate_conversation_tokens(transcript)
+    if should_auto_compact(
+        transcript, config.compaction_capabilities, threshold=config.compaction_threshold
+    ):
+        await _fire_event(
+            config.hook_executor,
+            HookEvent.PRE_COMPACT,
+            {"session_id": config.session_id, "message_count": pre_count, "token_count": pre_tokens},
+        )
     new_transcript, result = auto_compact_if_needed(
         transcript,
         capabilities=config.compaction_capabilities,
@@ -362,6 +394,16 @@ def _maybe_compact(
         removed_messages=max(0, pre_count - len(new_transcript)),
         freed_tokens=max(0, pre_tokens - post_tokens),
         resulting_utilisation=utilisation(new_transcript, config.compaction_capabilities),
+    )
+    await _fire_event(
+        config.hook_executor,
+        HookEvent.POST_COMPACT,
+        {
+            "session_id": config.session_id,
+            "tier": event.tier,
+            "removed_messages": event.removed_messages,
+            "freed_tokens": event.freed_tokens,
+        },
     )
     return new_transcript, event
 
@@ -499,6 +541,16 @@ async def run_session(
     # hook can't delay or abort the session.
     await _fire_lifecycle(config.hook_executor, HookEvent.SESSION_START, config.session_id)
 
+    # Spec 13: USER_PROMPT_SUBMIT fires once the initiating prompt is known,
+    # right after SESSION_START. Payload carries the prompt text so a hook can
+    # log / gate / annotate; observer-only, so it can't rewrite the prompt.
+    if user_messages:
+        await _fire_event(
+            config.hook_executor,
+            HookEvent.USER_PROMPT_SUBMIT,
+            {"session_id": config.session_id, "prompt": user_messages[0].text},
+        )
+
     # Mirror every FSM transition into the trace (Spec 12a). Registered before
     # the first ``_fire`` so the starting->orienting edge is captured too; a
     # NoopTracer makes this a cheap no-op when tracing is off.
@@ -600,7 +652,7 @@ async def run_session(
         # Spec 04 #1: per-turn auto-compaction. Runs after the new user
         # message has been appended and before the model is re-entered, so
         # the streamer sees the post-compaction transcript.
-        transcript, compaction_event = _maybe_compact(
+        transcript, compaction_event = await _maybe_compact(
             transcript, config, turn_number=turn_number
         )
         if compaction_event is not None:

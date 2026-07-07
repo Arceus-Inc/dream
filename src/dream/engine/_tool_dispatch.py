@@ -135,6 +135,18 @@ class EngineToolDispatcher:
                 "result_summary": content[:_RESULT_SUMMARY_MAX_CHARS],
             },
         )
+        # Spec 13: SUBAGENT_STOP fires when a spawned subagent finishes — the
+        # per-child analog of the session STOP. ``spawn_subagent`` is dream's
+        # inline-subagent entry point, so its POST is the subagent's stop.
+        if name == "spawn_subagent":
+            await self.hook_executor.fire(
+                HookEvent.SUBAGENT_STOP,
+                {
+                    "tool_name": name,
+                    "is_error": is_error,
+                    "result_summary": content[:_RESULT_SUMMARY_MAX_CHARS],
+                },
+            )
         return content, is_error
 
     async def _dispatch_inner(self, name: str, input: dict[str, Any]) -> tuple[str, bool]:

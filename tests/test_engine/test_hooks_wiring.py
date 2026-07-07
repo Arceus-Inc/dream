@@ -19,6 +19,7 @@ that a raising hook never breaks the turn.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from dream.contracts.hook import HookEvent, HookResult, HookSpec
+from dream.contracts.provider import ProviderCapabilities
 from dream.contracts.tool import ToolResult
 from dream.engine._engine import build_query_engine
 from dream.engine._messages import (
@@ -36,6 +38,7 @@ from dream.engine._messages import (
 from dream.engine._records import SessionEnd
 from dream.engine._session import SessionConfig, run_session
 from dream.hooks import HookExecutor
+from dream.services.compact._orchestrator import AutoCompactState
 from dream.tools._base import BaseTool, ToolDeclaration
 from dream.tools._context import ToolExecutionContext
 from dream.tools._registry import ToolRegistry, ToolSource
@@ -339,3 +342,120 @@ async def test_raising_hook_does_not_break_the_turn(tmp_path: Path) -> None:
         HookEvent.POST_TOOL_USE,
         HookEvent.STOP,
     ]
+
+
+# --- newly wired events: prompt, subagent, compaction -----------------------
+
+
+async def test_user_prompt_submit_fires_with_prompt(tmp_path: Path) -> None:
+    """USER_PROMPT_SUBMIT fires once, right after SESSION_START, with the text."""
+    hook = _RecordingHook((HookEvent.SESSION_START, HookEvent.USER_PROMPT_SUBMIT))
+    executor = HookExecutor(hooks=[hook])
+    cfg = _config_with_executor(
+        registry=_registry_with(_EchoTool()),
+        streamer=FakeStreamer(turns=[FakeTurn(text_chunks=["hi"])]),
+        executor=executor,
+        working_dir=tmp_path,
+        session_id="s_prompt",
+    )
+
+    await _drain(run_session(cfg, [_user("do the thing")]))
+
+    assert [ev for ev, _ in hook.seen] == [
+        HookEvent.SESSION_START,
+        HookEvent.USER_PROMPT_SUBMIT,
+    ]
+    assert dict(hook.seen)[HookEvent.USER_PROMPT_SUBMIT] == {
+        "session_id": "s_prompt",
+        "prompt": "do the thing",
+    }
+
+
+class _FakeSpawnTool(BaseTool):
+    name = "spawn_subagent"
+    description = "Stand-in for the inline subagent spawn."
+    declaration = ToolDeclaration(risk="safe", tier_required=0, timeout_seconds=5.0)
+    input_model = _EchoInput
+
+    async def execute(self, input: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
+        return ToolResult(content="subagent-summary")
+
+
+def _spawn_streamer() -> FakeStreamer:
+    return FakeStreamer(
+        turns=[
+            FakeTurn(tool_uses=[ToolUseBlock(id="s1", name="spawn_subagent", input={})]),
+            FakeTurn(text_chunks=["done"]),
+        ]
+    )
+
+
+async def test_subagent_stop_fires_after_spawn_subagent(tmp_path: Path) -> None:
+    """SUBAGENT_STOP fires right after POST_TOOL_USE for a spawn_subagent call."""
+    hook = _RecordingHook((HookEvent.POST_TOOL_USE, HookEvent.SUBAGENT_STOP))
+    executor = HookExecutor(hooks=[hook])
+    cfg = _config_with_executor(
+        registry=_registry_with(_FakeSpawnTool()),
+        streamer=_spawn_streamer(),
+        executor=executor,
+        working_dir=tmp_path,
+    )
+
+    await _drain(run_session(cfg, [_user("go")]))
+
+    assert [ev for ev, _ in hook.seen] == [
+        HookEvent.POST_TOOL_USE,
+        HookEvent.SUBAGENT_STOP,
+    ]
+    stop = dict(hook.seen)[HookEvent.SUBAGENT_STOP]
+    assert stop["tool_name"] == "spawn_subagent"
+    assert stop["is_error"] is False
+    assert "subagent-summary" in stop["result_summary"]
+
+
+async def test_subagent_stop_not_fired_for_ordinary_tool(tmp_path: Path) -> None:
+    """A non-subagent tool must not fire SUBAGENT_STOP."""
+    hook = _RecordingHook((HookEvent.SUBAGENT_STOP,))
+    executor = HookExecutor(hooks=[hook])
+    cfg = _config_with_executor(
+        registry=_registry_with(_EchoTool()),
+        streamer=_one_tool_call_streamer(),
+        executor=executor,
+        working_dir=tmp_path,
+    )
+
+    await _drain(run_session(cfg, [_user("go")]))
+
+    assert HookEvent.SUBAGENT_STOP not in [ev for ev, _ in hook.seen]
+
+
+async def test_compaction_hooks_fire_pre_then_post(tmp_path: Path) -> None:
+    """PRE_COMPACT precedes POST_COMPACT on a turn that actually compacts."""
+    hook = _RecordingHook((HookEvent.PRE_COMPACT, HookEvent.POST_COMPACT))
+    executor = HookExecutor(hooks=[hook])
+    base = _config_with_executor(
+        registry=_registry_with(_EchoTool()),
+        streamer=FakeStreamer(turns=[FakeTurn(text_chunks=["ok"])]),
+        executor=executor,
+        working_dir=tmp_path,
+        session_id="s_compact",
+    )
+    # Tiny context window + zero threshold => every turn is over budget, so
+    # compaction runs on turn 1 and both hooks fire.
+    cfg = replace(
+        base,
+        compactor=AutoCompactState(),
+        compaction_capabilities=ProviderCapabilities(max_context_tokens=1),
+        compaction_threshold=0.0,
+    )
+
+    await _drain(run_session(cfg, [_user("a prompt long enough to carry some tokens")]))
+
+    events = [ev for ev, _ in hook.seen]
+    assert HookEvent.PRE_COMPACT in events
+    assert HookEvent.POST_COMPACT in events
+    assert events.index(HookEvent.PRE_COMPACT) < events.index(HookEvent.POST_COMPACT)
+    post = dict(hook.seen)[HookEvent.POST_COMPACT]
+    assert post["session_id"] == "s_compact"
+    assert "freed_tokens" in post
+    assert "removed_messages" in post
