@@ -391,6 +391,35 @@ async def test_missing_verdict_envelope_raises_parse_error() -> None:
         await head("task-001", 1, _contract(), _step())
 
 
+async def test_parses_bare_json_without_verdict_wrapper() -> None:
+    # the typed JSON verdict is accepted even without the <verdict>...</verdict> wrapper
+    harness, _ = _harness_with_reply('{"outcome": "pass", "score": 0.9, "notes": "looks good"}')
+    head = make_evaluator_head(harness)
+
+    rec = await head("task-001", 1, _contract(), _step())
+    assert rec.outcome == "pass"
+    assert rec.notes == "looks good"
+
+
+async def test_parses_fenced_json_without_verdict_wrapper() -> None:
+    harness, _ = _harness_with_reply('```json\n{"outcome": "needs-changes", "items": ["fix x"]}\n```')
+    head = make_evaluator_head(harness)
+
+    rec = await head("task-001", 1, _contract(), _step())
+    assert rec.outcome == "needs-changes"
+    assert rec.items == ("fix x",)
+
+
+async def test_parses_json_embedded_in_prose_without_wrapper() -> None:
+    harness, _ = _harness_with_reply(
+        'Here is my verdict:\n{"outcome": "fail", "notes": "broken"}\nThanks.'
+    )
+    head = make_evaluator_head(harness)
+
+    rec = await head("task-001", 1, _contract(), _step())
+    assert rec.outcome == "fail"
+
+
 async def test_invalid_json_inside_envelope_raises_parse_error() -> None:
     harness, _ = _harness_with_reply("<verdict>not-json-at-all</verdict>")
     head = make_evaluator_head(harness)
