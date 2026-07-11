@@ -54,10 +54,18 @@ class GovProposal:
 
 @dataclass(frozen=True)
 class GovernanceView:
-    """The whole bounded snapshot the CEO reads: decisions + goals + open proposals."""
+    """The whole bounded snapshot the CEO reads: decisions + goals + open + recently-decided proposals.
+
+    ``decided`` is essential, not decorative: the moment the CEO approves or rejects a proposal it leaves
+    ``proposals`` (no longer open), so a read that showed only open proposals would make the CEO's own
+    just-completed actions invisible — a verifier re-reading the tree would wrongly conclude nothing was
+    done. Surfacing the decided proposals lets the CEO cite them in its directive and lets a reviewer
+    confirm the adjudication actually happened.
+    """
 
     decisions: tuple[GovDecision, ...] = field(default_factory=tuple)
     proposals: tuple[GovProposal, ...] = field(default_factory=tuple)
+    decided: tuple[GovProposal, ...] = field(default_factory=tuple)
 
 
 @runtime_checkable
@@ -70,7 +78,7 @@ class GovernancePort(Protocol):
     """
 
     def read_direction(self) -> GovernanceView:
-        """The current direction: every decision with its goals, plus the open proposals."""
+        """The current direction: every decision with its goals, the open proposals, and the decided ones."""
         ...
 
     def approve_proposal(self, proposal_id: str, *, by: str) -> str:
