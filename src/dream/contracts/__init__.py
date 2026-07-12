@@ -10,6 +10,13 @@ elsewhere in the SDK or in sibling repos.
 """
 
 from dream.contracts.exec_plan import ExecPlan, ExecPlanLedger, ExecPlanStatus
+from dream.contracts.governance import (
+    GovDecision,
+    GovernancePort,
+    GovernanceView,
+    GovGoal,
+    GovProposal,
+)
 from dream.contracts.hook import Hook, HookEvent, HookResult, HookSpec
 from dream.contracts.memory import (
     MemoryDelta,
@@ -44,7 +51,9 @@ from dream.contracts.tool import Tool, ToolContext, ToolResult
 # 0.2.0: added the horizon strategy seam (IntakePort / GoalStore / OutcomeFeed) — additive. The
 # module was named ``strategy.py`` (content-named, like every other contract); Decisions are
 # horizon-native and deliberately never enter this seam (chorus only ever sees goals + tasks).
-__contract_version__ = "0.2.0"
+# 0.3.0: added the governance seam (GovernancePort + Gov* read shapes) — additive. The reverse edge of
+# strategy: a chorus CEO employee's tools steer horizon's direction; horizon supplies the adapter.
+__contract_version__ = "0.3.0"
 
 __all__ = [
     "ExecPlan",
@@ -52,6 +61,11 @@ __all__ = [
     "ExecPlanStatus",
     "GoalNode",
     "GoalStore",
+    "GovDecision",
+    "GovGoal",
+    "GovProposal",
+    "GovernancePort",
+    "GovernanceView",
     "Hook",
     "HookEvent",
     "HookResult",
