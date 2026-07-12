@@ -14,8 +14,10 @@ The model is asked for a strict envelope::
      "items": ["..."]}
     </verdict>
 
-The parser tolerates an inner ```json fence inside ``<verdict>`` and
-prose around the tag. Failures parse into
+The parser prefers the ``<verdict>`` section when present but treats the
+wrapper as **optional** — the typed JSON object is the contract, so a bare,
+```json-fenced, or prose-embedded JSON verdict is accepted too. Only a reply
+with no parseable JSON object at all parses into
 :class:`EvaluatorHeadParseError`; engine-layer failures surface as
 :class:`dream.runner.RoleSessionError` unchanged.
 
@@ -177,26 +179,42 @@ def _build_intent(
 
 
 def _extract_verdict_json(reply: str) -> dict[str, Any]:
+    """Extract the typed JSON verdict from the reply.
+
+    The verdict *object* is the typed contract; the ``<verdict>...</verdict>`` wrapper is optional. We
+    prefer the tagged section when present (back-compat + disambiguation), but fall back to the JSON
+    object anywhere in the reply — bare, ```json-fenced, or embedded in prose — so a model that emits
+    clean typed JSON without the XML wrapper is accepted rather than hard-failing. Only a reply with no
+    parseable JSON object at all is a parse error.
+    """
     match = _VERDICT_RE.search(reply)
-    if match is None:
+    raw = match.group(1).strip() if match is not None else reply.strip()
+    data = _loads_json_object(raw)
+    if data is None:
         raise EvaluatorHeadParseError(
-            "evaluator reply missing <verdict>...</verdict> section"
-        )
-    raw = match.group(1).strip()
-    fence = _FENCE_RE.match(raw)
-    if fence is not None:
-        raw = fence.group(1).strip()
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise EvaluatorHeadParseError(
-            f"evaluator <verdict> is not valid JSON: {exc.msg}"
-        ) from exc
-    if not isinstance(data, dict):
-        raise EvaluatorHeadParseError(
-            f"evaluator <verdict> must be a JSON object, got {type(data).__name__}"
+            "evaluator reply did not contain a JSON verdict object"
         )
     return data
+
+
+def _loads_json_object(text: str) -> dict[str, Any] | None:
+    """Parse a JSON object out of ``text`` — fence-aware, with a brace-slice fallback. ``None`` if none."""
+    candidate = text.strip()
+    fence = _FENCE_RE.match(candidate)
+    if fence is not None:
+        candidate = fence.group(1).strip()
+    start, end = candidate.find("{"), candidate.rfind("}")
+    sliced = candidate[start : end + 1] if start != -1 and end > start else ""
+    for attempt in (candidate, sliced):
+        if not attempt:
+            continue
+        try:
+            data = json.loads(attempt)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            return data
+    return None
 
 
 def _coerce_record(

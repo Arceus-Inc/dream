@@ -27,30 +27,47 @@ from dream.contracts.provider import (
     ProviderUsage,
 )
 from dream.contracts.skill import Skill
+from dream.contracts.strategy import (
+    GoalNode,
+    GoalStore,
+    IntakePort,
+    OutcomeEvent,
+    OutcomeFeed,
+    Priority,
+)
 from dream.contracts.tool import Tool, ToolContext, ToolResult
 
 # The cross-repo contract version — the single coordination point across
 # dream, chorus, lattice, and horizon (chorus spec 05 §2). Follows semver:
 # a breaking Protocol change here is a dream MAJOR bump and a coordinated
 # sibling release. Internals beneath these Protocols may churn freely.
-__contract_version__ = "0.1.0"
+# 0.2.0: added the horizon strategy seam (IntakePort / GoalStore / OutcomeFeed) — additive. The
+# module was named ``strategy.py`` (content-named, like every other contract); Decisions are
+# horizon-native and deliberately never enter this seam (chorus only ever sees goals + tasks).
+__contract_version__ = "0.2.0"
 
 __all__ = [
     "ExecPlan",
     "ExecPlanLedger",
     "ExecPlanStatus",
+    "GoalNode",
+    "GoalStore",
     "Hook",
     "HookEvent",
     "HookResult",
     "HookSpec",
+    "IntakePort",
     "MemoryDelta",
     "MemoryRecord",
     "MemoryScope",
     "MemoryStore",
     "MemoryType",
     "MemoryWriter",
+    "OutcomeEvent",
+    "OutcomeFeed",
     "Plugin",
     "PluginManifest",
+    "Priority",
     "Provider",
     "ProviderCapabilities",
     "ProviderEvent",
