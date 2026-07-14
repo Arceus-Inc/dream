@@ -174,7 +174,7 @@ class EngineToolDispatcher:
         ctx = ToolExecutionContext(
             working_dir=self.working_dir,
             session_id=self.session_id,
-            scratch_dir=self.scratch_dir,
+            scratch_dir=self._resolved_scratch(),
             metadata=dict(self.context_metadata),  # copy: a tool can't leak into the next call
         )
         result, elapsed = await self._run_with_timeout(name, tool, input, ctx, is_read_only)
@@ -243,11 +243,16 @@ class EngineToolDispatcher:
             raise
         return result, time.monotonic() - t0
 
+    def _resolved_scratch(self) -> Path:
+        """The one scratch location — the offload writer and every tool's ctx must agree,
+        or ``read_offloaded`` refuses while spilled artifacts sit unreadable."""
+        return self.scratch_dir or (self.working_dir / ".dream" / "scratch")
+
     def _offload_and_record(
         self, name: str, result: Any, *, is_read_only: bool, elapsed: float
     ) -> tuple[str, bool]:
         """Offload an oversized payload, emit the dispatch record, return inline."""
-        scratch = self.scratch_dir or (self.working_dir / ".dream" / "scratch")
+        scratch = self._resolved_scratch()
         inline, pointer = offload_tool_output(
             result.content,
             scratch_dir=scratch,

@@ -405,6 +405,54 @@ async def test_dispatch_does_not_offload_small_output(tmp_path: Path) -> None:
     assert sink[0].offloaded is False
 
 
+class _ScratchSpyInput(BaseModel):
+    pass
+
+
+class _ScratchSpyTool(BaseTool):
+    """Captures the ``ToolExecutionContext`` it was executed with."""
+
+    name = "scratchspy"
+    description = "Record the ctx scratch_dir."
+    declaration = ToolDeclaration(risk="safe", tier_required=0, timeout_seconds=5.0)
+    input_model = _ScratchSpyInput
+
+    def __init__(self) -> None:
+        self.seen_scratch: Path | None = None
+
+    async def execute(self, input: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
+        self.seen_scratch = ctx.scratch_dir
+        return ToolResult(content="ok")
+
+
+async def test_ctx_scratch_dir_defaults_to_where_the_offloader_spills(tmp_path: Path) -> None:
+    """With no configured scratch_dir the offloader spills to
+    ``working_dir/.dream/scratch`` — the ToolExecutionContext must default to the
+    SAME place, or ``read_offloaded`` refuses ("no scratch directory configured")
+    while spilled artifacts sit unreadable right where the engine put them."""
+    spy = _ScratchSpyTool()
+    disp = EngineToolDispatcher(registry=_registry(spy), working_dir=tmp_path, session_id="s")
+
+    _content, is_error = await disp.dispatch("scratchspy", {})
+
+    assert is_error is False
+    assert spy.seen_scratch == tmp_path / ".dream" / "scratch"
+
+
+async def test_ctx_scratch_dir_uses_the_configured_one_when_set(tmp_path: Path) -> None:
+    spy = _ScratchSpyTool()
+    disp = EngineToolDispatcher(
+        registry=_registry(spy),
+        working_dir=tmp_path,
+        session_id="s",
+        scratch_dir=tmp_path / "custom-scratch",
+    )
+
+    await disp.dispatch("scratchspy", {})
+
+    assert spy.seen_scratch == tmp_path / "custom-scratch"
+
+
 # --- 6. exception passthrough -----------------------------------------------
 
 
