@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from dream.contracts.strategy import Priority
 
@@ -14,6 +14,8 @@ class StaffingRequirement:
 
     profession: str
     count: int = 1
+    coverage: Literal["direct", "subtree"] = "direct"
+    outcome_area: str | None = None
 
 
 @dataclass(frozen=True)
@@ -24,6 +26,7 @@ class DelegatedWorkRequest:
     goal_id: str
     priority: Priority = "medium"
     requirements: tuple[StaffingRequirement, ...] = ()
+    lead_professions: tuple[str, ...] = ()
     preferred_lead: str | None = None
     max_team_size: int | None = None
     spend_limit_cents: int | None = None

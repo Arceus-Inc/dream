@@ -23,7 +23,23 @@ from dream.contracts.strategy import OutcomeEvent
 def test_staffing_requirement_defaults_to_one_employee() -> None:
     requirement = StaffingRequirement(profession="engineer")
 
-    assert requirement == StaffingRequirement(profession="engineer", count=1)
+    assert dataclasses.asdict(requirement) == {
+        "profession": "engineer",
+        "count": 1,
+        "coverage": "direct",
+        "outcome_area": None,
+    }
+
+
+def test_staffing_requirement_can_name_bounded_subtree_coverage() -> None:
+    requirement = StaffingRequirement(
+        profession="frontend_engineer",
+        coverage="subtree",
+        outcome_area="engineering",
+    )
+
+    assert requirement.coverage == "subtree"
+    assert requirement.outcome_area == "engineering"
 
 
 def test_staffing_requirement_is_frozen() -> None:
@@ -41,6 +57,7 @@ def test_delegated_work_request_defaults_are_backward_safe() -> None:
         "goal_id": "goal-8",
         "priority": "medium",
         "requirements": (),
+        "lead_professions": (),
         "preferred_lead": None,
         "max_team_size": None,
         "spend_limit_cents": None,
