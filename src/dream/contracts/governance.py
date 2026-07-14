@@ -15,6 +15,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
+from dream.contracts.delegation import StaffingRequirement
+
 
 @dataclass(frozen=True)
 class GovGoal:
@@ -29,6 +31,16 @@ class GovGoal:
     task_id: str | None = None
     metric: str | None = None
     target: str | None = None
+    root_task_id: str | None = None
+    task_ids: tuple[str, ...] = ()
+    team_id: str | None = None
+    lead_id: str | None = None
+    task_outcomes: dict[str, str] = field(default_factory=dict)
+    delivery_shape: str = "single"
+    staffing_requirements: tuple[StaffingRequirement, ...] = ()
+    effective_score: float | None = None
+    effective_priority: str | None = None
+    priority_reason: str = ""
 
 
 @dataclass(frozen=True)
