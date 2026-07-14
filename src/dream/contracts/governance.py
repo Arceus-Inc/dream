@@ -42,6 +42,12 @@ class GovGoal:
     effective_priority: str | None = None
     priority_reason: str = ""
 
+    def __post_init__(self) -> None:
+        import types
+
+        object.__setattr__(
+            self, "task_outcomes", types.MappingProxyType(dict(self.task_outcomes))
+        )
 
 @dataclass(frozen=True)
 class GovDecision:
