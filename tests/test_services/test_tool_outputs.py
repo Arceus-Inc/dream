@@ -18,6 +18,7 @@ Defaults come from new-spec 04 (4 KB inline limit).
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -214,6 +215,27 @@ def test_offload_inline_text_carries_pointer_metadata(
     assert "tu_42" in inline
     assert pointer.offloaded_to in inline
     assert str(pointer.original_size_bytes) in inline
+
+
+def test_offload_inline_text_names_the_retrieval_tool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DREAM_TOOL_OUTPUT_INLINE_CHARS", "100")
+    inline, pointer = offload_tool_output(
+        "x" * 2_500,
+        scratch_dir=tmp_path,
+        tool_use_id="tu_42",
+        tool_name="read_file",
+    )
+
+    assert pointer is not None
+    assert "read_offloaded" in inline
+    assert f'path="{pointer.offloaded_to}"' in inline
+    assert "start=0" in inline
+    match = re.search(r"end=(\d+)", inline)
+    assert match is not None
+    assert 0 < int(match.group(1)) < tool_output_inline_chars()
+    assert f"start={match.group(1)}" in inline
 
 
 def test_offload_uses_custom_summary_when_provided(

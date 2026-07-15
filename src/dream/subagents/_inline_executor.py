@@ -26,6 +26,9 @@ if TYPE_CHECKING:
     from dream.runner._observer import RunTaskObserver
 
 
+SUBAGENT_NAME_METADATA_KEY = "dream.subagent_name"
+
+
 async def run_subagent_inline(
     agent: Subagent,
     *,
@@ -62,6 +65,7 @@ async def run_subagent_inline(
         tracer=tracer,
         parent_tools=parent_tools,
     )
+    child_metadata[SUBAGENT_NAME_METADATA_KEY] = agent.name
     options = SessionOptions(max_turns=agent.max_turns, metadata=child_metadata)
 
     try:
@@ -74,13 +78,9 @@ async def run_subagent_inline(
             observer=observer,
         )
         # Count tool calls from the event stream for observability
-        tool_calls = sum(
-            1 for ev in result.events if isinstance(ev, ToolUseStart)
-        )
+        tool_calls = sum(1 for ev in result.events if isinstance(ev, ToolUseStart))
         tool_errors = sum(
-            1
-            for ev in result.events
-            if isinstance(ev, ToolUseResult) and ev.is_error
+            1 for ev in result.events if isinstance(ev, ToolUseResult) and ev.is_error
         )
         output, warning = result.final_text, None
         if agent.output_schema is not None:

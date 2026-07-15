@@ -32,7 +32,7 @@ from dream.engine._events import (
     ErrorEvent,
     StreamEvent,
 )
-from dream.engine._messages import ConversationMessage
+from dream.engine._messages import ConversationMessage, ToolUseBlock
 from dream.events import TextDelta
 from dream.harness import Harness, HarnessConfig
 from dream.roles import RoleManifest, default_role_manifest
@@ -426,6 +426,45 @@ async def test_role_session_closed_event_includes_cost_usd() -> None:
     ev = closed_events[0]
     assert "cost_usd" in ev
     assert ev["cost_usd"] == 0.0
+
+
+async def test_role_tool_result_observer_preserves_full_content() -> None:
+    from dream.runner._observer import _CapturingObserver
+
+    full_content = "result:" + ("x" * 400)
+    streamer = FakeStreamer(
+        turns=[
+            FakeTurn(
+                tool_uses=[
+                    ToolUseBlock(
+                        id="tool-1",
+                        name="read_file",
+                        input={"path": "large.txt"},
+                    )
+                ]
+            ),
+            FakeTurn(text_chunks=["done"]),
+        ]
+    )
+    dispatcher = FakeDispatcher(results={"read_file": (full_content, False)})
+
+    def _factory(session_id: str, options: SessionOptions) -> QueryEngine:
+        return QueryEngine(
+            streamer=streamer,
+            dispatcher=dispatcher,
+            session_id=session_id,
+            working_dir=Path("/tmp"),
+            model=options.model,
+        )
+
+    harness = Harness(HarnessConfig(_engine_factory=_factory))  # type: ignore[call-arg]
+    observer = _CapturingObserver()
+
+    await harness.run_role("planner", "intent", observer=observer)
+
+    result = next(event for event in observer.events if event["kind"] == "role.tool.result")
+    assert result["content"] == full_content
+    assert result["content_preview"] == full_content[:240]
 
 
 async def test_role_session_closed_event_no_getattr_used() -> None:

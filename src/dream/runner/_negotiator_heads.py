@@ -56,15 +56,9 @@ class GeneratorRespondHeadParseError(RuntimeError):
     """Raised when the generator's reply does not match the response envelope."""
 
 
-_PROPOSAL_RE = re.compile(
-    r"<proposal>\s*(.*?)\s*</proposal>", re.DOTALL | re.IGNORECASE
-)
-_RESPONSE_RE = re.compile(
-    r"<response>\s*(.*?)\s*</response>", re.DOTALL | re.IGNORECASE
-)
-_FENCE_RE = re.compile(
-    r"^```(?:[A-Za-z0-9_+\-]+)?\s*\n(.*?)\n```\s*$", re.DOTALL
-)
+_PROPOSAL_RE = re.compile(r"<proposal>\s*(.*?)\s*</proposal>", re.DOTALL | re.IGNORECASE)
+_RESPONSE_RE = re.compile(r"<response>\s*(.*?)\s*</response>", re.DOTALL | re.IGNORECASE)
+_FENCE_RE = re.compile(r"^```(?:[A-Za-z0-9_+\-]+)?\s*\n(.*?)\n```\s*$", re.DOTALL)
 
 
 _PROPOSAL_EXAMPLE = '["<criterion>", "..."]'
@@ -92,10 +86,14 @@ EVALUATOR_PROPOSE_INSTRUCTION_TEMPLATE = (
     "\n"
     "Requirements:\n"
     "- The payload MUST be a JSON list of strings.\n"
-    "- Use SHORT, verifiable, imperative criteria (\"MUST ...\", \"SHOULD ...\").\n"
+    '- Use SHORT, verifiable, imperative criteria ("MUST ...", "SHOULD ...").\n'
     "- Tie every criterion to THIS task's intent above; do not propose generic\n"
-    "  boilerplate (\"preserve backward compatibility\", \"pass the existing\n"
-    "  suite\") that the task did not call for.\n"
+    '  boilerplate ("preserve backward compatibility", "pass the existing\n'
+    '  suite") that the task did not call for.\n'
+    "- Treat the task intent as the complete product contract. You MUST NOT add\n"
+    "  unstated product behavior, validation rules, limits, APIs, artifacts, or\n"
+    "  compatibility obligations. You may clarify a testable implication of a\n"
+    "  stated requirement, but may not widen it.\n"
     "- Every criterion MUST be verifiable by reading the files in the working\n"
     "  tree or running a test. Do NOT propose criteria that require\n"
     "  documentation, a README/changelog, commit messages, or git history as\n"
@@ -118,6 +116,7 @@ def _format_intent_block(intent: str) -> str:
 GENERATOR_RESPOND_INSTRUCTION_TEMPLATE = (
     "You are the GENERATOR responding in contract negotiation round {round_num}.\n"
     "\n"
+    "{intent_block}"
     "The evaluator just proposed the following acceptance criteria:\n"
     "\n"
     "{proposal_block}\n"
@@ -142,6 +141,10 @@ GENERATOR_RESPOND_INSTRUCTION_TEMPLATE = (
     '- "accept" MUST be a boolean.\n'
     '- "counter" is a JSON list of strings when "accept" is false,\n'
     "  or null/omitted when accepting.\n"
+    "- Compare every proposal to the TASK INTENT. If any criterion widens the\n"
+    "  product contract with unstated behavior, validation, limits, APIs,\n"
+    "  artifacts, or compatibility obligations, do not accept it: COUNTER with\n"
+    "  the smallest criteria faithful to the stated intent.\n"
     "- Counter only on substantive disagreement — bounce-back wastes a round.\n"
 )
 
@@ -150,8 +153,7 @@ def _format_log(log: list[NegotiationEntry]) -> str:
     if not log:
         return "(empty — this is the opening round)"
     return "\n".join(
-        f"- [{entry.ts}] {entry.from_role} → {entry.to_role}: {entry.message}"
-        for entry in log
+        f"- [{entry.ts}] {entry.from_role} → {entry.to_role}: {entry.message}" for entry in log
     )
 
 
@@ -244,9 +246,7 @@ def make_evaluator_propose_head(
     """
     intent_block = _format_intent_block(intent)
 
-    async def propose(
-        round_num: int, log: list[NegotiationEntry]
-    ) -> list[str]:
+    async def propose(round_num: int, log: list[NegotiationEntry]) -> list[str]:
         prompt = EVALUATOR_PROPOSE_INSTRUCTION_TEMPLATE.format(
             round_num=round_num,
             intent_block=intent_block,
@@ -293,6 +293,7 @@ def make_evaluator_propose_head(
 def make_generator_respond_head(
     harness: Harness,
     *,
+    intent: str = "",
     harness_dir: Path | None = None,
     observer: RunTaskObserver | None = None,
 ) -> Callable[
@@ -303,9 +304,10 @@ def make_generator_respond_head(
 
     Each call opens a generator-bound session via
     :meth:`Harness.run_role`, embeds the evaluator's proposal plus the
-    running negotiation log in the prompt, parses the model's strict
+    task intent and running negotiation log in the prompt, parses the model's strict
     ``<response>``-envelope reply, and returns ``(accept, counter)``.
     """
+    intent_block = _format_intent_block(intent)
 
     async def respond(
         round_num: int,
@@ -314,6 +316,7 @@ def make_generator_respond_head(
     ) -> tuple[bool, list[str] | None]:
         prompt = GENERATOR_RESPOND_INSTRUCTION_TEMPLATE.format(
             round_num=round_num,
+            intent_block=intent_block,
             proposal_block=_format_proposal(proposal),
             log_block=_format_log(log),
             example=_RESPONSE_EXAMPLE,
