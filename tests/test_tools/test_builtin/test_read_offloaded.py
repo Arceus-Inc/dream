@@ -57,6 +57,22 @@ async def test_reads_slice(tool: ReadOffloadedTool, ctx_with_scratch: ToolExecut
     assert result.content == "2345"
 
 
+async def test_oversized_read_is_bounded_with_continuation(
+    tool: ReadOffloadedTool, ctx_with_scratch: ToolExecutionContext
+) -> None:
+    scratch = ctx_with_scratch.scratch_dir
+    assert scratch is not None
+    (scratch / "large.txt").write_text("x" * 12_000, encoding="utf-8")
+
+    result = await tool.execute({"path": "large.txt", "start": 0, "end": 12_000}, ctx_with_scratch)
+
+    assert result.is_error is False
+    assert len(result.content) < 4_000
+    assert "continue with" in result.content
+    assert result.metadata["has_more"] is True
+    assert result.metadata["next_start"] == result.metadata["end"]
+
+
 async def test_path_traversal_rejected(
     tool: ReadOffloadedTool, ctx_with_scratch: ToolExecutionContext
 ) -> None:

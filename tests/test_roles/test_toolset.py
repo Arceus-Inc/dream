@@ -43,6 +43,50 @@ def test_planner_explicit_tools_returned_as_frozenset() -> None:
     assert isinstance(out, frozenset)
 
 
+def test_read_file_includes_registered_offload_reader() -> None:
+    manifest = RoleManifest(
+        name="evaluator",
+        description="d",
+        system_prompt="p",
+        tools=["read_file"],
+    )
+    declarations = {
+        "read_file": _decl(0),
+        "read_offloaded": _decl(0),
+        "file_write": _decl(1),
+    }
+
+    out = compute_minimum_toolset(
+        manifest,
+        sandbox_tier=SandboxTier.READ_ONLY,
+        declarations=declarations,
+    )
+
+    assert out == frozenset({"read_file", "read_offloaded"})
+
+
+def test_offload_reader_companion_respects_explicit_veto() -> None:
+    manifest = RoleManifest(
+        name="evaluator",
+        description="d",
+        system_prompt="p",
+        tools=["read_file"],
+        disallowed_tools=["read_offloaded"],
+    )
+    declarations = {
+        "read_file": _decl(0),
+        "read_offloaded": _decl(0),
+    }
+
+    out = compute_minimum_toolset(
+        manifest,
+        sandbox_tier=SandboxTier.READ_ONLY,
+        declarations=declarations,
+    )
+
+    assert out == frozenset({"read_file"})
+
+
 def test_disallowed_tools_subtract_from_explicit_list() -> None:
     m = RoleManifest(
         name="planner",

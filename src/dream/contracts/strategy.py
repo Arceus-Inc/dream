@@ -59,6 +59,13 @@ class OutcomeEvent:
     status: str | None = None  # "done" | "failed" | "blocked" | ...
     passed: bool | None = None  # the DoD verdict, when the event carries one
     detail: str = ""
+    parent_task_id: str | None = None
+    root_task_id: str | None = None
+    team_id: str | None = None
+    execution_mode: str | None = None
+    is_root_outcome: bool = False
+    event_id: str | None = None
+    task_revision: int | None = None
 
 
 @runtime_checkable

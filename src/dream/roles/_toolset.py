@@ -9,6 +9,7 @@ will honour. It is the intersection of:
   dropped — capability minimisation, not capability invention),
 * the active sandbox tier (each tool's ``tier_required`` must be ``<=`` the
   tier),
+* safe transport companions required to consume an allowed tool's output,
 * minus the manifest's ``disallowed_tools`` (operator vetoes always win).
 """
 
@@ -32,6 +33,9 @@ def compute_minimum_toolset(
         candidates: set[str] = set(declarations)
     else:
         candidates = {name for name in manifest.tools if name in declarations}
+
+    if "read_file" in candidates and "read_offloaded" in declarations:
+      candidates.add("read_offloaded")
 
     tier_value = int(sandbox_tier)
     within_tier = {

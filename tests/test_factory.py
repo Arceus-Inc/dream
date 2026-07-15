@@ -8,12 +8,33 @@ model, no ``DREAM_SMOKE_*`` env coupling, no imports from ``dream.repl``.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
+from pydantic import BaseModel
 
 from dream import Harness, SessionOptions, build_harness
+from dream.contracts.tool import ToolResult
 from dream.engine._engine import QueryEngine
+from dream.services.tool_outputs import DEFAULT_TOOL_OUTPUT_INLINE_CHARS
+from dream.tools._base import BaseTool, ToolDeclaration
+from dream.tools._context import ToolExecutionContext
+from dream.tools._registry import ToolSource
 from tests.test_skills._helpers import write_skill
+
+
+class _LargeOutputInput(BaseModel):
+    pass
+
+
+class _LargeOutputTool(BaseTool):
+    name = "large_output"
+    description = "Return enough text to exercise output offloading."
+    declaration = ToolDeclaration(risk="safe", tier_required=0, timeout_seconds=5.0)
+    input_model = _LargeOutputInput
+
+    async def execute(self, input: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
+        return ToolResult(content="x" * (DEFAULT_TOOL_OUTPUT_INLINE_CHARS * 2))
 
 
 def _system_prompt(harness: Harness) -> str:
@@ -156,6 +177,39 @@ def test_build_harness_default_omits_task_memory_context(tmp_path: Path) -> None
     harness = _build(tmp_path)
     engine = harness.config._engine_factory("s_probe", SessionOptions())  # type: ignore[misc]
     assert TASK_MEMORY_CONTEXT_KEY not in engine.dispatcher.context_metadata  # type: ignore[attr-defined]
+
+
+def test_build_harness_wires_session_scratch_for_offload_retrieval(tmp_path: Path) -> None:
+    harness = _build(tmp_path)
+    engine = harness.config._engine_factory("s_probe", SessionOptions())  # type: ignore[misc]
+
+    assert engine.dispatcher.scratch_dir == (  # type: ignore[attr-defined]
+        tmp_path / "wt" / ".dream" / "sidecars" / "s_probe" / "scratch"
+    )
+
+
+async def test_build_harness_retrieves_output_spilled_without_explicit_scratch(
+    tmp_path: Path,
+) -> None:
+    from dream.tools.builtin import default_registry
+
+    registry = default_registry()
+    registry.register(_LargeOutputTool(), source=ToolSource.DEFAULT)
+    harness = _build(tmp_path, registry=registry)
+    engine = harness.config._engine_factory("s_probe", SessionOptions())  # type: ignore[misc]
+
+    pointer, spill_error = await engine.dispatcher.dispatch("large_output", {})  # type: ignore[attr-defined]
+    scratch = engine.dispatcher.scratch_dir  # type: ignore[attr-defined]
+    assert spill_error is False
+    assert scratch is not None
+    [artifact] = scratch.iterdir()
+    assert artifact.name in pointer
+
+    content, read_error = await engine.dispatcher.dispatch(  # type: ignore[attr-defined]
+        "read_offloaded", {"path": artifact.name, "start": 100, "end": 1100}
+    )
+    assert read_error is False
+    assert content == "x" * 1000
 
 
 def test_register_task_memory_tools_is_idempotent() -> None:

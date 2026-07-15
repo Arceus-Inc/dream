@@ -53,7 +53,7 @@ from dream.permissions import SessionLimits, read_sandbox_config
 from dream.plugins import load_enabled_plugins
 from dream.prompts.environment import render_runtime_info
 from dream.roles import RoleManifest
-from dream.runner._role_session import ROLE_MANIFEST_METADATA_KEY
+from dream.runner._role_session import ROLE_MANIFEST_METADATA_KEY, ROLE_NAME_METADATA_KEY
 from dream.sandbox import SANDBOX_CONTEXT_KEY, SandboxAdapter, select_backend
 from dream.services import cron as cron_service
 from dream.services.compact._orchestrator import AutoCompactState
@@ -499,7 +499,6 @@ def _assemble_system_prompt(
     return "\n\n".join(parts)
 
 
-
 def _build_session_engine(
     session_id: str,
     options: SessionOptions,
@@ -629,6 +628,12 @@ def _build_session_engine(
         TASK_CONTEXT_KEY: task_context,
         SANDBOX_CONTEXT_KEY: sandbox_adapter,
     }
+    if ROLE_NAME_METADATA_KEY in options.metadata:
+        context_metadata[ROLE_NAME_METADATA_KEY] = options.metadata[ROLE_NAME_METADATA_KEY]
+    from dream.subagents._inline_executor import SUBAGENT_NAME_METADATA_KEY
+
+    if SUBAGENT_NAME_METADATA_KEY in options.metadata:
+        context_metadata[SUBAGENT_NAME_METADATA_KEY] = options.metadata[SUBAGENT_NAME_METADATA_KEY]
     if skill_context is not None:
         context_metadata[SKILL_CONTEXT_KEY] = skill_context
     if memory_store is not None:
@@ -684,6 +689,7 @@ def _build_session_engine(
         registry=tool_registry,
         session_id=session_id,
         working_dir=working_dir,
+        scratch_dir=paths.sidecar(session_id) / "scratch",
         max_turns=options.max_turns or max_turns,
         permission_gate=permission_gate,
         role_allowed_tools=role_allowed,

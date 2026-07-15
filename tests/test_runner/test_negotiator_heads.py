@@ -89,9 +89,7 @@ class _ScriptedReplyStreamer:
         last = self.calls[-1]
         user_msgs = [m for m in last if m.role == "user"]
         assert user_msgs, "no user message in last call"
-        return "".join(
-            b.text for b in user_msgs[-1].content if isinstance(b, TextBlock)
-        )
+        return "".join(b.text for b in user_msgs[-1].content if isinstance(b, TextBlock))
 
 
 class _ErrorStreamer:
@@ -107,8 +105,12 @@ class _ErrorStreamer:
 
 
 def _proposal_envelope(
-    items: list[str], *, fence: bool = False, prose_before: str = "",
-    prose_after: str = "", tag: str = "proposal",
+    items: list[str],
+    *,
+    fence: bool = False,
+    prose_before: str = "",
+    prose_after: str = "",
+    tag: str = "proposal",
 ) -> str:
     inner = json.dumps(items)
     if fence:
@@ -117,8 +119,13 @@ def _proposal_envelope(
 
 
 def _response_envelope(
-    *, accept: bool, counter: list[str] | None = None, fence: bool = False,
-    prose_before: str = "", prose_after: str = "", tag: str = "response",
+    *,
+    accept: bool,
+    counter: list[str] | None = None,
+    fence: bool = False,
+    prose_before: str = "",
+    prose_after: str = "",
+    tag: str = "response",
 ) -> str:
     body: dict[str, Any] = {"accept": accept, "counter": counter}
     inner = json.dumps(body)
@@ -192,9 +199,7 @@ def test_make_evaluator_propose_head_returns_callable() -> None:
 
 
 async def test_evaluator_propose_head_returns_list_of_strings() -> None:
-    harness, _ = _harness_with_replies(
-        [_proposal_envelope(["MUST render", "SHOULD pass axe"])]
-    )
+    harness, _ = _harness_with_replies([_proposal_envelope(["MUST render", "SHOULD pass axe"])])
     head = make_evaluator_propose_head(harness)
 
     result = head(1, [])
@@ -230,9 +235,7 @@ async def test_evaluator_propose_head_tolerates_json_fence() -> None:
 
 
 async def test_evaluator_propose_head_tag_is_case_insensitive() -> None:
-    harness, _ = _harness_with_replies(
-        [_proposal_envelope(["c"], tag="PROPOSAL")]
-    )
+    harness, _ = _harness_with_replies([_proposal_envelope(["c"], tag="PROPOSAL")])
     head = make_evaluator_propose_head(harness)
 
     out = await head(1, [])  # type: ignore[misc]
@@ -256,7 +259,7 @@ async def test_evaluator_propose_head_invalid_json_raises() -> None:
 
 
 async def test_evaluator_propose_head_non_list_payload_raises() -> None:
-    harness, _ = _harness_with_replies(["<proposal>{\"x\":1}</proposal>"])
+    harness, _ = _harness_with_replies(['<proposal>{"x":1}</proposal>'])
     head = make_evaluator_propose_head(harness)
 
     with pytest.raises(EvaluatorProposeHeadParseError):
@@ -285,9 +288,7 @@ async def test_evaluator_propose_head_propagates_engine_errors() -> None:
 
 
 async def test_evaluator_propose_head_uses_evaluator_role() -> None:
-    harness, _, captured = _harness_capturing_options(
-        [_proposal_envelope(["c"])]
-    )
+    harness, _, captured = _harness_capturing_options([_proposal_envelope(["c"])])
     head = make_evaluator_propose_head(harness)
 
     await head(1, [])  # type: ignore[misc]
@@ -355,9 +356,7 @@ async def test_generator_respond_head_returns_accept_true_none_counter() -> None
 
 
 async def test_generator_respond_head_returns_accept_false_with_counter() -> None:
-    harness, _ = _harness_with_replies(
-        [_response_envelope(accept=False, counter=["c-alt"])]
-    )
+    harness, _ = _harness_with_replies([_response_envelope(accept=False, counter=["c-alt"])])
     head = make_generator_respond_head(harness)
 
     accept, counter = await head(1, [], ["c"])  # type: ignore[misc]
@@ -367,9 +366,7 @@ async def test_generator_respond_head_returns_accept_false_with_counter() -> Non
 
 async def test_generator_respond_head_accept_with_explicit_null_counter() -> None:
     """Accepting MUST imply counter is None even if model omits it."""
-    harness, _ = _harness_with_replies(
-        ["<response>{\"accept\": true}</response>"]
-    )
+    harness, _ = _harness_with_replies(['<response>{"accept": true}</response>'])
     head = make_generator_respond_head(harness)
 
     accept, counter = await head(1, [], ["c"])  # type: ignore[misc]
@@ -396,9 +393,7 @@ async def test_generator_respond_head_tolerates_prose_around_envelope() -> None:
 
 
 async def test_generator_respond_head_tolerates_json_fence() -> None:
-    harness, _ = _harness_with_replies(
-        [_response_envelope(accept=True, fence=True)]
-    )
+    harness, _ = _harness_with_replies([_response_envelope(accept=True, fence=True)])
     head = make_generator_respond_head(harness)
 
     accept, counter = await head(1, [], ["c"])  # type: ignore[misc]
@@ -407,9 +402,7 @@ async def test_generator_respond_head_tolerates_json_fence() -> None:
 
 
 async def test_generator_respond_head_tag_is_case_insensitive() -> None:
-    harness, _ = _harness_with_replies(
-        [_response_envelope(accept=True, tag="RESPONSE")]
-    )
+    harness, _ = _harness_with_replies([_response_envelope(accept=True, tag="RESPONSE")])
     head = make_generator_respond_head(harness)
 
     accept, _counter = await head(1, [], ["c"])  # type: ignore[misc]
@@ -433,9 +426,7 @@ async def test_generator_respond_head_invalid_json_raises() -> None:
 
 
 async def test_generator_respond_head_missing_accept_raises() -> None:
-    harness, _ = _harness_with_replies(
-        ["<response>{\"counter\": [\"c\"]}</response>"]
-    )
+    harness, _ = _harness_with_replies(['<response>{"counter": ["c"]}</response>'])
     head = make_generator_respond_head(harness)
 
     with pytest.raises(GeneratorRespondHeadParseError):
@@ -443,9 +434,7 @@ async def test_generator_respond_head_missing_accept_raises() -> None:
 
 
 async def test_generator_respond_head_non_bool_accept_raises() -> None:
-    harness, _ = _harness_with_replies(
-        ["<response>{\"accept\": \"yes\"}</response>"]
-    )
+    harness, _ = _harness_with_replies(['<response>{"accept": "yes"}</response>'])
     head = make_generator_respond_head(harness)
 
     with pytest.raises(GeneratorRespondHeadParseError):
@@ -454,7 +443,7 @@ async def test_generator_respond_head_non_bool_accept_raises() -> None:
 
 async def test_generator_respond_head_non_string_counter_item_raises() -> None:
     harness, _ = _harness_with_replies(
-        ["<response>{\"accept\": false, \"counter\": [1, 2]}</response>"]
+        ['<response>{"accept": false, "counter": [1, 2]}</response>']
     )
     head = make_generator_respond_head(harness)
 
@@ -476,9 +465,7 @@ async def test_generator_respond_head_propagates_engine_errors() -> None:
 
 
 async def test_generator_respond_head_uses_generator_role() -> None:
-    harness, _, captured = _harness_capturing_options(
-        [_response_envelope(accept=True)]
-    )
+    harness, _, captured = _harness_capturing_options([_response_envelope(accept=True)])
     head = make_generator_respond_head(harness)
 
     await head(1, [], ["c"])  # type: ignore[misc]
@@ -488,9 +475,7 @@ async def test_generator_respond_head_uses_generator_role() -> None:
 
 
 async def test_generator_respond_head_embeds_proposal_and_log() -> None:
-    harness, streamer = _harness_with_replies(
-        [_response_envelope(accept=True)]
-    )
+    harness, streamer = _harness_with_replies([_response_envelope(accept=True)])
     head = make_generator_respond_head(harness)
 
     log: list[NegotiationEntry] = [
@@ -519,12 +504,8 @@ async def test_generator_respond_head_embeds_proposal_and_log() -> None:
 
 
 async def test_heads_negotiate_to_acceptance_in_one_round() -> None:
-    eval_harness, _ = _harness_with_replies(
-        [_proposal_envelope(["MUST render"])]
-    )
-    gen_harness, _ = _harness_with_replies(
-        [_response_envelope(accept=True)]
-    )
+    eval_harness, _ = _harness_with_replies([_proposal_envelope(["MUST render"])])
+    gen_harness, _ = _harness_with_replies([_response_envelope(accept=True)])
     propose = make_evaluator_propose_head(eval_harness)
     respond = make_generator_respond_head(gen_harness)
 
@@ -540,9 +521,7 @@ async def test_heads_negotiate_to_acceptance_in_one_round() -> None:
 
 async def test_heads_negotiate_to_imposed_after_cap() -> None:
     # 3 rounds, evaluator always proposes "x", generator always counters.
-    eval_harness, _ = _harness_with_replies(
-        [_proposal_envelope(["x"]) for _ in range(3)]
-    )
+    eval_harness, _ = _harness_with_replies([_proposal_envelope(["x"]) for _ in range(3)])
     gen_harness, _ = _harness_with_replies(
         [_response_envelope(accept=False, counter=["y"]) for _ in range(3)]
     )
@@ -583,6 +562,35 @@ async def test_propose_head_embeds_task_intent_so_criteria_are_specific() -> Non
     await propose(1, [])
     prompt = streamer.last_user_text
     assert "greet(name)" in prompt
+
+
+async def test_propose_head_forbids_unstated_product_requirements() -> None:
+    harness, streamer = _harness_with_replies([_proposal_envelope(["MUST x"])])
+    propose = make_evaluator_propose_head(
+        harness,
+        intent="Persist nullable referrers and report top-referrer counts",
+    )
+
+    await propose(1, [])
+
+    prompt = streamer.last_user_text.lower()
+    assert "must not add" in prompt
+    assert "unstated product behavior" in prompt
+
+
+async def test_generator_respond_head_counters_scope_widening_against_intent() -> None:
+    harness, streamer = _harness_with_replies([_response_envelope(accept=True)])
+    respond = make_generator_respond_head(
+        harness,
+        intent="Persist nullable referrers and report top-referrer counts",
+    )
+
+    await respond(1, [], ["MUST impose a maximum referrer length"])
+
+    prompt = streamer.last_user_text.lower()
+    assert "persist nullable referrers" in prompt
+    assert "counter" in prompt
+    assert "widen" in prompt
 
 
 def test_propose_template_restricts_criteria_to_worktree_verifiable() -> None:

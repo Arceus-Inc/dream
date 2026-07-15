@@ -154,6 +154,7 @@ def offload_tool_output(
     preview = content[:preview_limit]
     omitted = max(0, len(content) - len(preview))
     original_size_bytes = len(content.encode("utf-8"))
+    recovery_chunk_chars = max(1, inline_limit // 2)
     preview_line = f"Inline preview: first {len(preview)} chars"
     if omitted:
         preview_line += f" ({omitted} chars omitted)"
@@ -163,6 +164,11 @@ def offload_tool_output(
         f"Tool use id: {tool_use_id}",
         f"Original size: {original_size_bytes} bytes",
         f"Full output saved to: {filename}",
+        (
+            f'Retrieve it in chunks with read_offloaded(path="{filename}", '
+            f"start=0, end={recovery_chunk_chars}); then continue with "
+            f"start={recovery_chunk_chars}, end={recovery_chunk_chars * 2}."
+        ),
         preview_line,
     ]
     if preview:

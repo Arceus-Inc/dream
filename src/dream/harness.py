@@ -364,7 +364,7 @@ class Harness:
             )
         if generator_respond is None:
             generator_respond = make_generator_respond_head(
-                self, harness_dir=harness_dir, observer=observer
+                self, intent=intent, harness_dir=harness_dir, observer=observer
             )
         if evaluator_run is None:
             evaluator_run = make_evaluator_head(

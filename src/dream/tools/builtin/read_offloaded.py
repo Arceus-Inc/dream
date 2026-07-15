@@ -14,7 +14,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from dream.contracts.tool import ToolResult
-from dream.services.tool_outputs import read_offloaded
+from dream.services.tool_outputs import read_offloaded, tool_output_inline_chars
 from dream.tools._base import BaseTool, ToolDeclaration
 from dream.tools._context import ToolExecutionContext
 from dream.tools._paths import PathEscapesRoot, resolve_within
@@ -81,8 +81,13 @@ class ReadOffloadedTool(BaseTool):
                 stop_condition="do not retry with the same missing path",
             )
 
+        chunk_chars = max(1, tool_output_inline_chars() // 2)
+        requested_end = args.end
+        probe_end = args.start + chunk_chars + 1
+        if requested_end is not None:
+            probe_end = min(probe_end, requested_end)
         try:
-            text = read_offloaded(confined, start=args.start, end=args.end, root=scratch)
+            probed = read_offloaded(confined, start=args.start, end=probe_end, root=scratch)
         except (ValueError, OSError) as exc:
             # ValueError covers traversal/containment; OSError covers
             # IsADirectoryError/PermissionError and friends — without this they
@@ -93,12 +98,25 @@ class ReadOffloadedTool(BaseTool):
                 safe_retry="pass a readable scratch-relative file path",
                 stop_condition="do not retry with the same path",
             )
+        text = probed[:chunk_chars]
+        actual_end = args.start + len(text)
+        has_more = len(probed) > chunk_chars
+        content = text
+        if has_more:
+            content += (
+                f'\n\n[Chunk bounded to {chunk_chars} chars; continue with '
+                f'read_offloaded(path="{args.path}", start={actual_end}, '
+                f"end={actual_end + chunk_chars}).]"
+            )
         return ToolResult(
-            content=text,
+            content=content,
             metadata={
                 "bytes_read": len(text.encode("utf-8")),
                 "start": args.start,
-                "end": args.end,
+                "end": actual_end,
+                "requested_end": requested_end,
+                "has_more": has_more,
+                "next_start": actual_end if has_more else None,
                 "summary": f"read {len(text)} chars from {args.path}",
             },
         )

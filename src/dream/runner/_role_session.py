@@ -208,6 +208,7 @@ async def run_role(
                         "role": role_label,
                         "tool": ev.name,
                         "is_error": ev.is_error,
+                        "content": ev.content,
                         "content_preview": ev.content[:240],
                     }
                 )
