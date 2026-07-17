@@ -465,6 +465,7 @@ async def test_role_tool_result_observer_preserves_full_content() -> None:
     result = next(event for event in observer.events if event["kind"] == "role.tool.result")
     assert result["content"] == full_content
     assert result["content_preview"] == full_content[:240]
+    assert "structured" in result  # ToolResult.structured rides the frame (None when absent)
 
 
 async def test_role_session_closed_event_no_getattr_used() -> None:

@@ -210,6 +210,7 @@ async def run_role(
                         "is_error": ev.is_error,
                         "content": ev.content,
                         "content_preview": ev.content[:240],
+                        "structured": ev.structured,
                     }
                 )
             # First error wins; the engine may surface a follow-up
