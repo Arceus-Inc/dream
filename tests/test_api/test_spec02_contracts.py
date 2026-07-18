@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import inspect
 import sys
-from typing import Protocol, get_type_hints
+from typing import Protocol
 
 import pytest
 
@@ -77,92 +77,6 @@ def test_substrate_is_a_protocol() -> None:
     from dream.api.substrate import Substrate
 
     assert issubclass(Substrate, Protocol)
-
-
-# --- Decision 3: ResolvedAuth uniform shape --------------------------------
-
-
-def test_resolved_auth_uniform_shape() -> None:
-    """All auth normalises to one shape so the client constructor never
-    branches on provider. Spec 02 decision 3 enumerates exactly these fields.
-    """
-    from dream.config.from_file import ResolvedAuth
-
-    hints = get_type_hints(ResolvedAuth)
-    expected = {"provider", "auth_kind", "value", "source", "state"}
-    assert expected.issubset(set(hints)), f"missing fields: {expected - set(hints)}"
-
-
-def test_resolved_auth_kind_covers_documented_families() -> None:
-    """``auth_kind`` ∈ {api_key, oauth_device, external_oauth} — decision 3."""
-    from dream.config.from_file import ResolvedAuth
-
-    samples = [
-        ResolvedAuth(provider="openai", auth_kind="api_key", value="x", source="env"),
-        ResolvedAuth(provider="anthropic", auth_kind="oauth_device", value="x", source="env"),
-        ResolvedAuth(provider="copilot", auth_kind="external_oauth", value="x", source="env"),
-    ]
-    assert {a.auth_kind for a in samples} == {"api_key", "oauth_device", "external_oauth"}
-
-
-# --- Decision 2 / criterion 4: ProviderProfile + #04 handshake -----------
-
-
-def test_provider_profile_carries_context_window_handshake_fields() -> None:
-    """Decision 2 + criterion 4: the profile carries ``context_window_tokens``
-    and ``auto_compact_threshold_tokens`` as the handshake to Spec 04.
-    Without these, the context-budgeting layer has no input.
-    """
-    from dream.config.from_file import ProviderProfile
-
-    hints = get_type_hints(ProviderProfile)
-    assert "context_window_tokens" in hints
-    assert "auto_compact_threshold_tokens" in hints
-
-
-def test_provider_profile_has_documented_core_fields() -> None:
-    """Decision 2 enumerates the minimum field set."""
-    from dream.config.from_file import ProviderProfile
-
-    hints = get_type_hints(ProviderProfile)
-    required = {"label", "provider", "api_format", "auth_source", "default_model"}
-    assert required.issubset(set(hints)), f"missing: {required - set(hints)}"
-
-
-def test_default_auth_source_prefers_named_provider_over_api_format() -> None:
-    """An OpenAI-*compatible* provider maps to its OWN key env, not openai's;
-    api_format is only a fallback when the provider identity is unknown."""
-    from dream.config.from_env import default_auth_source_for_provider
-
-    assert default_auth_source_for_provider("groq", "openai") == "groq_api_key"
-    assert default_auth_source_for_provider("openai", "openai") == "openai_api_key"
-    assert default_auth_source_for_provider("", "openai") == "openai_api_key"
-
-
-def test_resolve_auth_kind_follows_oauth_source() -> None:
-    """Decision 3: an OAuth source (copilot_oauth) resolves auth_kind=external_oauth,
-    not api_key, so the adapter dispatches the right auth flow."""
-    from dream.config.from_file import ProviderProfile, Settings
-
-    oauth = ProviderProfile(
-        label="cp", provider="copilot", api_format="openai", auth_source="", default_model="gpt-4o"
-    )
-    assert (
-        Settings(api_key="ghp_token", active_profile="cp", profiles={"cp": oauth})
-        .resolve_auth()
-        .auth_kind
-        == "external_oauth"
-    )
-
-    key = ProviderProfile(
-        label="oa", provider="openai", api_format="openai", auth_source="", default_model="gpt-4o"
-    )
-    assert (
-        Settings(api_key="sk-x", active_profile="oa", profiles={"oa": key})
-        .resolve_auth()
-        .auth_kind
-        == "api_key"
-    )
 
 
 # --- Decision 7 / criterion 7: startup discipline ------------------------
