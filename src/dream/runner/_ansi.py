@@ -1,11 +1,10 @@
 """Shared TTY-gated, dependency-free ANSI helpers.
 
-Both the interactive REPL (:mod:`dream.repl._session`) and the runner's
-:class:`~dream.runner._observer.StdioObserver` render styled lines to a
-text stream that is colourised *only* when the stream is a real terminal.
-Tests inject ``io.StringIO`` (no ``isatty``) and assert on plain text, so
-colour must be opt-in per stream. This module is the single source of the
-ANSI constants and the three primitives both call:
+The runner's :class:`~dream.runner._observer.StdioObserver` renders styled
+lines to a text stream that is colourised *only* when the stream is a real
+terminal. Tests inject ``io.StringIO`` (no ``isatty``) and assert on plain
+text, so colour must be opt-in per stream. This module is the single source
+of the ANSI constants and the three primitives:
 
 * :func:`use_colour` — TTY gate (with an optional ``NO_COLOR`` honour);
 * :func:`c` — wrap a string in a code + reset, or pass through;

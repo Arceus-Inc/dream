@@ -266,20 +266,6 @@ def test_sandbox_adapter_wired_into_session_context(tmp_path: Path) -> None:
     assert isinstance(adapter, SubprocessSandbox)
 
 
-def test_wake_model_override_reaches_wake_streamer(tmp_path: Path) -> None:
-    # The heartbeat fires constantly; running it on a cheap model is the
-    # single biggest cost lever for an always-on agent. Default: same model.
-    harness = _build(tmp_path, wake_model="cheap-mini")
-    factory = harness.config.wake_streamer_factory
-    assert factory is not None
-    assert factory()._model == "cheap-mini"  # type: ignore[attr-defined]
-
-    default = _build(tmp_path, model="main-model")
-    default_factory = default.config.wake_streamer_factory
-    assert default_factory is not None
-    assert default_factory()._model == "main-model"  # type: ignore[attr-defined]
-
-
 def test_extra_no_longer_smuggles_runtime_fields(tmp_path: Path) -> None:
     # The typed fields replace the ``config.extra`` escape hatch.
     harness = _build(tmp_path)
@@ -308,9 +294,3 @@ def test_working_dir_recorded_on_config(tmp_path: Path) -> None:
     assert harness.config.working_dir == tmp_path / "wt"
 
 
-def test_repl_wrapper_still_env_driven(tmp_path: Path) -> None:
-    # The REPL convenience keeps its KeyError contract and delegates here.
-    from dream.repl._session import build_default_harness
-
-    with pytest.raises(KeyError, match="DREAM_SMOKE"):
-        build_default_harness(env={}, working_dir=tmp_path)

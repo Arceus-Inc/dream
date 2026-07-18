@@ -1,17 +1,11 @@
-"""Task-level subagents (Harness.spawn_agent). Not org-level."""
+"""Task-level subagent value objects (spawn config + planner handoff).
 
-from dream.swarm._identity import (
-    TeammateIdentity,
-    sanitize_agent_name,
-    sanitize_team_name,
-)
-from dream.swarm._registry import (
-    BackendRegistry,
-    TeamFile,
-    TeamMember,
-    TeamRegistry,
-)
-from dream.swarm._remote import RemoteExecutor
+The executor backends (in-process, subprocess, worktree, mailbox) went with
+the deleted always-on runtime; subagents execute via
+:mod:`dream.subagents._inline_executor` + the ``spawn_subagent`` tool.
+"""
+
+from dream.swarm._handoff import HandoffArtefact, handoff_event
 from dream.swarm._spawn import (
     MAX_SUBAGENT_DEPTH,
     BackendType,
@@ -21,27 +15,15 @@ from dream.swarm._spawn import (
     TeammateExecutor,
     TeammateSpawnConfig,
 )
-from dream.swarm.in_process import InProcessExecutor, InProcessFactory
-from dream.swarm.subprocess_backend import ArgvBuilder, SubprocessExecutor
 
 __all__ = [
     "MAX_SUBAGENT_DEPTH",
-    "ArgvBuilder",
-    "BackendRegistry",
     "BackendType",
     "BridgeDisabled",
-    "InProcessExecutor",
-    "InProcessFactory",
-    "RemoteExecutor",
+    "HandoffArtefact",
     "SpawnResult",
     "SubagentTaskType",
-    "SubprocessExecutor",
-    "TeamFile",
-    "TeamMember",
-    "TeamRegistry",
     "TeammateExecutor",
-    "TeammateIdentity",
     "TeammateSpawnConfig",
-    "sanitize_agent_name",
-    "sanitize_team_name",
+    "handoff_event",
 ]
