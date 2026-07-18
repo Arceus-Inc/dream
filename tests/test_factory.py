@@ -40,7 +40,9 @@ class _LargeOutputTool(BaseTool):
 def _system_prompt(harness: Harness) -> str:
     """The system prompt the factory's engine binds for a fresh session."""
     engine = harness.config._engine_factory("s_probe", SessionOptions())  # type: ignore[misc]
-    return engine.streamer._system_prompt or ""  # type: ignore[attr-defined]
+    # The engine's streamer is the failover wrapper; the prompt lives on the primary inside.
+    primary = engine.streamer._by_name["primary"]  # type: ignore[attr-defined]
+    return primary._system_prompt or ""  # type: ignore[attr-defined]
 
 
 def _build(tmp_path: Path, **overrides: object) -> Harness:

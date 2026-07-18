@@ -35,10 +35,8 @@ def compute_minimum_toolset(
         candidates = {name for name in manifest.tools if name in declarations}
 
     if "read_file" in candidates and "read_offloaded" in declarations:
-      candidates.add("read_offloaded")
+        candidates.add("read_offloaded")
 
     tier_value = int(sandbox_tier)
-    within_tier = {
-        name for name in candidates if declarations[name].tier_required <= tier_value
-    }
+    within_tier = {name for name in candidates if declarations[name].tier_required <= tier_value}
     return frozenset(within_tier - set(manifest.disallowed_tools))

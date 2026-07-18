@@ -26,6 +26,7 @@ from dream.engine._adapter_openai import (
     httpx_chat_completion_stream,
 )
 from dream.engine._engine import QueryEngine, build_query_engine
+from dream.engine._failover_streamer import FailoverStreamer
 from dream.engine._permission_gate import (
     compute_session_role_allowlist,
     make_permission_gate,
@@ -511,14 +512,26 @@ def _build_session_engine(
         memory_catalogue=memory_catalogue,
         system_prompt=options.system_prompt,
     )
-    streamer = OpenAIChatStreamer(
-        stream_chat_completion=httpx_chat_completion_stream(
-            api_key=api_key,
-            base_url=base_url,
-            extra_params={"tools": tools_wire, "tool_choice": "auto"} if tools_wire else None,
-        ),
-        model=options.model or model,
-        system_prompt=system_prompt,
+    # Failover harvest (2026-07-18): every beat's turn rides FailoverStreamer, so a 429/5xx
+    # gets bounded retry instead of killing the beat. One substrate today — the rotation seam
+    # activates when a second (name, streamer) pair is added here.
+    streamer = FailoverStreamer(
+        [
+            (
+                "primary",
+                OpenAIChatStreamer(
+                    stream_chat_completion=httpx_chat_completion_stream(
+                        api_key=api_key,
+                        base_url=base_url,
+                        extra_params=(
+                            {"tools": tools_wire, "tool_choice": "auto"} if tools_wire else None
+                        ),
+                    ),
+                    model=options.model or model,
+                    system_prompt=system_prompt,
+                ),
+            )
+        ]
     )
     # OTel-shaped trace (Spec 12a): one durable JSONL per session under the
     # task sidecar. The session_id doubles as the sidecar dir key.
