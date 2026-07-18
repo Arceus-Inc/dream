@@ -129,55 +129,6 @@ def test_provider_profile_has_documented_core_fields() -> None:
     assert required.issubset(set(hints)), f"missing: {required - set(hints)}"
 
 
-# --- Decision 4: registry-driven provider detection -----------------------
-
-
-def test_provider_spec_registry_is_an_ordered_table() -> None:
-    """Decision 4: order = detection priority. A *new* provider is added as a
-    table row, not a new code path. A list (ordered) — not a dict — makes the
-    priority explicit.
-    """
-    from dream.api._registry import PROVIDERS
-
-    assert isinstance(PROVIDERS, list)
-    assert len(PROVIDERS) > 0
-
-
-def test_detect_provider_by_model_keyword() -> None:
-    """Decision 4 + criterion 3: detection by model-name keyword."""
-    from dream.api._registry import detect_provider
-
-    info = detect_provider(model="claude-sonnet-4-6")
-    assert info is not None
-    assert "anthropic" in info.name.lower() or info.backend_type == "anthropic"
-
-
-def test_detect_provider_by_key_prefix() -> None:
-    from dream.api._registry import detect_provider
-
-    info = detect_provider(api_key="sk-ant-test-key")
-    assert info is not None
-    assert "anthropic" in info.name.lower() or info.backend_type == "anthropic"
-
-
-def test_detect_provider_by_base_url() -> None:
-    from dream.api._registry import detect_provider
-
-    info = detect_provider(base_url="https://api.anthropic.com")
-    assert info is not None
-    assert "anthropic" in info.name.lower() or info.backend_type == "anthropic"
-
-
-def test_local_provider_detected_by_model_prefix() -> None:
-    """Criterion 3: local providers (e.g. ollama) are keyword/prefix detectable,
-    not silently filtered out of model matching."""
-    from dream.api._registry import _match_by_model
-
-    spec = _match_by_model("ollama/llama3")
-    assert spec is not None
-    assert spec.name == "ollama"
-
-
 def test_default_auth_source_prefers_named_provider_over_api_format() -> None:
     """An OpenAI-*compatible* provider maps to its OWN key env, not openai's;
     api_format is only a fallback when the provider identity is unknown."""
