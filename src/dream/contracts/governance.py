@@ -12,6 +12,7 @@ stays dependency-free.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
@@ -35,7 +36,7 @@ class GovGoal:
     task_ids: tuple[str, ...] = ()
     team_id: str | None = None
     lead_id: str | None = None
-    task_outcomes: dict[str, str] = field(default_factory=dict)
+    task_outcomes: Mapping[str, str] = field(default_factory=dict)
     delivery_shape: str = "single"
     lead_professions: tuple[str, ...] = ()
     staffing_requirements: tuple[StaffingRequirement, ...] = ()
@@ -44,11 +45,10 @@ class GovGoal:
     priority_reason: str = ""
 
     def __post_init__(self) -> None:
-        import types
+        # A plain-dict defensive copy: the Mapping annotation makes mutation a type error, and
+        # (unlike MappingProxyType) the DTO stays dataclasses.asdict()/deepcopy-serializable.
+        object.__setattr__(self, "task_outcomes", dict(self.task_outcomes))
 
-        object.__setattr__(
-            self, "task_outcomes", types.MappingProxyType(dict(self.task_outcomes))
-        )
 
 @dataclass(frozen=True)
 class GovDecision:

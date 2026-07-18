@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 from dream.contracts import GovGoal, StaffingRequirement
 
 
@@ -43,3 +45,14 @@ def test_governance_goal_carries_team_and_effective_priority():
     )
     assert (goal.effective_score, goal.effective_priority) == (0.4, "medium")
     assert goal.task_outcomes == {"child-1": "passed"}
+
+
+def test_gov_goal_task_outcomes_survives_asdict_and_copies_its_input() -> None:
+    source = {"child-1": "passed"}
+    goal = GovGoal(goal_id="g1", title="Ship", task_outcomes=source)
+
+    source["child-2"] = "failed"  # mutating the caller's dict must not leak into the DTO
+    assert goal.task_outcomes == {"child-1": "passed"}
+
+    flat = dataclasses.asdict(goal)  # plain read shape: serialization must just work
+    assert flat["task_outcomes"] == {"child-1": "passed"}
