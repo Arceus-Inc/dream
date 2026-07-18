@@ -300,28 +300,6 @@ async def test_run_cron_kind_missing_manifest_raises(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# run_cron_cli — registry seeding on the CLI code path
-# ---------------------------------------------------------------------------
-
-
-def test_cron_cli_seeds_registry_from_manifests(tmp_path: Path) -> None:
-    # A brand-new CLI-only setup must populate the registry (so /cron list and
-    # last_run/last_status are tracked), not just bootstrap manifest files.
-    from dream.repl._cron_cli import run_cron_cli
-
-    exit_code = run_cron_cli(kind="doc-garden", working_dir=tmp_path, timeout=10)
-
-    assert exit_code == 0
-    registry = _registry_path(tmp_path)
-    seeded = {j.name for j in load_cron_jobs(registry)}
-    assert seeded == {m.name for m in default_cron_manifests()}
-    job = get_cron_job(registry, "doc-garden")
-    assert job is not None
-    assert job.last_run is not None
-    assert job.last_status == "success"
-
-
-# ---------------------------------------------------------------------------
 # cron_tick_loop
 # ---------------------------------------------------------------------------
 

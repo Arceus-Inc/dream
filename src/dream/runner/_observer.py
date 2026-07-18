@@ -50,36 +50,36 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol, TextIO, runtime_checkable
 
 # The ANSI constants and the TTY gate live in one shared module
-# (:mod:`dream.repl._ansi`) that the interactive REPL imports too; aliased here
-# under the module-private ``_NAME`` spelling every handler already uses.
-from dream.repl._ansi import (
+# (:mod:`dream.runner._ansi`); aliased here under the module-private
+# ``_NAME`` spelling every handler already uses.
+from dream.runner._ansi import (
     BLUE as _BLUE,
 )
-from dream.repl._ansi import (
+from dream.runner._ansi import (
     BOLD as _BOLD,
 )
-from dream.repl._ansi import (
+from dream.runner._ansi import (
     CYAN as _CYAN,
 )
-from dream.repl._ansi import (
+from dream.runner._ansi import (
     DIM as _DIM,
 )
-from dream.repl._ansi import (
+from dream.runner._ansi import (
     GREEN as _GREEN,
 )
-from dream.repl._ansi import (
+from dream.runner._ansi import (
     MAGENTA as _MAGENTA,
 )
-from dream.repl._ansi import (
+from dream.runner._ansi import (
     RED as _RED,
 )
-from dream.repl._ansi import (
+from dream.runner._ansi import (
     RESET as _RESET,
 )
-from dream.repl._ansi import (
+from dream.runner._ansi import (
     YELLOW as _YELLOW,
 )
-from dream.repl._ansi import use_colour as _shared_use_colour
+from dream.runner._ansi import use_colour as _shared_use_colour
 
 __all__ = [
     "RunTaskObserver",
