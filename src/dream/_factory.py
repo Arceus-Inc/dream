@@ -3,9 +3,7 @@
 The one place that wires a *runnable* :class:`~dream.harness.Harness`: an
 OpenAI-compatible streamer, the default tool registry, the permission gate,
 task/cron bootstrap, skills, tracing, and auto-compaction — behind explicit
-parameters instead of env-var coupling. SDK consumers (and the bundled REPL)
-construct through here; ``dream.repl`` merely adds its ``DREAM_SMOKE_*`` env
-convenience on top.
+parameters instead of env-var coupling. SDK consumers construct through here.
 
 Each ``start_session`` call constructs a fresh engine so per-session
 ``system_prompt`` / ``model`` overrides take effect; the ``ToolRegistry`` and
@@ -78,7 +76,6 @@ from dream.tools._base import BaseTool
 from dream.tools._registry import ToolRegistry, ToolSource
 from dream.tools.builtin import default_registry, register_task_memory_tools
 from dream.tools.builtin.spawn_subagent import SpawnSubagentTool
-from dream.wake import HeartbeatTool
 
 __all__ = ["PolicyWarningSink", "SkillEventSink", "build_harness"]
 
@@ -153,9 +150,8 @@ def build_harness(
     overrides and shell detection for the runtime-info prompt block — and
     defaults to ``os.environ``. Credentials never come from it.
 
-    ``wake_model`` overrides the model for wake-cycle heartbeat turns only
-    (they fire on a schedule, so a cheap model here is the main cost lever
-    for always-on agents); ``None`` uses ``model``.
+    ``wake_model`` is accepted for signature compatibility (chorus passes it)
+    but is a no-op: the wake-cycle runtime was removed — chorus owns the loop.
     """
     if not model:
         raise ValueError("model must be a non-empty string")
@@ -229,22 +225,14 @@ def build_harness(
     # The task manager rides on the harness config so callers can register
     # lifecycle listeners and surface cron-spawned task starts/completions
     # alongside ordinary tool calls. The cron registry path rides alongside
-    # so a scheduler tick loop (the runtime's, or the REPL's) knows where to
-    # poll, and `paths` so the runtime reuses the env-resolved roots. The
-    # wake streamer factory lets the runtime's wake scheduler drive
-    # heartbeat turns without re-deriving provider wiring.
+    # so a scheduler tick loop knows where to poll, and `paths` carries the
+    # env-resolved roots.
+    del wake_model  # ponytail: compat no-op — the wake runtime is gone
     config = HarnessConfig(
         working_dir=working_dir,
         task_manager=task_manager,
         cron_registry_path=task_context.cron_registry_path,
         paths=paths,
-        wake_streamer_factory=_make_wake_streamer_factory(
-            api_key=api_key,
-            base_url=base_url,
-            # Heartbeat turns fire constantly; ``wake_model`` lets them run
-            # on a cheap model while real sessions keep ``model``.
-            model=wake_model if wake_model is not None else model,
-        ),
         # MCP connect + plugin import are async/IO, so they hang off the
         # async-open chokepoint (``Harness._ensure_open``) rather than running
         # in this sync factory. ``None`` when both surfaces are disabled so the
@@ -391,41 +379,6 @@ def _install_plugin(harness: Harness, tool_registry: ToolRegistry, plugin: Plugi
     # (it is rendered once at build, before this opener runs); plugin tools /
     # hooks / providers are the live surface today.
     harness.register_plugin(plugin)
-
-
-def _make_wake_streamer_factory(
-    *, api_key: str, base_url: str, model: str
-) -> Callable[[], OpenAIChatStreamer]:
-    """Build the zero-arg streamer factory the wake scheduler consumes.
-
-    The streamer advertises ONLY the virtual ``heartbeat`` tool — the wake
-    turn is a single decision turn (spec 06.5); giving it the full tool
-    catalogue would invite work the wake runner can't dispatch. The wake
-    stimulus carries the whole prompt, so no system prompt is set here.
-    """
-    heartbeat = HeartbeatTool()
-    heartbeat_wire = [
-        {
-            "type": "function",
-            "function": {
-                "name": heartbeat.name,
-                "description": heartbeat.description,
-                "parameters": heartbeat.input_schema(),
-            },
-        }
-    ]
-
-    def factory() -> OpenAIChatStreamer:
-        return OpenAIChatStreamer(
-            stream_chat_completion=httpx_chat_completion_stream(
-                api_key=api_key,
-                base_url=base_url,
-                extra_params={"tools": heartbeat_wire, "tool_choice": "auto"},
-            ),
-            model=model,
-        )
-
-    return factory
 
 
 def _bootstrap_task_and_cron(
