@@ -26,7 +26,6 @@ from dream.engine._adapter_openai import (
     httpx_chat_completion_stream,
 )
 from dream.engine._engine import QueryEngine, build_query_engine
-from dream.engine._orientation import OrientationBrief, OrientationConfig
 from dream.engine._permission_gate import (
     compute_session_role_allowlist,
     make_permission_gate,
@@ -108,7 +107,6 @@ def build_harness(
     policy_warning_sink: PolicyWarningSink | None = None,
     env: Mapping[str, str] | None = None,
     wake_model: str | None = None,
-    orientation: bool = False,
 ) -> Harness:
     """Build a Harness whose engine factory produces a real, tool-wired engine.
 
@@ -279,28 +277,11 @@ def build_harness(
             compactor=compactor,
             capabilities=capabilities,
             harness=harness,
-            orientation=orientation,
             subagents=subagents,
         )
 
     config._engine_factory = _factory
     return harness
-
-
-def _build_orientation_config(paths: DreamPaths) -> OrientationConfig:
-    """An orientation ritual that prepends the deliverable's ``AGENTS.md`` to the beat (spec 15 §4.2).
-
-    A chorus deliverable worktree is NOT a dream-style repo, so the structural repo-validator /
-    session-guard (which expect ``docs/design-docs/...`` and would emit BLOCKING findings) is
-    deliberately NOT run here — it would abort the session. We only surface the cross-child contract so
-    the employee reads it before writing; no findings, no abort, no summariser LLM round-trip.
-    """
-
-    async def gather() -> OrientationBrief:
-        agents = paths.agents_md.read_text(encoding="utf-8") if paths.agents_md.is_file() else ""
-        return OrientationBrief(repo_summary=agents, progress_tail="", active_exec_plan="")
-
-    return OrientationConfig(gather=gather)
 
 
 def _make_async_opener(
@@ -475,7 +456,6 @@ def _build_session_engine(
     compactor: AutoCompactState,
     capabilities: ProviderCapabilities,
     harness: Harness,
-    orientation: bool = False,
     subagents: SubagentSet | None = None,
 ) -> QueryEngine:
     """Construct one session's ``QueryEngine`` from explicit, pre-resolved deps.
@@ -653,5 +633,4 @@ def _build_session_engine(
         tracer=tracer,
         model=options.model or model,
         hook_executor=hook_executor,
-        orientation=_build_orientation_config(paths) if orientation else None,
     )
