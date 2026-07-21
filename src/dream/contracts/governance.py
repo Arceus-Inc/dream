@@ -117,6 +117,15 @@ class GovernancePort(Protocol):
         """
         ...
 
+    def approve_roadmap(self, decision_id: str, *, by: str | None = None) -> str:
+        """Approve a proposed roadmap -> submit its goals to the workforce + activate the decision.
+
+        The approval-door counterpart of :meth:`propose_roadmap`. Idempotent (the intake is
+        fingerprinted); returns the approved decision id. Raises for a missing id or a decision that is
+        already done/archived.
+        """
+        ...
+
     def approve_proposal(self, proposal_id: str, *, by: str) -> str:
         """Approve a proposal -> seed a live decision + its goals; returns the new decision id."""
         ...
