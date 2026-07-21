@@ -12,10 +12,11 @@ stays dependency-free.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
-from dream.contracts.delegation import StaffingRequirement
+from dream.contracts.delegation import ProfessionCapacity, StaffingRequirement
 
 
 @dataclass(frozen=True)
@@ -85,6 +86,7 @@ class GovernanceView:
     decisions: tuple[GovDecision, ...] = field(default_factory=tuple)
     proposals: tuple[GovProposal, ...] = field(default_factory=tuple)
     decided: tuple[GovProposal, ...] = field(default_factory=tuple)
+    capacity: tuple[ProfessionCapacity, ...] = field(default_factory=tuple)
 
 
 @runtime_checkable
@@ -98,6 +100,21 @@ class GovernancePort(Protocol):
 
     def read_direction(self) -> GovernanceView:
         """The current direction: every decision with its goals, the open proposals, and the decided ones."""
+        ...
+
+    def propose_roadmap(
+        self,
+        statement: str,
+        specs: Sequence[Mapping[str, object]],
+        *,
+        by: str | None = None,
+    ) -> str:
+        """Author a CEO-reasoned roadmap deterministically -> a *proposed* decision + its goals.
+
+        The CEO's pen at the seam: the ledger validates the roadmap's structural invariants and persists
+        it author-only (nothing is submitted until approval). Returns the new decision id. Raises when a
+        structural invariant is breached.
+        """
         ...
 
     def approve_proposal(self, proposal_id: str, *, by: str) -> str:
