@@ -108,12 +108,13 @@ class GovernancePort(Protocol):
         specs: Sequence[Mapping[str, object]],
         *,
         by: str | None = None,
+        rationale: str = "",
     ) -> str:
         """Author a CEO-reasoned roadmap deterministically -> a *proposed* decision + its goals.
 
         The CEO's pen at the seam: the ledger validates the roadmap's structural invariants and persists
-        it author-only (nothing is submitted until approval). Returns the new decision id. Raises when a
-        structural invariant is breached.
+        it author-only (nothing is submitted until approval), carrying the CEO's ``rationale``. Returns
+        the new decision id. Raises when a structural invariant is breached.
         """
         ...
 
