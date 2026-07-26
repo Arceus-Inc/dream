@@ -4,10 +4,11 @@
 
 ### An SDK for building **autonomous agent harnesses**.
 
-*One `Harness` you construct, configure, and stream typed events from — it owns the agent loop.*
+*Construct a `Harness`, stream typed events, and drive tasks to verified completion.*
 
 ![python](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)
-![tests](https://img.shields.io/badge/tests-2765%20passing-2ea44f)
+![tests](https://img.shields.io/badge/tests-2366%20passing-2ea44f)
+![ci](https://github.com/Arceus-Inc/dream/actions/workflows/ci.yml/badge.svg)
 ![typing](https://img.shields.io/badge/mypy-strict-1f6feb)
 ![license](https://img.shields.io/badge/license-MIT-blue)
 ![stack](https://img.shields.io/badge/Arceus-runtime%20layer-8A2BE2)
@@ -16,132 +17,246 @@
 
 ---
 
-`dream` is the **runtime layer** of the [Arceus](https://github.com/Arceus-Inc) stack. You construct a
-`Harness`, open a session, and stream typed events as the agent thinks, calls tools, and finishes. It
-owns the agent loop, tools, hooks, permissions, sandboxes, providers, sessions, memory, and the
-plan → sprint → evaluate task loop.
+`dream` is the **runtime layer** of the [Arceus](https://github.com/Arceus-Inc) stack: a pure-Python SDK that owns the agent loop, tool surface, permissions, sandboxes, providers, memory, MCP, plugins, hooks, and the **plan → sprint → evaluate** task loop.
 
-It deliberately **knows nothing** about employees, companies, channels, or strategy — those live in
-`chorus`, `lattice`, and `horizon`. dream just runs the agent.
+It deliberately **knows nothing** about employees, companies, channels, or strategy — those live in sibling repos (`chorus`, `horizon`, `lattice`). dream runs the agent; your product policy lives on top.
+
+**Scale (this repo):** ~238 Python modules under `src/dream/`, ~188 test modules, **2366** tests, **52** public symbols pinned in [`tests/test_public_api.py`](tests/test_public_api.py).
 
 ## Install
 
 ```bash
 pip install dream
-# or, with providers
-pip install "dream[anthropic,openai]"
+pip install "dream[anthropic,openai,docker]"   # optional providers + Docker sandbox
 ```
 
-Python 3.11+.
+Python **3.11+**. Development uses [`uv`](https://docs.astral.sh/uv/):
 
-## Hello, harness
+```bash
+git clone https://github.com/Arceus-Inc/dream.git && cd dream
+uv sync --all-extras
+```
+
+Copy [`.env.example`](.env.example) → `.env.local` for smoke credentials (`DREAM_SMOKE_*`, optional `DREAM_TAVILY_API_KEY` for `web_search`).
+
+---
+
+## Two ways to use it
+
+### 1. One conversation (`Session`)
+
+For chat-style agents: one model session, typed event stream, tool loop.
 
 ```python
 import asyncio
-from dream import Harness, HarnessConfig
+from pathlib import Path
+from dream import build_harness
 
 async def main() -> None:
-    async with Harness(HarnessConfig()) as h:
-        session = await h.start_session()
+    harness = build_harness(
+        model="gpt-4.1",
+        api_key="...",                              # always explicit — never implicit env reads
+        base_url="https://api.openai.com/v1",       # any OpenAI-compatible endpoint
+        working_dir=Path("./my-workspace"),         # git repo recommended
+    )
+    async with harness:
+        session = await harness.start_session()
         async for event in session.send("write a haiku about long-running agents"):
-            print(event)
+            print(event)                            # TextDelta, ToolUseStart, ToolUseResult, …
         print(session.cost)
 
 asyncio.run(main())
 ```
 
-Every consumer-visible output is a typed [`Event`](src/dream/events.py) — no prints, no logging side
-effects, no guessing. New here? Read the **[Quickstart](consumer-facing-api/QUICKSTART.md)** and the
-**[SDK guide](consumer-facing-api/SDK_GUIDE.md)**, then browse the **[examples](examples/)**.
+Every consumer-visible output is a typed [`Event`](src/dream/events.py) — `TextDelta`, `ToolUseStart`, `ToolUseResult`, `TurnComplete`, `PermissionDenied`, `HookBlocked`, `Compacted`, `Error`. No hidden logging side effects.
 
-## One task, end to end — the plan → sprint → evaluate loop
+### 2. One verified task (`run_task`)
 
-Beyond a single conversation, dream runs a whole task to a *verified* result: it **plans**, runs the
-**sprint**, and **evaluates** the outcome against the goal. This is the loop `chorus` drives to make a
-task somebody's job. The public contract around it is fully typed — an `ExecPlan` (+ `ExecPlanLedger`,
-`ExecPlanStatus`) describes the work, and a fault surfaces as a typed **`RunTaskError`** that names the
-phase (`plan` / `sprint` / `evaluate`) it broke in, while cancellation propagates as `TaskCancelled`.
+For autonomous work: planner commits a spec + step ledger, then bounded **sprint → evaluate** cycles until done, blocked, or cancelled.
+
+```python
+import asyncio
+from pathlib import Path
+from dream import build_harness
+
+async def main() -> None:
+    harness = build_harness(
+        model="gpt-4.1",
+        api_key="...",
+        base_url="https://api.openai.com/v1",
+        working_dir=Path("./my-workspace"),
+    )
+    async with harness:
+        result = await harness.run_task(
+            intent="Add a CLI that prints today's date and a unit test for it",
+        )
+        print(result.passed, result.final_text)
+
+asyncio.run(main())
+```
+
+Failures surface as typed exceptions: [`RunTaskError`](src/dream/errors.py) (names the broken phase: `plan` / `sprint` / `evaluate`) and [`TaskCancelled`](src/dream/errors.py). State is durable on disk under `docs/exec-plans/active/` and `.dream/` sidecars so tasks are crash-safe and resumable.
+
+You can also run a **single role** (`run_role`) — planner, generator, or evaluator — with a [`RoleManifest`](src/dream/roles/_manifest.py) that hard-limits tools.
 
 ---
 
 ## What's inside
 
-| Capability | What it gives you |
-|---|---|
-| **`Harness` + `Session`** | One facade, many instances per process, no globals. A session is one conversation with a typed event stream. |
-| **Tools** | Built-in tools + your own; structured `ToolResult`, typed `ToolContext`. |
-| **Hooks** | Intercept the turn loop (`HookEvent` → `HookResult`); a hook can block or rewrite. |
-| **Permissions** | Capability gating with explicit `PermissionDenied` — fail-closed by default. |
-| **Sandboxes** | Run tool side-effects in isolation (local / Docker). |
-| **Providers** | Anthropic, OpenAI, and any OpenAI-compatible endpoint behind one `Provider` interface. |
-| **Skills & Plugins** | Package reusable capability bundles (`Skill`) and extensions (`Plugin` + `PluginManifest`). |
-| **Memory** | Typed memory records, scopes, and a `MemoryWriter` seam for consolidation. |
-| **MCP** | Speak the Model Context Protocol to external tool servers. |
-| **Tasks** | the plan → sprint → evaluate loop, a typed `ExecPlan`, and a `RunTaskError` failure contract. |
-| **`contracts/`** | Zero-dependency cross-repo Protocols, so `chorus`/`lattice`/`horizon` depend on the contract, not the providers. |
+| Layer | Packages / entrypoints | What it does |
+|-------|------------------------|--------------|
+| **Facade** | [`harness.py`](src/dream/harness.py), [`_factory.py`](src/dream/_factory.py) | `build_harness()` wires streamer, tools, permissions, skills, memory, sandbox, MCP, plugins, cron registry, compaction |
+| **Engine** | [`engine/`](src/dream/engine/) | Async turn loop, tool dispatch, permission gate, OpenAI-compatible streaming, auto-compaction |
+| **Task loop** | [`runner/`](src/dream/runner/), [`planner/`](src/dream/planner/), [`sprint/`](src/dream/sprint/) | `run_task`: five overridable LLM heads, sprint contracts, evaluation records (`pass` / `needs-changes` / `fail`), oracle verification |
+| **Tools** | [`tools/builtin/`](src/dream/tools/builtin/) | ~30 default tools (files, shell, git, tasks, cron, web, memory, observability) + custom `BaseTool` + MCP adapters |
+| **Roles** | [`roles/`](src/dream/roles/) | Planner (read-only), generator (full surface ∩ sandbox), evaluator (read-only) |
+| **Subagents** | [`subagents/`](src/dream/subagents/) | Opt-in `spawn_subagent` — capability-minimized ephemeral teammates (depth-2, spawn cap) |
+| **Security** | [`permissions/`](src/dream/permissions/), [`sandbox/`](src/dream/sandbox/) | Tiered sandbox (`read-only` → `unrestricted`), trust ramp for discovered tools, subprocess + Docker backends |
+| **Extensions** | [`skills/`](src/dream/skills/), [`plugins/`](src/dream/plugins/), [`hooks/`](src/dream/hooks/), [`mcp/`](src/dream/mcp/) | Progressive-disclosure skills, repo plugins, lifecycle hooks, MCP allowlist + credentials |
+| **Memory** | [`memory/`](src/dream/memory/) | Project memory catalogue + search/get; opt-in task scratchpad (`working_memory=True`) + `memory_propose` outbound queue |
+| **Background work** | [`tasks/`](src/dream/tasks/), [`services/cron.py`](src/dream/services/cron.py) | Background shell tasks, cron manifests under `.harness/cron/` (drive with your scheduler or `--once` scripts) |
+| **Observability** | [`observability/`](src/dream/observability/), [`runner/_observer.py`](src/dream/runner/_observer.py) | OTel-shaped JSONL traces, `tail_events`, macro run observer for `run_task` |
+| **Repo contract** | [`services/repo_validator.py`](src/dream/services/repo_validator.py), [`config/paths.py`](src/dream/config/paths.py) | Session-start validator: `AGENTS.md`, required `docs/` tree, link + JSON schema checks |
+| **Contracts** | [`contracts/`](src/dream/contracts/) | Zero-dep Protocols for siblings — `__contract_version__ = "0.4.0"` |
+
+Full concept map with every tool documented: **[consumer-facing-api/HARNESS.md](consumer-facing-api/HARNESS.md)**.
+
+### Default built-in tools (high level)
+
+Registered by [`default_registry()`](src/dream/tools/builtin/__init__.py):
+
+- **Workspace:** `read_file`, `edit_file`, `write_file`, `bash`, `git`, `glob`, `grep`, `lsp`, `read_offloaded`
+- **Knowledge:** `skill`, `memory_search`, `memory_get`
+- **Tasks & schedule:** `task_create/get/output/stop/update`, `cron_list/show/create/delete/toggle`, `plan_show`, `todo_write`, `remote_trigger`
+- **Isolation:** `enter_worktree`, `exit_worktree`
+- **Web (tier-2):** `web_search`, `web_extract` (Tavily; needs API key)
+- **Self-observability:** `query_logs`, `query_metrics`
+
+**Opt-in surfaces:** `working_memory_*` + `memory_propose` (`working_memory=True`); `spawn_subagent` (`subagents=SubagentSet(...)`); dynamic `mcp__*` tools after MCP connect.
 
 ---
 
-## Design rules
+## Cross-repo contracts
 
-1. **One facade: `Harness`.** Many instances per process. No globals.
-2. **Constructor injection.** Env / file loading is an opt-in helper, never implicit.
-3. **Async-first.** The sync facade lives in `dream.sync` and is thin.
-4. **All consumer output is a typed `events.Event`.** No prints, no logging side effects.
-5. **The public API is exactly what `dream/__init__.py` re-exports** — pinned by
-   `tests/test_public_api.py`. Anything not re-exported may change.
-6. **Cross-repo contracts live in `dream.contracts`** with zero runtime dependencies, so siblings can
-   depend on them without pulling in providers.
+Sibling repos import **`dream.contracts` only** (no `httpx`, no providers). Shipped seams include:
+
+| Contract | Purpose |
+|----------|---------|
+| `Tool`, `Hook`, `Skill`, `Plugin`, `Provider`, `Memory*` | Extension shapes |
+| `ExecPlan`, `ExecPlanLedger`, `ExecPlanStatus` | Task planning artefacts |
+| `GoalStore`, `IntakePort`, `OutcomeFeed`, `OutcomeEvent` | Horizon strategy feedback |
+| `GovernancePort`, `Gov*` | CEO reverse edge onto direction |
+| `DelegatedIntakePort`, `CapacityPort`, … | Team delegation intake |
+
+Bump `dream.contracts.__contract_version__` on breaking Protocol changes; siblings assert at startup.
 
 ---
 
-## Where things live
+## Documentation & examples
+
+| Path | Start here if you… |
+|------|---------------------|
+| [consumer-facing-api/QUICKSTART.md](consumer-facing-api/QUICKSTART.md) | Want zero → `run_task()` in five minutes |
+| [consumer-facing-api/SDK_GUIDE.md](consumer-facing-api/SDK_GUIDE.md) | Need the full SDK + security model |
+| [consumer-facing-api/HARNESS.md](consumer-facing-api/HARNESS.md) | Want every harness concept mapped to code |
+| [consumer-facing-api/examples/](consumer-facing-api/examples/) | Prefer runnable scripts (01–11: skills, memory, MCP, hooks, subagents, …) |
+| [examples/run_task_demo.py](examples/run_task_demo.py) | Want live stdio walkthrough of the full task loop |
+| [examples/research_claw/](examples/research_claw/) | Want a cron-friendly `--once` agent with oracle verification |
+| [datasets/swe-bench-verified-100/](datasets/swe-bench-verified-100/) | Need 100 real coding tasks + gold patches for eval |
+| [docs/specs/divo/](docs/specs/divo/) | Are implementing against the build-order specs (00–15) |
+| [AGENTS.md](AGENTS.md) | Are a coding agent navigating this repo |
+
+CLI runner toggling every harness knob:
+
+```bash
+uv run python consumer-facing-api/run_harness.py \
+  --intent "Create hello.py" --workspace /tmp/demo --no-mcp
+```
+
+---
+
+## Repository layout
 
 ```
 src/dream/
-  __init__.py        # the public API surface (56 symbols, pinned by tests)
-  harness.py         # the Harness facade
-  session.py         # one conversation
-  events.py          # the typed event stream
-  errors.py          # the exception hierarchy
-  contracts/         # cross-repo Protocols (zero deps)
-  engine/            # the private turn loop
-  api/               # providers (Anthropic, OpenAI, …)
-  tools/builtin/     # built-in tools
-  skills/  plugins/  hooks/  permissions/  sandbox/
-  memory/  mcp/  swarm/  tasks/  services/
-  prompts/  config/  state/  utils/
+  __init__.py          # public API (52 symbols, pinned by tests)
+  harness.py           # Harness facade: sessions, run_role, run_task
+  _factory.py          # build_harness() — the one wiring factory
+  session.py           # one conversation
+  events.py            # typed consumer event stream
+  errors.py            # RunTaskError, TaskCancelled, …
+  contracts/           # cross-repo Protocols (zero runtime deps)
+  engine/              # private turn loop + tool dispatch
+  api/                 # OpenAI + Anthropic provider adapters, credentials
+  runner/ planner/ sprint/   # run_task orchestration
+  tools/ roles/ subagents/   # action surface + role manifests
+  permissions/ sandbox/        # capability tiers + isolation
+  skills/ plugins/ hooks/ mcp/
+  memory/ tasks/ services/     # memory tiers, cron, compaction, repo validator
+  observability/ state/ utils/
+tests/                 # mirrors src/dream (~2366 tests)
+consumer-facing-api/   # guides + runnable examples
+examples/              # run_task_demo, research_claw
+docs/                  # specs, design docs, runtime-events catalogue
+datasets/              # eval task packs (SWE-bench subset)
 ```
 
 ### The Arceus stack
 
 ```
-dream      one task        →  the agent loop: plan → sprint → evaluate     ← this repo
-chorus     one sprint      →  the org of employees that do durable work
-horizon    one company     →  strategy / OKRs / direction
-lattice    the people      →  employee growth + memory consolidation
+dream      one task     →  agent loop: plan → sprint → evaluate          ← this repo
+chorus     one sprint   →  org of employees doing durable work
+horizon    one company  →  strategy / OKRs / direction
+lattice    the people   →  employee growth + memory consolidation
 ```
 
-Strict bottom-up: the siblings depend on **dream**; dream depends on none of them.
+Strict bottom-up: siblings depend on **dream**; dream depends on none of them.
+
+---
+
+## Design rules
+
+From [`docs/design-docs/core-beliefs.md`](docs/design-docs/core-beliefs.md):
+
+1. **One facade: `Harness`.** Many instances per process. No globals.
+2. **Constructor injection.** Credentials and paths are always explicit at `build_harness()`; env helpers are opt-in.
+3. **Async-first.** Primary API is `async`; use `asyncio.run` or your own event loop.
+4. **Typed events only.** No prints or logging as the consumer contract.
+5. **Public API = `dream.__init__.__all__`.** Everything else is private.
+6. **Contracts stay dependency-free.** Siblings import `dream.contracts`, not providers.
+7. **Fail closed.** Permissions and validators deny by default.
+8. **Repo is system of record.** Durable state in git; ephemeral state under `.dream/` (ignored).
+
+This repository satisfies its own session-start validator (spec 01) — CI runs it on every push.
 
 ---
 
 ## Status
 
-**v0.1.0** — gated by `ruff` + `mypy --strict` + **2765 passing tests**. See the
-[CHANGELOG](CHANGELOG.md) for what's landed.
+**v0.1.0** (alpha) — `ruff` + `mypy --strict` + 2366 tests on Python 3.11–3.13. See [CHANGELOG.md](CHANGELOG.md).
+
+Long-running daemon composition (`dream.Runtime`, `dream.ctl`) is specified in [docs/specs/divo/15-long-running-runtime.md](docs/specs/divo/15-long-running-runtime.md); today you compose **cron manifests**, **background tasks**, and **`--once` agent scripts** (see `examples/research_claw/`) until that facade lands on `main`.
+
+---
+
+## Open source
+
+MIT licensed.
+
+- [CONTRIBUTING.md](CONTRIBUTING.md) — dev setup, PR checklist, boundary rules
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+- [SECURITY.md](SECURITY.md) — report vulnerabilities privately
+- [AGENTS.md](AGENTS.md) — repo map for humans and coding agents
 
 ## Development
 
 ```bash
 uv sync --all-extras
-uv run pytest -q              # the full suite
-uv run ruff check .           # lint
-uv run mypy --strict src      # types
+uv run pytest                  # full suite
+uv run ruff check src tests
+uv run mypy --strict src
 ```
-
-See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).

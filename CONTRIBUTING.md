@@ -5,18 +5,35 @@ and nothing else. If your change adds employees, org charts, channels,
 budgets, OKRs, or memory curation, it belongs in `chorus`, `lattice`, or
 `horizon` — not here.
 
+## Community
+
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
+- [SECURITY.md](SECURITY.md) — report vulnerabilities privately, not via public issues
+
 ## Setup
 
-```pwsh
+```bash
 uv sync --all-extras
 ```
 
 ## Local checks
 
-```pwsh
+```bash
 uv run ruff check src tests
 uv run mypy
 uv run pytest
+```
+
+The repo itself must satisfy the session-start validator (spec 01):
+
+```bash
+uv run python -c "
+from dream.config.paths import DreamPaths
+from dream.services.repo_validator import has_blocking, validate_repo
+paths = DreamPaths.resolve('.')
+assert not has_blocking(validate_repo(paths)), validate_repo(paths)
+print('repo structure OK')
+"
 ```
 
 ## Pull request checklist

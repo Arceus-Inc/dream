@@ -11,15 +11,13 @@ companies, channels, or strategy — those live in sibling repos `chorus`,
 `lattice`, and `horizon`, which depend only on `dream.contracts` (zero runtime
 deps).
 
-## Current state
+## Current state (2026)
 
-- `src/dream/` is a **scaffold**: the full module tree exists (~90 files),
-  mostly stubs / `__init__.py`. `pyproject.toml`, CI
-  (`.github/workflows/ci.yml`), and a `tests/` dir mirroring the package
-  structure (empty `__init__.py`s) are in place.
-- `docs/specs/` holds the design authority (two author tracks below).
-- Nothing is implemented yet — the job is to fill the scaffold against the
-  specs.
+- `src/dream/` is a **mature SDK** (~90 modules): harness, tools, hooks, tasks, contracts, etc.
+- **2366+ tests**, strict mypy, CI on Python 3.11–3.13.
+- `docs/specs/divo/` holds the design authority (specs 00–15).
+- Consumer docs live in `consumer-facing-api/` and `examples/`.
+- For a fresh agent session, read [AGENTS.md](../AGENTS.md) and [README.md](../README.md) first.
 
 ## Non-negotiable design rules (from README)
 

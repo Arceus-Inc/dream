@@ -26,3 +26,16 @@ jobs:
         run: uv run mypy
       - name: Pytest
         run: uv run pytest
+      - name: Repo structure (spec 01 validator)
+        run: |
+          uv run python -c "
+          from dream.config.paths import DreamPaths
+          from dream.services.repo_validator import has_blocking, validate_repo
+          paths = DreamPaths.resolve('.')
+          findings = validate_repo(paths)
+          if has_blocking(findings):
+              for f in findings:
+                  if f.severity == 'blocking':
+                      print(f'{f.code}: {f.message}')
+              raise SystemExit(1)
+          "

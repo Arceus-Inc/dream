@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Open-source community files: `AGENTS.md`, spec-01 `docs/` tree, `SECURITY.md`,
+  `CODE_OF_CONDUCT.md`, GitHub issue/PR templates, CI repo-structure check.
 - `run_task` failure contract (chorus spec 05 §5): `dream.RunTaskError`
   (carries a typed `phase` of `plan`/`sprint`/`evaluate` plus the original
   `cause`) and `dream.TaskCancelled` (cooperative cancel). A fault inside the

@@ -49,8 +49,11 @@ dev = [
 ]
 
 [project.urls]
-Homepage   = "https://github.com/Arceus-Inc/dream"
-Repository = "https://github.com/Arceus-Inc/dream"
+Homepage       = "https://github.com/Arceus-Inc/dream"
+Repository     = "https://github.com/Arceus-Inc/dream"
+Documentation  = "https://github.com/Arceus-Inc/dream/tree/main/consumer-facing-api"
+Issues         = "https://github.com/Arceus-Inc/dream/issues"
+Changelog      = "https://github.com/Arceus-Inc/dream/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/dream"]
