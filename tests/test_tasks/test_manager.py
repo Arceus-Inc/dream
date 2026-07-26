@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -271,13 +272,20 @@ async def test_task_output_streams_incrementally(tmp_path: Path) -> None:
         cwd=tmp_path,
         argv=_py_argv(
             "import sys, time;"
-            "print('first', flush=True); time.sleep(0.4);"
+            "print('first', flush=True); time.sleep(1.5);"
             "print('second', flush=True)"
         ),
     )
-    # mid-flight read: should see 'first' but not 'second'
-    await asyncio.sleep(0.2)
-    mid = mgr.read_task_output(record.id)
+    # Mid-flight read: should see 'first' but not 'second'. Poll rather than
+    # sleeping a fixed interval — interpreter startup is not bounded on a
+    # loaded CI box, and a fixed sleep makes this test flaky.
+    mid = ""
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        mid = mgr.read_task_output(record.id)
+        if "first" in mid:
+            break
+        await asyncio.sleep(0.02)
     assert "first" in mid
     assert "second" not in mid
     # after exit: both

@@ -101,6 +101,35 @@ You can also run a **single role** (`run_role`) — planner, generator, or evalu
 
 ---
 
+## Does it actually work?
+
+25 tasks from **SWE-bench Lite**, run inside each task's official evaluation container, graded
+by the official SWE-bench Docker harness. Same model (`gpt-5.2`), same prompt, against
+[opencode](https://github.com/anomalyco/opencode) as a baseline:
+
+| | dream | opencode |
+|---|---|---|
+| resolved | **19/25 (76%)** | 21/25 (84%) |
+| median time / task | 122 s | 98 s |
+| median agent steps | 1 sprint | 10 steps |
+| harness errors | 0 | 0 |
+
+Two tasks apart at n=25 is noise — the interesting result is *how* the two differ, and one of
+them is a bug in this repo: `dream`'s failures cost ~2.4× its successes because it has no
+cheap-abort signal, and one run reported success while producing an empty diff.
+
+The write-up keeps the negative results: **[docs/learnings/2026-07-26-swe-bench-lite-vs-opencode.md](docs/learnings/2026-07-26-swe-bench-lite-vs-opencode.md)**.
+The rig is checked in and reproducible: **[datasets/swe-bench-lite/](datasets/swe-bench-lite/)**.
+
+> The benchmark is **oracle-assisted** — both agents are given the acceptance test command, so
+> these rates are far above public SWE-bench leaderboards and are not comparable to them. Only
+> the harness-vs-harness comparison is meaningful.
+
+Notably, driving this required **zero changes to `src/dream/`** — `build_default_harness()` +
+`run_task()` was the entire integration.
+
+---
+
 ## What's inside
 
 | Layer | Packages / entrypoints | What it does |
@@ -163,6 +192,8 @@ Bump `dream.contracts.__contract_version__` on breaking Protocol changes; siblin
 | [examples/run_task_demo.py](examples/run_task_demo.py) | Want live stdio walkthrough of the full task loop |
 | [examples/research_claw/](examples/research_claw/) | Want a cron-friendly `--once` agent with oracle verification |
 | [datasets/swe-bench-verified-100/](datasets/swe-bench-verified-100/) | Need 100 real coding tasks + gold patches for eval |
+| [datasets/swe-bench-lite/](datasets/swe-bench-lite/) | Want to reproduce the benchmark, or point it at another harness |
+| [docs/learnings/](docs/learnings/) | Want measured results and the failure modes they exposed |
 | [docs/specs/divo/](docs/specs/divo/) | Are implementing against the build-order specs (00–15) |
 | [AGENTS.md](AGENTS.md) | Are a coding agent navigating this repo |
 
@@ -197,8 +228,8 @@ src/dream/
 tests/                 # mirrors src/dream (~2366 tests)
 consumer-facing-api/   # guides + runnable examples
 examples/              # run_task_demo, research_claw
-docs/                  # specs, design docs, runtime-events catalogue
-datasets/              # eval task packs (SWE-bench subset)
+docs/                  # specs, design docs, learnings, runtime-events catalogue
+datasets/              # eval task packs + the SWE-bench benchmark rig
 ```
 
 ### The Arceus stack
@@ -233,7 +264,18 @@ This repository satisfies its own session-start validator (spec 01) — CI runs 
 
 ## Status
 
-**v0.1.0** (alpha) — `ruff` + `mypy --strict` + 2366 tests on Python 3.11–3.13. See [CHANGELOG.md](CHANGELOG.md).
+**v0.1.0** (alpha) — `ruff` + `mypy --strict` + 2366 tests on Python 3.11–3.14. See [CHANGELOG.md](CHANGELOG.md).
+
+Alpha means the public API is pinned by tests but not yet frozen; breaking changes land with a
+CHANGELOG entry and a `dream.contracts.__contract_version__` bump where relevant.
+
+Known gaps, measured rather than assumed (see [docs/learnings/](docs/learnings/)):
+
+- **No cheap abort.** `run_task` spends its full sprint budget on tasks it cannot solve, making
+  failures ~2.4× more expensive than successes.
+- **"Verification unavailable" is not distinct from "verification failed."** When the acceptance
+  tests cannot run at all, the loop retries instead of stopping.
+- **One empty-diff-but-passing case** observed under benchmark conditions.
 
 Long-running daemon composition (`dream.Runtime`, `dream.ctl`) is specified in [docs/specs/divo/15-long-running-runtime.md](docs/specs/divo/15-long-running-runtime.md); today you compose **cron manifests**, **background tasks**, and **`--once` agent scripts** (see `examples/research_claw/`) until that facade lands on `main`.
 

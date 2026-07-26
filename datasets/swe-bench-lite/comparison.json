@@ -1,0 +1,140 @@
+{
+  "dream": {
+    "harness": "dream",
+    "tasks": 25,
+    "resolved": 19,
+    "resolve_rate": 76.0,
+    "ran_ok": 25,
+    "errors": 0,
+    "nonempty_patch": 24,
+    "empty_patch": 1,
+    "tokens": {
+      "mean": 513836.2,
+      "median": 287862,
+      "sum": 12845906,
+      "n": 25
+    },
+    "input_tokens": {
+      "mean": 509410.1,
+      "median": 285244,
+      "sum": 12735253,
+      "n": 25
+    },
+    "output_tokens": {
+      "mean": 4426.1,
+      "median": 2944,
+      "sum": 110653,
+      "n": 25
+    },
+    "wall_seconds": {
+      "mean": 208.3,
+      "median": 122.3,
+      "sum": 5206.9,
+      "n": 25
+    },
+    "steps": {
+      "mean": 1.2,
+      "median": 1,
+      "sum": 29,
+      "n": 25
+    },
+    "cost_reported": {
+      "mean": 0,
+      "median": 0,
+      "sum": 0,
+      "n": 25
+    },
+    "resolved_ids": [
+      "astropy__astropy-12907",
+      "astropy__astropy-6938",
+      "django__django-14411",
+      "django__django-14534",
+      "matplotlib__matplotlib-23913",
+      "matplotlib__matplotlib-26011",
+      "mwaskom__seaborn-2848",
+      "mwaskom__seaborn-3010",
+      "pallets__flask-4045",
+      "pallets__flask-5063",
+      "pydata__xarray-4493",
+      "pylint-dev__pylint-5859",
+      "pylint-dev__pylint-7114",
+      "pytest-dev__pytest-5692",
+      "pytest-dev__pytest-7373",
+      "scikit-learn__scikit-learn-14087",
+      "scikit-learn__scikit-learn-25638",
+      "sphinx-doc__sphinx-8506",
+      "sphinx-doc__sphinx-8627"
+    ],
+    "report": "dream.dreamFULL.json"
+  },
+  "opencode": {
+    "harness": "opencode",
+    "tasks": 25,
+    "resolved": 21,
+    "resolve_rate": 84.0,
+    "ran_ok": 25,
+    "errors": 0,
+    "nonempty_patch": 25,
+    "empty_patch": 0,
+    "tokens": {
+      "mean": 431471.4,
+      "median": 108431,
+      "sum": 10786784,
+      "n": 25
+    },
+    "input_tokens": {
+      "mean": 23246.9,
+      "median": 17760,
+      "sum": 581172,
+      "n": 25
+    },
+    "output_tokens": {
+      "mean": 1939.8,
+      "median": 1035,
+      "sum": 48494,
+      "n": 25
+    },
+    "wall_seconds": {
+      "mean": 201.7,
+      "median": 97.7,
+      "sum": 5043.6,
+      "n": 25
+    },
+    "steps": {
+      "mean": 15.3,
+      "median": 10,
+      "sum": 382,
+      "n": 25
+    },
+    "cost_reported": {
+      "mean": 0.2,
+      "median": 0.1,
+      "sum": 4.5,
+      "n": 25
+    },
+    "resolved_ids": [
+      "astropy__astropy-12907",
+      "astropy__astropy-6938",
+      "django__django-14411",
+      "django__django-14534",
+      "django__django-16820",
+      "matplotlib__matplotlib-23913",
+      "matplotlib__matplotlib-26011",
+      "mwaskom__seaborn-2848",
+      "mwaskom__seaborn-3010",
+      "pallets__flask-4045",
+      "pallets__flask-5063",
+      "pydata__xarray-4248",
+      "pydata__xarray-4493",
+      "pylint-dev__pylint-5859",
+      "pytest-dev__pytest-5692",
+      "pytest-dev__pytest-7373",
+      "scikit-learn__scikit-learn-14087",
+      "scikit-learn__scikit-learn-25638",
+      "sphinx-doc__sphinx-8627",
+      "sympy__sympy-15346",
+      "sympy__sympy-19254"
+    ],
+    "report": "opencode.ocFULL.json"
+  }
+}

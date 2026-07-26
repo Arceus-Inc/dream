@@ -1,0 +1,16 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "azure": {
+      "npm": "@ai-sdk/openai",
+      "name": "Azure GPT (bench)",
+      "options": {
+        "baseURL": "__BASE_URL__",
+        "apiKey": "{env:BENCH_MODEL_API_KEY}"
+      },
+      "models": {
+        "__MODEL__": { "name": "__MODEL__" }
+      }
+    }
+  }
+}

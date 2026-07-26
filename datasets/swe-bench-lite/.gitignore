@@ -1,0 +1,21 @@
+# Scratch / local-only artefacts
+.debug/
+__pycache__/
+*.pyc
+
+# Official-harness per-instance evaluation logs (large, regenerable)
+results/*/logs/
+logs/
+
+# Ad-hoc debugging scripts from interactive sessions — not part of the harness
+container/_dream_*.sh
+container/_inspect_*.sh
+container/_try_*.sh
+container/_wsl_*.sh
+container/_relaunch_both.sh
+container/_grade_snapshot.sh
+_debug_dream.py
+
+# Superseded host-mode (patch-only) runner, replaced by container/run_container.py
+run_dream.py
+_common.py

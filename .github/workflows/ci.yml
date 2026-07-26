@@ -6,12 +6,22 @@ on:
   pull_request:
     branches: [main]
 
+# Least privilege: this workflow only needs to read the repo.
+permissions:
+  contents: read
+
+# A new push to a PR supersedes the run already in flight.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
