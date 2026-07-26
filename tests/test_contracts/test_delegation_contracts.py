@@ -237,3 +237,25 @@ def test_outcome_event_preserves_delegation_hierarchy() -> None:
         execution_mode="delivery",
         is_root_outcome=False,
     )
+
+
+def test_staffing_requirement_rejects_empty_profession_and_nonpositive_count() -> None:
+    with pytest.raises(ValueError):
+        StaffingRequirement(profession="")
+    with pytest.raises(ValueError):
+        StaffingRequirement(profession="   ")
+    with pytest.raises(ValueError):
+        StaffingRequirement(profession="engineer", count=0)
+    with pytest.raises(ValueError):
+        StaffingRequirement(profession="engineer", count=-5)
+
+
+def test_delegated_work_request_rejects_invalid_shapes() -> None:
+    with pytest.raises(ValueError):
+        DelegatedWorkRequest(intent="", goal_id="g1")
+    with pytest.raises(ValueError):
+        DelegatedWorkRequest(intent="ship it", goal_id="")
+    with pytest.raises(ValueError):
+        DelegatedWorkRequest(intent="ship it", goal_id="g1", max_team_size=0)
+    with pytest.raises(ValueError):
+        DelegatedWorkRequest(intent="ship it", goal_id="g1", spend_limit_cents=-100)

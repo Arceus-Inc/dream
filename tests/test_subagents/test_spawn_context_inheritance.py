@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dream.repl._session import build_default_harness
+from dream import build_harness
 from dream.session import SessionOptions
 from dream.subagents._declaration import Subagent, SubagentSet
 from dream.tools.builtin.spawn_subagent import (
@@ -20,12 +20,13 @@ from dream.tools.builtin.spawn_subagent import (
 )
 
 
-def _env() -> dict[str, str]:
-    return {
-        "DREAM_SMOKE_API_KEY": "sk-test",
-        "DREAM_SMOKE_MODEL": "gpt-test",
-        "DREAM_SMOKE_BASE_URL": "http://127.0.0.1:9/v1",
-    }
+def _harness(tmp_path):  # type: ignore[no-untyped-def]
+    return build_harness(
+        model="gpt-test",
+        api_key="sk-test",
+        base_url="http://127.0.0.1:9/v1",
+        working_dir=tmp_path,
+    )
 
 
 def _child_set() -> SubagentSet:
@@ -48,7 +49,7 @@ def test_factory_prefers_incoming_spawn_counter(tmp_path: Path) -> None:
             SUBAGENT_SET_CONTEXT_KEY: _child_set(),
         }
     )
-    harness = build_default_harness(env=_env(), working_dir=tmp_path)
+    harness = _harness(tmp_path)
     factory = harness.config._engine_factory
     assert factory is not None
     engine = factory("child-sid", options)
@@ -66,7 +67,7 @@ def test_factory_prefers_incoming_scoped_subagent_set(tmp_path: Path) -> None:
             SUBAGENT_SET_CONTEXT_KEY: child_set,
         }
     )
-    harness = build_default_harness(env=_env(), working_dir=tmp_path)
+    harness = _harness(tmp_path)
     factory = harness.config._engine_factory
     assert factory is not None
     engine = factory("child-sid", options)
@@ -76,7 +77,7 @@ def test_factory_prefers_incoming_scoped_subagent_set(tmp_path: Path) -> None:
 
 def test_top_level_session_seeds_fresh_counter(tmp_path: Path) -> None:
     """No incoming spawn keys ⇒ unchanged behaviour: the parent path is not affected."""
-    harness = build_default_harness(env=_env(), working_dir=tmp_path)
+    harness = _harness(tmp_path)
     factory = harness.config._engine_factory
     assert factory is not None
     engine = factory("parent-sid", SessionOptions())
@@ -97,7 +98,7 @@ def test_factory_carries_incoming_observer(tmp_path: Path) -> None:
     options = SessionOptions(
         metadata={SPAWN_COUNT_KEY: [0], SUBAGENT_SET_CONTEXT_KEY: _child_set(), OBSERVER_KEY: obs}
     )
-    harness = build_default_harness(env=_env(), working_dir=tmp_path)
+    harness = _harness(tmp_path)
     factory = harness.config._engine_factory
     assert factory is not None
     engine = factory("child-sid", options)

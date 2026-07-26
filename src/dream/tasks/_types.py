@@ -4,7 +4,7 @@ A :class:`TaskRecord` is the *ephemeral* in-memory handle for a single
 background subprocess the :class:`~dream.tasks._manager.BackgroundTaskManager`
 spawns. Unlike OpenHarness's mutable dataclass we keep the record
 **frozen** to match the rest of the Dream codebase
-(:class:`~dream.tasks._ledger.Ledger`, :class:`~dream.wake._state`); every
+(:class:`~dream.tasks._ledger.Ledger`); every
 state transition goes through a ``with_*`` helper that returns a new
 record. The manager owns the canonical ``id -> TaskRecord`` mapping and
 rebinds it on each transition.

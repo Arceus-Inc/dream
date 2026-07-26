@@ -10,8 +10,14 @@ orchestrator then runs it once more, authoritatively, as the oracle.
 from __future__ import annotations
 
 import json
+import xml.etree.ElementTree as ET
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+from urllib.parse import urlencode
+
+import httpx
 
 from pydantic import BaseModel, Field
 
@@ -21,12 +27,190 @@ from dream.tools._base import BaseTool, ToolDeclaration
 from dream.tools._context import ToolExecutionContext
 
 __all__ = [
+    "ArxivSearchTool",
     "ExperimentRun",
     "RunExperimentTool",
     "SaveArtifactTool",
     "extract_metrics",
     "run_experiment_file",
 ]
+
+# arXiv search (moved from the deleted ohmo example — research_claw's only
+# other consumer).
+ARXIV_API_URL = "https://export.arxiv.org/api/query"
+_ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
+_SUMMARY_LIMIT = 900
+
+
+
+# ---------------------------------------------------------------------------
+# arXiv feed parsing (pure)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ArxivEntry:
+    """One paper from an arXiv Atom feed."""
+
+    arxiv_id: str
+    title: str
+    authors: tuple[str, ...]
+    summary: str
+    published: str
+    link: str
+
+
+def parse_arxiv_feed(xml_text: str) -> tuple[ArxivEntry, ...]:
+    """Parse an arXiv export Atom feed; tolerate odd entries by skipping them."""
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return ()
+    entries: list[ArxivEntry] = []
+    for node in root.findall("atom:entry", _ATOM_NS):
+        entry = _parse_entry(node)
+        if entry is not None:
+            entries.append(entry)
+    return tuple(entries)
+
+
+def _parse_entry(node: ET.Element) -> ArxivEntry | None:
+    raw_id = _text(node, "atom:id")
+    title = _text(node, "atom:title")
+    if not raw_id or not title:
+        return None
+    authors = tuple(
+        name
+        for author in node.findall("atom:author", _ATOM_NS)
+        if (name := _text(author, "atom:name"))
+    )
+    return ArxivEntry(
+        arxiv_id=raw_id.rsplit("/abs/", 1)[-1],
+        title=_squash(title),
+        authors=authors,
+        summary=_squash(_text(node, "atom:summary") or ""),
+        published=_text(node, "atom:published") or "",
+        link=raw_id,
+    )
+
+
+def _text(node: ET.Element, tag: str) -> str | None:
+    child = node.find(tag, _ATOM_NS)
+    return child.text.strip() if child is not None and child.text else None
+
+
+def _squash(text: str) -> str:
+    return " ".join(text.split())
+
+
+def format_entries(entries: tuple[ArxivEntry, ...]) -> str:
+    """Render entries for the model: id, title, authors, date, trimmed abstract."""
+    blocks: list[str] = []
+    for entry in entries:
+        summary = entry.summary
+        if len(summary) > _SUMMARY_LIMIT:
+            summary = summary[:_SUMMARY_LIMIT] + "…"
+        authors = ", ".join(entry.authors[:6]) + (
+            ", et al." if len(entry.authors) > 6 else ""
+        )
+        blocks.append(
+            f"[{entry.arxiv_id}] {entry.title}\n"
+            f"  authors: {authors}\n"
+            f"  published: {entry.published}\n"
+            f"  link: {entry.link}\n"
+            f"  abstract: {summary}"
+        )
+    return "\n\n".join(blocks)
+
+
+# ---------------------------------------------------------------------------
+# arxiv_search
+# ---------------------------------------------------------------------------
+
+FetchFn = Callable[[str], Awaitable[str]]
+
+
+async def _http_fetch(url: str) -> str:
+    async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+        return response.text
+
+
+class ArxivSearchInput(BaseModel):
+    """Arguments for ``arxiv_search``."""
+
+    query: str = Field(
+        min_length=2,
+        max_length=300,
+        description=(
+            "arXiv search terms, e.g. 'state space models' or "
+            "'cat:cs.LG AND ti:diffusion'."
+        ),
+    )
+    max_results: int = Field(
+        default=8, ge=1, le=25, description="How many results to return (1-25)."
+    )
+    sort_by: Literal["submittedDate", "relevance"] = Field(
+        default="submittedDate",
+        description="'submittedDate' for the newest papers, 'relevance' for the best match.",
+    )
+
+
+class ArxivSearchTool(BaseTool):
+    """Search arXiv and return papers with abstracts.
+
+    The endpoint host is pinned to ``export.arxiv.org``; the model only
+    controls the query string, so this never becomes a generic fetcher.
+    """
+
+    name = "arxiv_search"
+    description = (
+        "Search arXiv for papers. Returns id, title, authors, date, link and "
+        "abstract per result. Use sort_by='submittedDate' to find new papers."
+    )
+    declaration = ToolDeclaration(risk="external", tier_required=2, timeout_seconds=30.0)
+    input_model = ArxivSearchInput
+
+    def __init__(self, fetch: FetchFn = _http_fetch) -> None:
+        self._fetch = fetch
+
+    async def execute(
+        self, input: dict[str, Any], ctx: ToolExecutionContext
+    ) -> ToolResult:
+        params = ArxivSearchInput.model_validate(input)
+        url = ARXIV_API_URL + "?" + urlencode(
+            {
+                "search_query": f"all:{params.query}"
+                if ":" not in params.query
+                else params.query,
+                "max_results": params.max_results,
+                "sortBy": params.sort_by,
+                "sortOrder": "descending",
+            }
+        )
+        try:
+            body = await self._fetch(url)
+        except Exception as exc:
+            return ToolResult(
+                content=f"arXiv query failed: {exc}",
+                is_error=True,
+                metadata={
+                    "root_cause": f"arXiv API request failed: {exc}",
+                    "safe_retry": "retry once; if it fails again, narrow the query",
+                    "stop_condition": "stop after two consecutive failures",
+                },
+            )
+        entries = parse_arxiv_feed(body)
+        if not entries:
+            return ToolResult(
+                content="No papers matched.",
+                metadata={"summary": "0 results", "results": 0},
+            )
+        return ToolResult(
+            content=format_entries(entries),
+            metadata={"summary": f"{len(entries)} paper(s)", "results": len(entries)},
+        )
 
 _OUTPUT_TAIL = 4000
 _DEFAULT_TIMEOUT = 120.0

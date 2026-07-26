@@ -4,8 +4,7 @@ ExecPlans are the cross-repo work unit. `horizon` submits them, `chorus`
 dequeues and executes via the Harness, and the ledger guarantees that
 re-submitting the same plan (same hash) does not duplicate work.
 
-The SDK ships a default file-backed ledger in `dream.services.exec_plan`;
-production deployments swap in their own implementation of this Protocol.
+Production deployments supply their own implementation of this Protocol.
 """
 
 from __future__ import annotations

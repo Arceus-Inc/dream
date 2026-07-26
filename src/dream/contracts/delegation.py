@@ -17,6 +17,13 @@ class StaffingRequirement:
     coverage: Literal["direct", "subtree"] = "direct"
     outcome_area: str | None = None
 
+    def __post_init__(self) -> None:
+        """Validate once at the contract so every consumer inherits the invariants."""
+        if not self.profession.strip():
+            raise ValueError("StaffingRequirement.profession must be non-empty")
+        if self.count < 1:
+            raise ValueError(f"StaffingRequirement.count must be >= 1, got {self.count}")
+
 
 @dataclass(frozen=True)
 class DelegatedWorkRequest:
@@ -31,6 +38,21 @@ class DelegatedWorkRequest:
     max_team_size: int | None = None
     spend_limit_cents: int | None = None
     origin_fingerprint: str = ""
+
+    def __post_init__(self) -> None:
+        """Validate once at the contract so every consumer inherits the invariants."""
+        if not self.intent.strip():
+            raise ValueError("DelegatedWorkRequest.intent must be non-empty")
+        if not self.goal_id.strip():
+            raise ValueError("DelegatedWorkRequest.goal_id must be non-empty")
+        if self.max_team_size is not None and self.max_team_size < 1:
+            raise ValueError(
+                f"DelegatedWorkRequest.max_team_size must be >= 1, got {self.max_team_size}"
+            )
+        if self.spend_limit_cents is not None and self.spend_limit_cents < 0:
+            raise ValueError(
+                f"DelegatedWorkRequest.spend_limit_cents must be >= 0, got {self.spend_limit_cents}"
+            )
 
 
 @dataclass(frozen=True)
@@ -55,9 +77,7 @@ class StaffingBlocked:
 class DelegatedIntakePort(Protocol):
     """Create one policy-selected delegated root from a strategy request."""
 
-    def submit_delegated(
-        self, request: DelegatedWorkRequest
-    ) -> DelegatedWorkRef | StaffingBlocked:
+    def submit_delegated(self, request: DelegatedWorkRequest) -> DelegatedWorkRef | StaffingBlocked:
         """Submit delegated work idempotently and return its durable identities."""
         ...
 

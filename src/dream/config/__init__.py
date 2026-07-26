@@ -1,1 +1,1 @@
-"""Opt-in helpers for loading HarnessConfig from env/file/dict."""
+"""Storage-root resolution (:mod:`dream.config.paths`)."""

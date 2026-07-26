@@ -12,8 +12,7 @@ Three entrypoints:
   ``.harness/cron/{kind}.toml`` from :data:`DEFAULT_CRON_KINDS`. Idempotent;
   existing files are left alone so operators can edit defaults in place.
 
-- :func:`run_cron_kind` — fire one kind now. Used by both the in-REPL tick
-  loop and the ``python -m dream.repl cron run <kind>`` operator CLI.
+- :func:`run_cron_kind` — fire one kind now.
 
 - :func:`cron_tick_loop` — long-running coroutine that polls every
   ``poll_seconds`` (default 30) and fires every enabled job whose

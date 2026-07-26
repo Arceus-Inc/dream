@@ -32,13 +32,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TextIO
 
-from dream import (
-    Runtime,
-    RuntimeBootBlockedError,
-    RuntimeBusyError,
-    RuntimeConfig,
-    build_harness,
-)
+from dream import build_harness
 from dream.events import Error
 from dream.session import SessionOptions
 from dream.tasks._cron import CronManifest, load_cron_jobs, save_cron_jobs
@@ -48,11 +42,35 @@ from dream.tools.builtin import default_registry
 if __name__ == "__main__" and not __package__:  # pragma: no cover
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from ohmo.agent import resolve_credentials
-from ohmo.tools import ArxivSearchTool
-
 from research_claw.personas import RESEARCHER_PERSONA, paper_instruction
-from research_claw.tools import RunExperimentTool, SaveArtifactTool, run_experiment_file
+from research_claw.tools import (
+    ArxivSearchTool,
+    RunExperimentTool,
+    SaveArtifactTool,
+    run_experiment_file,
+)
+
+
+def resolve_credentials(
+    env: Mapping[str, str],
+) -> tuple[str, str, str] | list[str]:
+    """``(model, api_key, base_url)`` or the missing canonical var names."""
+    api_key = env.get("DREAM_API_KEY") or env.get("DREAM_SMOKE_API_KEY")
+    model = env.get("DREAM_MODEL") or env.get("DREAM_SMOKE_MODEL")
+    base_url = (
+        env.get("DREAM_BASE_URL")
+        or env.get("DREAM_SMOKE_BASE_URL")
+        or "https://api.openai.com/v1"
+    )
+    missing = [
+        name
+        for name, value in (("DREAM_API_KEY", api_key), ("DREAM_MODEL", model))
+        if not value
+    ]
+    if missing:
+        return missing
+    assert api_key is not None and model is not None
+    return model, api_key, base_url
 
 EXIT_OK = 0
 EXIT_NO_PAPER = 1
@@ -361,64 +379,6 @@ async def run_once(
     return EXIT_OK if verdict != "NO-PAPER" else EXIT_NO_PAPER
 
 
-# ---------------------------------------------------------------------------
-# The daemon
-# ---------------------------------------------------------------------------
-
-
-async def run_daemon(
-    *,
-    workspace: Path,
-    env: Mapping[str, str] | None = None,
-    every_hours: int = 6,
-    stderr: TextIO | None = None,
-    install_signal_handlers: bool = True,
-    on_started=None,
-) -> int:
-    """Long-running mode: cron pops one idea every N hours, starting now."""
-    err = stderr if stderr is not None else sys.stderr
-    resolved_env = dict(env if env is not None else os.environ)
-    credentials = resolve_credentials(resolved_env)
-    if isinstance(credentials, list):
-        err.write("missing required env vars: " + ", ".join(credentials) + "\n")
-        return EXIT_BAD_INPUT
-    model, api_key, base_url = credentials
-
-    bootstrap_workspace(workspace, every_hours=every_hours)
-    harness = build_harness(
-        model=model,
-        api_key=api_key,
-        base_url=base_url,
-        working_dir=workspace,
-        env=resolved_env,
-    )
-    registry_path = harness.config.cron_registry_path
-    if registry_path is not None:
-        fire_now(registry_path)
-    runtime = Runtime(
-        harness,
-        RuntimeConfig(agent_id="research-claw"),
-        cron_argv_builder=make_cron_argv_builder(workspace=workspace),
-    )
-    if install_signal_handlers:  # pragma: no cover - signals untestable in pytest
-        loop = asyncio.get_running_loop()
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            with contextlib.suppress(NotImplementedError):
-                loop.add_signal_handler(sig, runtime.request_stop)
-    try:
-        async with runtime:
-            if on_started is not None:
-                on_started(runtime)
-            await runtime.run_forever()
-    except RuntimeBootBlockedError as exc:
-        err.write(f"blocked: {exc}\n")
-        return EXIT_BOOT_BLOCKED
-    except RuntimeBusyError as exc:
-        err.write(f"already running: {exc}\n")
-        return EXIT_ALREADY_RUNNING
-    return EXIT_OK
-
-
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     if args.once:
@@ -426,9 +386,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.idea:
         sys.stderr.write("--idea only applies with --once\n")
         return EXIT_BAD_INPUT
-    return asyncio.run(
-        run_daemon(workspace=args.workspace, every_hours=args.every_hours)
-    )
+    # ponytail: daemon mode went with the dream Runtime — run via cron/--once
+    sys.stderr.write("daemon mode was removed; use --once (e.g. from cron)\n")
+    return EXIT_BAD_INPUT
 
 
 if __name__ == "__main__":

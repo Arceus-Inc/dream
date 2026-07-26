@@ -5,10 +5,6 @@ contract (presence, line caps, resolvable links), the required ``docs/`` tree
 (present and not git-ignored — the repo, not the working tree, is the source of
 truth), JSON well-formedness + ``$schema`` validation, and stale exec-plans. A
 blocking finding means "do not start"; ``has_blocking`` is the gate.
-
-Secret scanning lives in :mod:`dream.services.threat_scan` (Spec 13E), which
-scans the whole worktree, not just ``docs/``; :mod:`dream.services.session_guard`
-combines both into one session-start gate.
 """
 
 from __future__ import annotations
