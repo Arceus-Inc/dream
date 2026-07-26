@@ -47,9 +47,12 @@ from dream.contracts.strategy import (
     GoalNode,
     GoalStore,
     IntakePort,
+    LandedOutcome,
+    LandedPhase,
     OutcomeEvent,
     OutcomeFeed,
     Priority,
+    RecoveryHint,
 )
 from dream.contracts.tool import Tool, ToolContext, ToolResult
 
@@ -63,7 +66,8 @@ from dream.contracts.tool import Tool, ToolContext, ToolResult
 # 0.3.0: added the governance seam (GovernancePort + Gov* read shapes) — additive. The reverse edge of
 # strategy: a chorus CEO employee's tools steer horizon's direction; horizon supplies the adapter.
 # 0.4.0: added delegated intake, observed capacity, and outcome hierarchy shapes — additive.
-__contract_version__ = "0.4.0"
+# 0.5.0: added LandedPhase / LandedOutcome and outcome.landed fields on OutcomeEvent — additive.
+__contract_version__ = "0.5.0"
 
 __all__ = [
     "CapacityPort",
@@ -85,6 +89,8 @@ __all__ = [
     "HookResult",
     "HookSpec",
     "IntakePort",
+    "LandedOutcome",
+    "LandedPhase",
     "MemoryDelta",
     "MemoryRecord",
     "MemoryScope",
@@ -94,6 +100,7 @@ __all__ = [
     "OutcomeEvent",
     "OutcomeFeed",
     "Plugin",
+    "RecoveryHint",
     "PluginManifest",
     "Priority",
     "ProfessionCapacity",
