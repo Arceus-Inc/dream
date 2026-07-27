@@ -48,6 +48,7 @@ from dream.engine._cost import UsageSnapshot
 from dream.engine._events import (
     AssistantTurnComplete,
     CompactionDoneEvent,
+    StatusEvent,
     StreamEvent,
     ToolExecutionStarted,
 )
@@ -87,6 +88,7 @@ from dream.observability._events import state_transition_attrs, validator_findin
 from dream.observability._tracer import NoopTracer, Tracer
 from dream.permissions import SessionLimiter
 from dream.services.compact import DEFAULT_KEEP_RECENT
+from dream.services.compact._carryover import refresh_carryover_from_workspace
 from dream.services.compact._orchestrator import (
     AutoCompactState,
     SummariserFn,
@@ -133,6 +135,9 @@ class SessionConfig:
     compaction_summariser: SummariserFn | None = None
     carryover_metadata: dict[str, Any] | None = None
     working_dir: Path | None = None
+    # Hermes-style hygiene fence: end-of-turn compact when utilisation crosses
+    # this threshold (default 85%). ``None`` disables the fence.
+    compaction_hygiene_threshold: float | None = 0.85
     tracer: Tracer = field(default_factory=NoopTracer)
     model: str = ""
     # Spec 13D: hard per-session limits. A fresh limiter per session means
@@ -287,7 +292,7 @@ async def _race_next_or_coma(
     return next_task.result()
 
 
-TurnOutcomeKind = Literal["complete", "timeout", "coma", "error"]
+TurnOutcomeKind = Literal["complete", "timeout", "coma", "error", "context-pressure"]
 """How a single turn ended — the typed replacement for the old trio of
 out-of-band ``timed_out`` / ``turn_coma`` booleans + ``turn_error`` string."""
 
@@ -365,14 +370,10 @@ async def _maybe_compact(
 
     Returns ``(transcript, event)`` — the (possibly compacted) transcript and a
     ``CompactionDoneEvent`` to emit, or ``None`` when nothing was compacted.
-
-    Fires spec-13 ``PRE_COMPACT`` *before* the transform (gated on the same
-    threshold predicate the orchestrator uses, so it only fires on turns that
-    actually compact) and ``POST_COMPACT`` *after*, carrying the token deltas —
-    observer-only, so a hook can't stop the compaction.
     """
     if config.compactor is None:
         return transcript, None
+    refresh_carryover_from_workspace(config.working_dir, config.carryover_metadata)
     begin_turn(config.compactor, turn_id=f"t{turn_number}")
     pre_count = len(transcript)
     pre_tokens = estimate_conversation_tokens(transcript)
@@ -414,6 +415,85 @@ async def _maybe_compact(
         },
     )
     return new_transcript, event
+
+
+def _is_still_under_context_pressure(
+    transcript: list[ConversationMessage],
+    config: SessionConfig,
+) -> bool:
+    """True when compaction ran this turn but utilisation remains at/above threshold."""
+    if config.compactor is None or not config.compactor.compacted_this_turn:
+        return False
+    return should_auto_compact(
+        transcript,
+        config.compaction_capabilities,
+        threshold=config.compaction_threshold,
+    )
+
+
+async def _maybe_hygiene_compact(
+    transcript: list[ConversationMessage],
+    config: SessionConfig,
+) -> tuple[list[ConversationMessage], CompactionDoneEvent | None]:
+    """End-of-turn hygiene fence (Hermes ~85% analogue).
+
+    Runs after a successful act loop when utilisation crosses
+    ``compaction_hygiene_threshold``. Uses ``force=True`` so it can run even
+    when start-of-turn auto compaction already fired this turn.
+    """
+    if (
+        config.compactor is None
+        or config.compaction_hygiene_threshold is None
+    ):
+        return transcript, None
+    if utilisation(transcript, config.compaction_capabilities) < config.compaction_hygiene_threshold:
+        return transcript, None
+
+    refresh_carryover_from_workspace(config.working_dir, config.carryover_metadata)
+    pre_count = len(transcript)
+    pre_tokens = estimate_conversation_tokens(transcript)
+    new_transcript, result = await auto_compact_if_needed_async(
+        transcript,
+        capabilities=config.compaction_capabilities,
+        state=config.compactor,
+        threshold=config.compaction_threshold,
+        preserve_recent=config.compaction_preserve_recent,
+        summariser=config.compaction_summariser,
+        carryover_metadata=config.carryover_metadata,
+        working_dir=config.working_dir,
+        force=True,
+    )
+    if result is None:
+        return transcript, None
+    post_tokens = estimate_conversation_tokens(new_transcript)
+    return new_transcript, CompactionDoneEvent(
+        tier=result.tier,
+        removed_messages=max(0, pre_count - len(new_transcript)),
+        freed_tokens=max(0, pre_tokens - post_tokens),
+        resulting_utilisation=utilisation(new_transcript, config.compaction_capabilities),
+    )
+
+
+async def _yield_context_pressure_turn(
+    config: SessionConfig,
+    *,
+    turn_number: int,
+    transitions: TransitionBus | None,
+) -> AsyncIterator[SessionEvent | _TurnResult]:
+    """Skip the act loop when compaction could not free enough room (Spec 04 #4)."""
+    turn_started_at = config.now()
+    yield _fire(transitions, _turn_transition(TurnState.READ, TurnState.PLAN))
+    yield _fire(transitions, _turn_transition(TurnState.PLAN, TurnState.ACT))
+    yield StatusEvent(message="context pressure: skipping act loop after compaction")
+    yield _fire(transitions, _turn_transition(TurnState.ACT, TurnState.VERIFY))
+    yield _fire(transitions, _turn_transition(TurnState.VERIFY, TurnState.RECORD))
+    yield _TurnResult(
+        kind="context-pressure",
+        tools_called=(),
+        usage=UsageSnapshot(),
+        started_at=turn_started_at,
+        ended_at=config.now(),
+    )
 
 
 async def _drive_one_turn(
@@ -500,6 +580,8 @@ def _classify_turn_outcome(
         return "aborted", 0  # any non-timeout outcome breaks the streak
     if kind == "timeout":
         return "timeout", consecutive_timeouts + 1
+    if kind == "context-pressure":
+        return "context-pressure", 0
     return "complete", 0
 
 
@@ -669,6 +751,30 @@ async def run_session(
         if compaction_event is not None:
             yield compaction_event
 
+        if _is_still_under_context_pressure(transcript, config):
+            turn_result: _TurnResult | None = None
+            async for item in _yield_context_pressure_turn(
+                config, turn_number=turn_number, transitions=transitions
+            ):
+                if isinstance(item, _TurnResult):
+                    turn_result = item
+                else:
+                    yield item
+            assert turn_result is not None
+            record = TurnRecord(
+                turn_number=turn_number,
+                started_at=turn_result.started_at,
+                ended_at=turn_result.ended_at,
+                tools_called=turn_result.tools_called,
+                verification_result="skipped",
+                outcome="context-pressure",
+                usage=turn_result.usage,
+            )
+            yield record
+            # Cannot re-enter the model while still over threshold; pending
+            # tool-result continuations would otherwise spin forever.
+            break
+
         # Drive the act-loop for one turn. ``_drive_one_turn`` yields the FSM
         # transitions + stream events, then a final ``_TurnResult`` carrying the
         # typed outcome (complete | timeout | coma | error).
@@ -710,6 +816,11 @@ async def run_session(
         if turn_outcome == "complete" and config.checkpoint is not None:
             with contextlib.suppress(Exception):
                 config.checkpoint(record)
+
+        if turn_result.kind == "complete":
+            transcript, hygiene_event = await _maybe_hygiene_compact(transcript, config)
+            if hygiene_event is not None:
+                yield hygiene_event
 
         # Spec 13D + abort scan: count usage/tool-calls against the hard caps and
         # classify any terminal condition into a single abort reason.

@@ -28,6 +28,7 @@ from dream.services.compact import (
     build_post_compact_messages,
 )
 from dream.services.compact._orchestrator import (
+    COMPACTOR_FAILURE_COOLDOWN,
     AutoCompactState,
     auto_compact_if_needed,
     react_to_ptl,
@@ -423,6 +424,23 @@ def test_compactor_success_resets_failure_counter() -> None:
     )
     assert result is not None
     assert state.consecutive_failures == 0
+
+
+def test_summariser_skipped_after_failure_cooldown() -> None:
+    """Wave C: live path skips LLM tier after consecutive summariser failures."""
+    messages = _pressure_messages(num_rounds=12, payload_chars=20_000)
+    state = AutoCompactState(consecutive_failures=COMPACTOR_FAILURE_COOLDOWN)
+    summariser_calls: list[int] = []
+
+    _, result = auto_compact_if_needed(
+        messages,
+        capabilities=_caps(8_000),
+        state=state,
+        summariser=_stub_summariser_factory(summariser_calls),
+    )
+    assert result is not None
+    assert result.tier == "microcompact"
+    assert summariser_calls == []
 
 
 # --- reactive (PTL) ----------------------------------------------------------

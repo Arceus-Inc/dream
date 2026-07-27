@@ -60,6 +60,9 @@ SummariserFn = Callable[
 # Triggers that bypass the same-turn cooldown. ``reactive`` rescues an
 # in-flight provider call so it MUST be allowed even after a same-turn
 # auto compaction (Spec 04 §"Key decisions" #4 — last sentence).
+# Spec 04 #9: after this many consecutive summariser failures, skip the LLM tier.
+COMPACTOR_FAILURE_COOLDOWN = 2
+
 _COOLDOWN_EXEMPT: frozenset[CompactTrigger] = frozenset({"reactive", "manual"})
 
 
@@ -104,6 +107,18 @@ def _store_compact_result(
     rebuilt: list[ConversationMessage],
 ) -> None:
     state.last_compacted_transcript = list(rebuilt)
+
+
+def _effective_summariser(
+    summariser: SummariserFn | None,
+    state: AutoCompactState,
+) -> SummariserFn | None:
+    """Skip the LLM tier after repeated summariser failures (Spec 04 #9)."""
+    if summariser is None:
+        return None
+    if state.consecutive_failures >= COMPACTOR_FAILURE_COOLDOWN:
+        return None
+    return summariser
 
 
 # --- orchestrator ------------------------------------------------------------
@@ -172,7 +187,8 @@ def auto_compact_if_needed(
 
     post_util = utilisation(microcompacted, capabilities)
     microcompact_sufficient = post_util < threshold
-    if microcompact_sufficient or summariser is None:
+    tier2_summariser = _effective_summariser(summariser, state)
+    if microcompact_sufficient or tier2_summariser is None:
         # Microcompact-only result: rebuild the contract via attachments so
         # downstream consumers always see the same shape.
         result = _build_microcompact_result(
@@ -206,7 +222,7 @@ def auto_compact_if_needed(
         state=state,
         trigger=trigger,
         preserve_recent=preserve_recent,
-        summariser=summariser,
+        summariser=tier2_summariser,
         carryover_metadata=carryover_metadata,
         event_sink=event_sink,
         pre_compact_message_count=len(messages),
@@ -269,7 +285,8 @@ async def auto_compact_if_needed_async(
 
     post_util = utilisation(microcompacted, capabilities)
     microcompact_sufficient = post_util < threshold
-    if microcompact_sufficient or summariser is None:
+    tier2_summariser = _effective_summariser(summariser, state)
+    if microcompact_sufficient or tier2_summariser is None:
         result = _build_microcompact_result(
             microcompacted,
             trigger=trigger,
@@ -295,7 +312,7 @@ async def auto_compact_if_needed_async(
         microcompacted, preserve_recent=preserve_recent
     )
     try:
-        summary_messages = await _invoke_summariser(summariser, older)
+        summary_messages = await _invoke_summariser(tier2_summariser, older)
     except Exception as exc:
         state.consecutive_failures += 1
         record_compact_checkpoint(
@@ -500,6 +517,7 @@ def _build_microcompact_result(
 
 __all__: list[str] = [
     "AutoCompactState",
+    "COMPACTOR_FAILURE_COOLDOWN",
     "EventSink",
     "SummariserFn",
     "auto_compact_if_needed",

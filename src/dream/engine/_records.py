@@ -17,7 +17,7 @@ from dream.engine._cost import UsageSnapshot
 from dream.utils.fs import compact_json
 
 VerificationResult = Literal["pass", "fail", "skipped"]
-TurnOutcome = Literal["complete", "timeout", "aborted"]
+TurnOutcome = Literal["complete", "timeout", "aborted", "context-pressure"]
 SessionOutcome = Literal["done", "done-with-warnings", "aborted"]
 
 
