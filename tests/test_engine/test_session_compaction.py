@@ -21,15 +21,17 @@ import pytest
 
 from dream.contracts.provider import ProviderCapabilities
 from dream.engine._events import CompactionDoneEvent
-from dream.engine._records import TurnRecord
 from dream.engine._messages import (
     ConversationMessage,
     TextBlock,
     ToolResultBlock,
     ToolUseBlock,
 )
+from dream.engine._outcomes import SessionOutcome, TurnOutcome
+from dream.engine._records import SessionEnd, TurnRecord
 from dream.engine._session import SessionConfig, run_session
 from dream.planner._artefacts import LedgerStep, PlannerLedger
+from dream.services.compact._carryover_state import CarryoverMetadata
 from dream.services.compact._orchestrator import AutoCompactState
 from dream.services.compact._summariser import make_deterministic_summariser
 from tests.test_engine._fakes import FakeDispatcher, FakeStreamer, FakeTurn
@@ -77,7 +79,7 @@ def _config(
     capabilities: ProviderCapabilities | None = None,
     threshold: float = 0.7,
     summariser=None,
-    carryover: dict | None = None,
+    carryover: CarryoverMetadata | None = None,
     working_dir=None,
     hygiene_threshold: float | None = 0.85,
 ) -> SessionConfig:
@@ -226,7 +228,7 @@ async def test_wired_summariser_hits_full_tier() -> None:
     streamer = FakeStreamer([FakeTurn(text_chunks=["ack"])])
     caps = ProviderCapabilities(max_context_tokens=8_000)
     state = AutoCompactState()
-    carryover: dict = {}
+    carryover = CarryoverMetadata()
     summariser = make_deterministic_summariser(carryover)
     cfg = _config(
         streamer,
@@ -297,9 +299,12 @@ async def test_context_pressure_skips_act_loop_when_still_over_threshold() -> No
 
     assert streamer.calls == []
     records = [e for e in out if isinstance(e, TurnRecord)]
-    assert any(r.outcome == "context-pressure" for r in records)
+    assert any(r.outcome == TurnOutcome.CONTEXT_PRESSURE for r in records)
     compacted = [e for e in out if isinstance(e, CompactionDoneEvent)]
     assert len(compacted) == 1
+    session_ends = [e for e in out if isinstance(e, SessionEnd)]
+    assert session_ends[-1].outcome == SessionOutcome.DONE_WITH_WARNINGS
+    assert "context-pressure" in (session_ends[-1].reason or "")
 
 
 @pytest.mark.asyncio
@@ -334,7 +339,7 @@ async def test_hygiene_compact_runs_after_successful_turn() -> None:
     compacted = [e for e in out if isinstance(e, CompactionDoneEvent)]
     assert len(compacted) == 1
     records = [e for e in out if isinstance(e, TurnRecord)]
-    assert records[0].outcome == "complete"
+    assert records[0].outcome == TurnOutcome.COMPLETE
     assert streamer.calls, "model should run before hygiene compact"
 
 
@@ -356,7 +361,7 @@ async def test_maybe_compact_refreshes_carryover_from_exec_plan(tmp_path) -> Non
     streamer = FakeStreamer([FakeTurn(text_chunks=["ack"])])
     caps = ProviderCapabilities(max_context_tokens=8_000)
     state = AutoCompactState()
-    carryover: dict = {}
+    carryover = CarryoverMetadata()
     cfg = _config(
         streamer,
         compactor=state,
@@ -380,5 +385,5 @@ async def test_maybe_compact_refreshes_carryover_from_exec_plan(tmp_path) -> Non
     async for _ in run_session(cfg, [_user("next")], resume_messages=resume):
         pass
 
-    assert carryover.get("exec_plan_filename") == "task-1.json"
-    assert carryover.get("exec_plan_current_step") == "s1"
+    assert carryover.exec_plan_filename == "task-1.json"
+    assert carryover.exec_plan_current_step == "s1"

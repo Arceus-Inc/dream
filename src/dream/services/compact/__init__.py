@@ -32,6 +32,8 @@ from __future__ import annotations
 
 from dream.services.compact._attachments import (
     CompactAttachment,
+    CompactAttachmentKind,
+    CompactionBoundaryInfo,
     CompactionResult,
     build_compact_attachments,
     build_post_compact_messages,
@@ -49,6 +51,12 @@ from dream.services.compact._attachments import (
 from dream.services.compact._boundary import (
     boundary_crosses_tool_pair,
     split_preserving_tool_pairs,
+)
+from dream.services.compact._carryover_state import (
+    BlockedStepEntry,
+    CarryoverMetadata,
+    CompactCheckpointRecord,
+    UtilisationRatio,
 )
 from dream.services.compact._checkpoints import record_compact_checkpoint
 from dream.services.compact._microcompact import (
@@ -75,8 +83,14 @@ __all__ = [
     "DEFAULT_KEEP_RECENT",
     "PTL_RETRY_MARKER",
     "TIME_BASED_MC_CLEARED_MESSAGE",
+    "BlockedStepEntry",
+    "CarryoverMetadata",
     "CompactAttachment",
+    "CompactAttachmentKind",
+    "CompactCheckpointRecord",
+    "CompactionBoundaryInfo",
     "CompactionResult",
+    "UtilisationRatio",
     "boundary_crosses_tool_pair",
     "build_compact_attachments",
     "build_post_compact_messages",

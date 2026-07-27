@@ -22,29 +22,32 @@ import inspect
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from dream.contracts.provider import ProviderCapabilities
 from dream.engine._messages import ConversationMessage
 from dream.services.compact import (
     DEFAULT_KEEP_RECENT,
-    CompactionResult,
-    build_compact_attachments,
-    build_post_compact_messages,
-    create_compact_boundary_message,
     microcompact_messages,
     record_compact_checkpoint,
     split_preserving_tool_pairs,
     truncate_head_for_ptl_retry,
     try_context_collapse,
 )
+from dream.services.compact._attachments import (
+    CompactionBoundaryInfo,
+    CompactionResult,
+    build_compact_attachments,
+    build_post_compact_messages,
+    create_compact_boundary_message,
+)
+from dream.services.compact._carryover_state import CarryoverMetadata
+from dream.services.compact._summariser import inject_todo_snapshot
 from dream.services.context_log import (
     CompactTrigger,
     ContextCompactionCompleted,
     ContextCompactionTriggered,
     ContextEvent,
 )
-from dream.services.compact._summariser import inject_todo_snapshot
 from dream.services.token_estimation import (
     estimate_conversation_tokens,
     should_auto_compact,
@@ -136,7 +139,7 @@ def auto_compact_if_needed(
     # Open continuity-state dict threaded to the attachment builders +
     # checkpoint trail; see ``compact._attachments`` module docstring for the
     # recognized keys (exec_plan_filename, blocked_steps, failing_tests, …).
-    carryover_metadata: dict[str, Any] | None = None,
+    carryover_metadata: CarryoverMetadata | None = None,
     event_sink: EventSink | None = None,
     force: bool = False,
     working_dir: Path | None = None,
@@ -240,7 +243,7 @@ async def auto_compact_if_needed_async(
     threshold: float = 0.7,
     preserve_recent: int = DEFAULT_KEEP_RECENT,
     summariser: SummariserFn | None = None,
-    carryover_metadata: dict[str, Any] | None = None,
+    carryover_metadata: CarryoverMetadata | None = None,
     event_sink: EventSink | None = None,
     force: bool = False,
     working_dir: Path | None = None,
@@ -351,7 +354,7 @@ def _run_full_tier_sync(
     trigger: CompactTrigger,
     preserve_recent: int,
     summariser: SummariserFn,
-    carryover_metadata: dict[str, Any] | None,
+    carryover_metadata: CarryoverMetadata | None,
     event_sink: EventSink | None,
     pre_compact_message_count: int,
     pre_compact_token_count: int,
@@ -404,18 +407,18 @@ def _finalize_full_tier(
     capabilities: ProviderCapabilities | None,
     state: AutoCompactState,
     trigger: CompactTrigger,
-    carryover_metadata: dict[str, Any] | None,
+    carryover_metadata: CarryoverMetadata | None,
     event_sink: EventSink | None,
     working_dir: Path | None,
 ) -> tuple[list[ConversationMessage], CompactionResult | None]:
-    attachments = build_compact_attachments(carryover_metadata or {})
+    attachments = build_compact_attachments(carryover_metadata or CarryoverMetadata())
     boundary = create_compact_boundary_message(
-        {
-            "trigger": trigger,
-            "tier": "full",
-            "pre_compact_message_count": len(messages),
-            "pre_compact_token_count": estimate_conversation_tokens(messages),
-        }
+        CompactionBoundaryInfo(
+            trigger=trigger,
+            tier="full",
+            pre_compact_message_count=len(messages),
+            pre_compact_token_count=estimate_conversation_tokens(messages),
+        )
     )
     result = CompactionResult(
         trigger=trigger,
@@ -485,7 +488,7 @@ def _build_microcompact_result(
     *,
     trigger: CompactTrigger,
     preserve_recent: int,
-    carryover_metadata: dict[str, Any] | None,
+    carryover_metadata: CarryoverMetadata | None,
     pre_compact_message_count: int,
     pre_compact_token_count: int,
 ) -> CompactionResult:
@@ -496,14 +499,14 @@ def _build_microcompact_result(
     """
     _ = preserve_recent  # boundary placement is downstream; field documented for symmetry
     boundary = create_compact_boundary_message(
-        {
-            "trigger": trigger,
-            "tier": "microcompact",
-            "pre_compact_message_count": pre_compact_message_count,
-            "pre_compact_token_count": pre_compact_token_count,
-        }
+        CompactionBoundaryInfo(
+            trigger=trigger,
+            tier="microcompact",
+            pre_compact_message_count=pre_compact_message_count,
+            pre_compact_token_count=pre_compact_token_count,
+        )
     )
-    attachments = build_compact_attachments(carryover_metadata or {})
+    attachments = build_compact_attachments(carryover_metadata or CarryoverMetadata())
     return CompactionResult(
         trigger=trigger,
         tier="microcompact",
@@ -516,8 +519,8 @@ def _build_microcompact_result(
 
 
 __all__: list[str] = [
-    "AutoCompactState",
     "COMPACTOR_FAILURE_COOLDOWN",
+    "AutoCompactState",
     "EventSink",
     "SummariserFn",
     "auto_compact_if_needed",

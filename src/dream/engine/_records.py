@@ -11,14 +11,11 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any
 
 from dream.engine._cost import UsageSnapshot
+from dream.engine._outcomes import SessionOutcome, TurnOutcome, VerificationResult
 from dream.utils.fs import compact_json
-
-VerificationResult = Literal["pass", "fail", "skipped"]
-TurnOutcome = Literal["complete", "timeout", "aborted", "context-pressure"]
-SessionOutcome = Literal["done", "done-with-warnings", "aborted"]
 
 
 @dataclass(frozen=True)
@@ -72,15 +69,9 @@ def from_jsonl_line(line: str) -> TurnRecord | SessionEnd:
     if not isinstance(data, dict):
         raise ValueError(f"jsonl record must be a JSON object, got {type(data).__name__}")
     kind = data.pop("kind", None)
-    # A truncated final line (common after a crash) decodes to a partial object
-    # with fields missing or mistyped. Convert every such shape error into one
-    # ``ValueError`` so a reader can skip the bad record instead of the raw
-    # ``KeyError``/``TypeError`` killing the whole sweep. (``json.loads`` already
-    # raises ``JSONDecodeError`` — itself a ``ValueError`` — on a torn line.)
     if kind == "turn":
         tools = data.get("tools_called")
         if not isinstance(tools, list):
-            # A JSON string would otherwise coerce to a char list ("read" -> [...]).
             raise ValueError(f"tools_called must be a list, got {type(tools).__name__}")
         try:
             return TurnRecord(
@@ -88,12 +79,12 @@ def from_jsonl_line(line: str) -> TurnRecord | SessionEnd:
                 started_at=_decode_datetime(data["started_at"]),
                 ended_at=_decode_datetime(data["ended_at"]),
                 tools_called=tuple(tools),
-                verification_result=data["verification_result"],
-                outcome=data["outcome"],
+                verification_result=VerificationResult(data["verification_result"]),
+                outcome=TurnOutcome(data["outcome"]),
                 usage=UsageSnapshot(**data["usage"]),
                 notes=data.get("notes", ""),
             )
-        except (KeyError, TypeError) as exc:
+        except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"malformed turn record: {exc}") from exc
     if kind == "session_end":
         try:
@@ -103,10 +94,10 @@ def from_jsonl_line(line: str) -> TurnRecord | SessionEnd:
                 ended_at=_decode_datetime(data["ended_at"]),
                 turns=data["turns"],
                 total_usage=UsageSnapshot(**data["total_usage"]),
-                outcome=data["outcome"],
+                outcome=SessionOutcome(data["outcome"]),
                 reason=data.get("reason"),
             )
-        except (KeyError, TypeError) as exc:
+        except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"malformed session_end record: {exc}") from exc
     raise ValueError(f"unknown jsonl record kind: {kind!r}")
 

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from dream.planner._artefacts import LedgerStep, PlannerLedger
 from dream.services.compact._carryover import refresh_carryover_from_workspace
+from dream.services.compact._carryover_state import BlockedStepEntry, CarryoverMetadata
 
 
 def test_refresh_carryover_merges_exec_plan_and_blocked_steps(tmp_path: Path) -> None:
@@ -23,15 +24,18 @@ def test_refresh_carryover_merges_exec_plan_and_blocked_steps(tmp_path: Path) ->
     )
     ledger.save(active / "task-1.json")
 
-    carryover: dict = {"working_dir": str(tmp_path)}
+    carryover = CarryoverMetadata.for_working_dir(str(tmp_path))
     refresh_carryover_from_workspace(tmp_path, carryover)
 
-    assert carryover["exec_plan_filename"] == "task-1.json"
-    assert carryover["exec_plan_current_step"] == "s2"
-    assert carryover["blocked_steps"] == [{"step_id": "s3", "reason": "needs api key"}]
+    assert carryover.exec_plan_filename == "task-1.json"
+    assert carryover.exec_plan_current_step == "s2"
+    assert carryover.blocked_steps == [
+        BlockedStepEntry(step_id="s3", reason="needs api key")
+    ]
 
 
 def test_refresh_carryover_noop_when_no_active_dir(tmp_path: Path) -> None:
-    carryover: dict = {}
+    carryover = CarryoverMetadata()
     refresh_carryover_from_workspace(tmp_path, carryover)
-    assert carryover == {}
+    assert carryover.exec_plan_filename is None
+    assert carryover.blocked_steps == []

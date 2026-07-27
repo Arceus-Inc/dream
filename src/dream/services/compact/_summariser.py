@@ -18,8 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from dream.engine._messages import ConversationMessage, TextBlock
-
-PREVIOUS_SUMMARY_KEY = "_previous_summary"
+from dream.services.compact._carryover_state import CarryoverMetadata
 
 _COMPACTION_SYSTEM = """\
 You compress agent conversation history into a durable rolling summary.
@@ -74,15 +73,15 @@ def build_summary_messages(summary_text: str) -> list[ConversationMessage]:
     return [ConversationMessage(role="user", content=[TextBlock(text=preamble + body)])]
 
 
-def _previous_summary_block(state: dict[str, Any]) -> str:
-    previous = str(state.get(PREVIOUS_SUMMARY_KEY) or "").strip()
+def _previous_summary_block(state: CarryoverMetadata) -> str:
+    previous = (state.previous_summary or "").strip()
     if not previous:
         return ""
     return f"Previous rolling summary:\n{previous}\n\n"
 
 
 def make_deterministic_summariser(
-    state: dict[str, Any],
+    state: CarryoverMetadata,
     *,
     max_chars: int = 4_000,
 ) -> Callable[[list[ConversationMessage]], list[ConversationMessage]]:
@@ -98,10 +97,10 @@ def make_deterministic_summariser(
             "## Completed",
             excerpt or "(empty segment)",
         ]
-        if state.get(PREVIOUS_SUMMARY_KEY):
-            sections.extend(["## Prior context", str(state[PREVIOUS_SUMMARY_KEY])[:800]])
+        if state.previous_summary:
+            sections.extend(["## Prior context", state.previous_summary[:800]])
         summary_text = "\n".join(sections)
-        state[PREVIOUS_SUMMARY_KEY] = summary_text
+        state.previous_summary = summary_text
         return build_summary_messages(summary_text)
 
     return _summarise
@@ -112,7 +111,7 @@ def make_llm_summariser(
     api_key: str,
     base_url: str,
     model: str,
-    state: dict[str, Any],
+    state: CarryoverMetadata,
     timeout_seconds: float = 90.0,
 ) -> Callable[[list[ConversationMessage]], list[ConversationMessage]]:
     """Build a sync ``SummariserFn`` that calls the configured chat endpoint once."""
@@ -159,7 +158,7 @@ def make_llm_summariser(
         if not summary_text:
             raise RuntimeError("compaction summariser returned empty content")
 
-        state[PREVIOUS_SUMMARY_KEY] = summary_text
+        state.previous_summary = summary_text
         return build_summary_messages(summary_text)
 
     return _summarise
@@ -203,7 +202,6 @@ def inject_todo_snapshot(
 
 
 __all__ = [
-    "PREVIOUS_SUMMARY_KEY",
     "build_summary_messages",
     "inject_todo_snapshot",
     "make_deterministic_summariser",

@@ -8,11 +8,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from dream.services.compact._carryover_state import CarryoverMetadata, CompactCheckpointRecord
 from dream.services.context_log import CompactTrigger
 
 
 def record_compact_checkpoint(
-    carryover_metadata: dict[str, Any] | None,
+    carryover_metadata: CarryoverMetadata | None,
     *,
     checkpoint: str,
     trigger: CompactTrigger,
@@ -20,32 +21,25 @@ def record_compact_checkpoint(
     token_count: int,
     attempt: int | None = None,
     details: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Append a structured checkpoint payload and stamp it as ``compact_last``.
+) -> CompactCheckpointRecord:
+    """Append a structured checkpoint and stamp it as ``compact_last``.
 
     **In-place contract (intentional):** when ``carryover_metadata`` is not
-    None this MUTATES it — appending the payload to its ``compact_checkpoints``
-    list and overwriting ``compact_last`` — so the orchestrator can thread one
-    metadata dict through every checkpoint of a compaction and recover the full
-    trail from it. The same payload is also returned for callers that only want
-    the value. Pass ``None`` to build a payload without recording it anywhere.
+    None this mutates it so the orchestrator can thread one object through
+    every checkpoint of a compaction. Pass ``None`` to build a payload without
+    recording it anywhere.
     """
-    payload: dict[str, Any] = {
-        "checkpoint": checkpoint,
-        "trigger": trigger,
-        "message_count": message_count,
-        "token_count": token_count,
-    }
-    if attempt is not None:
-        payload["attempt"] = attempt
-    if details:
-        payload.update(details)
+    record = CompactCheckpointRecord(
+        checkpoint=checkpoint,
+        trigger=trigger,
+        message_count=message_count,
+        token_count=token_count,
+        attempt=attempt,
+        details=dict(details or {}),
+    )
     if carryover_metadata is not None:
-        checkpoints = carryover_metadata.setdefault("compact_checkpoints", [])
-        if isinstance(checkpoints, list):
-            checkpoints.append(payload)
-        carryover_metadata["compact_last"] = payload
-    return payload
+        carryover_metadata.record_checkpoint(record)
+    return record
 
 
 __all__ = ["record_compact_checkpoint"]

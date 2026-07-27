@@ -75,10 +75,9 @@ from dream.engine._messages import (
     sanitize_conversation_messages,
 )
 from dream.engine._orientation import OrientationConfig, run_orientation
+from dream.engine._outcomes import SessionOutcome, TurnEndKind, TurnOutcome, VerificationResult
 from dream.engine._records import (
     SessionEnd,
-    SessionOutcome,
-    TurnOutcome,
     TurnRecord,
 )
 from dream.engine._reviewer import ReviewerConfig
@@ -88,7 +87,9 @@ from dream.observability._events import state_transition_attrs, validator_findin
 from dream.observability._tracer import NoopTracer, Tracer
 from dream.permissions import SessionLimiter
 from dream.services.compact import DEFAULT_KEEP_RECENT
+from dream.services.compact._attachments import CompactionResult
 from dream.services.compact._carryover import refresh_carryover_from_workspace
+from dream.services.compact._carryover_state import CarryoverMetadata, UtilisationRatio
 from dream.services.compact._orchestrator import (
     AutoCompactState,
     SummariserFn,
@@ -104,6 +105,83 @@ from dream.services.token_estimation import (
 
 def _default_now() -> datetime:
     return datetime.now(UTC)
+
+
+CONTEXT_PRESSURE_REASON = (
+    "context-pressure: transcript still over threshold after compaction"
+)
+
+
+def _build_compaction_done_event(
+    transcript_before: list[ConversationMessage],
+    new_transcript: list[ConversationMessage],
+    result: CompactionResult,
+    capabilities: ProviderCapabilities | None,
+) -> CompactionDoneEvent:
+    pre_count = len(transcript_before)
+    pre_tokens = estimate_conversation_tokens(transcript_before)
+    post_tokens = estimate_conversation_tokens(new_transcript)
+    return CompactionDoneEvent(
+        tier=result.tier,
+        removed_messages=max(0, pre_count - len(new_transcript)),
+        freed_tokens=max(0, pre_tokens - post_tokens),
+        resulting_utilisation=utilisation(new_transcript, capabilities),
+    )
+
+
+async def _emit_post_compact_hook(
+    config: SessionConfig,
+    event: CompactionDoneEvent,
+) -> None:
+    await _fire_event(
+        config.hook_executor,
+        HookEvent.POST_COMPACT,
+        {
+            "session_id": config.session_id,
+            "tier": event.tier,
+            "removed_messages": event.removed_messages,
+            "freed_tokens": event.freed_tokens,
+        },
+    )
+
+
+async def _invoke_auto_compact(
+    transcript: list[ConversationMessage],
+    config: SessionConfig,
+    *,
+    force: bool,
+    fire_pre_compact: bool,
+) -> tuple[list[ConversationMessage], CompactionDoneEvent | None]:
+    assert config.compactor is not None
+    refresh_carryover_from_workspace(config.working_dir, config.carryover_metadata)
+    pre_count = len(transcript)
+    pre_tokens = estimate_conversation_tokens(transcript)
+    if fire_pre_compact and should_auto_compact(
+        transcript, config.compaction_capabilities, threshold=config.compaction_threshold
+    ):
+        await _fire_event(
+            config.hook_executor,
+            HookEvent.PRE_COMPACT,
+            {"session_id": config.session_id, "message_count": pre_count, "token_count": pre_tokens},
+        )
+    new_transcript, result = await auto_compact_if_needed_async(
+        transcript,
+        capabilities=config.compaction_capabilities,
+        state=config.compactor,
+        threshold=config.compaction_threshold,
+        preserve_recent=config.compaction_preserve_recent,
+        summariser=config.compaction_summariser,
+        carryover_metadata=config.carryover_metadata,
+        working_dir=config.working_dir,
+        force=force,
+    )
+    if result is None:
+        return transcript, None
+    event = _build_compaction_done_event(
+        transcript, new_transcript, result, config.compaction_capabilities
+    )
+    await _emit_post_compact_hook(config, event)
+    return new_transcript, event
 
 
 @dataclass
@@ -129,15 +207,15 @@ class SessionConfig:
     heartbeat: HeartbeatConfig | None = None
     reviewer: ReviewerConfig | None = None
     compactor: AutoCompactState | None = None
-    compaction_threshold: float = 0.7
+    compaction_threshold: UtilisationRatio = 0.7
     compaction_preserve_recent: int = DEFAULT_KEEP_RECENT
     compaction_capabilities: ProviderCapabilities | None = None
     compaction_summariser: SummariserFn | None = None
-    carryover_metadata: dict[str, Any] | None = None
+    carryover_metadata: CarryoverMetadata | None = None
     working_dir: Path | None = None
     # Hermes-style hygiene fence: end-of-turn compact when utilisation crosses
     # this threshold (default 85%). ``None`` disables the fence.
-    compaction_hygiene_threshold: float | None = 0.85
+    compaction_hygiene_threshold: UtilisationRatio | None = 0.85
     tracer: Tracer = field(default_factory=NoopTracer)
     model: str = ""
     # Spec 13D: hard per-session limits. A fresh limiter per session means
@@ -292,9 +370,8 @@ async def _race_next_or_coma(
     return next_task.result()
 
 
-TurnOutcomeKind = Literal["complete", "timeout", "coma", "error", "context-pressure"]
-"""How a single turn ended — the typed replacement for the old trio of
-out-of-band ``timed_out`` / ``turn_coma`` booleans + ``turn_error`` string."""
+TurnOutcomeKind = TurnEndKind
+"""Alias retained for internal session driver call sites."""
 
 
 @dataclass(frozen=True)
@@ -305,12 +382,29 @@ class _TurnResult:
     ``StreamEvent``s) so the caller can separate it by ``isinstance``.
     """
 
-    kind: TurnOutcomeKind
+    kind: TurnEndKind
     tools_called: tuple[str, ...]
     usage: UsageSnapshot
     started_at: datetime
     ended_at: datetime
     error_message: str | None = None
+
+
+def _turn_record_from_result(
+    turn_number: int,
+    result: _TurnResult,
+    *,
+    outcome: TurnOutcome,
+) -> TurnRecord:
+    return TurnRecord(
+        turn_number=turn_number,
+        started_at=result.started_at,
+        ended_at=result.ended_at,
+        tools_called=result.tools_called,
+        verification_result=VerificationResult.SKIPPED,
+        outcome=outcome,
+        usage=result.usage,
+    )
 
 
 # What :func:`_select_turn_driver` decided should happen next.
@@ -370,51 +464,17 @@ async def _maybe_compact(
 
     Returns ``(transcript, event)`` — the (possibly compacted) transcript and a
     ``CompactionDoneEvent`` to emit, or ``None`` when nothing was compacted.
+
+    Fires spec-13 ``PRE_COMPACT`` before the transform (gated on the same
+    threshold predicate the orchestrator uses) and ``POST_COMPACT`` after —
+    observer-only, so a hook cannot stop compaction.
     """
     if config.compactor is None:
         return transcript, None
-    refresh_carryover_from_workspace(config.working_dir, config.carryover_metadata)
     begin_turn(config.compactor, turn_id=f"t{turn_number}")
-    pre_count = len(transcript)
-    pre_tokens = estimate_conversation_tokens(transcript)
-    if should_auto_compact(
-        transcript, config.compaction_capabilities, threshold=config.compaction_threshold
-    ):
-        await _fire_event(
-            config.hook_executor,
-            HookEvent.PRE_COMPACT,
-            {"session_id": config.session_id, "message_count": pre_count, "token_count": pre_tokens},
-        )
-    new_transcript, result = await auto_compact_if_needed_async(
-        transcript,
-        capabilities=config.compaction_capabilities,
-        state=config.compactor,
-        threshold=config.compaction_threshold,
-        preserve_recent=config.compaction_preserve_recent,
-        summariser=config.compaction_summariser,
-        carryover_metadata=config.carryover_metadata,
-        working_dir=config.working_dir,
+    return await _invoke_auto_compact(
+        transcript, config, force=False, fire_pre_compact=True
     )
-    if result is None:
-        return transcript, None
-    post_tokens = estimate_conversation_tokens(new_transcript)
-    event = CompactionDoneEvent(
-        tier=result.tier,
-        removed_messages=max(0, pre_count - len(new_transcript)),
-        freed_tokens=max(0, pre_tokens - post_tokens),
-        resulting_utilisation=utilisation(new_transcript, config.compaction_capabilities),
-    )
-    await _fire_event(
-        config.hook_executor,
-        HookEvent.POST_COMPACT,
-        {
-            "session_id": config.session_id,
-            "tier": event.tier,
-            "removed_messages": event.removed_messages,
-            "freed_tokens": event.freed_tokens,
-        },
-    )
-    return new_transcript, event
 
 
 def _is_still_under_context_pressure(
@@ -449,28 +509,8 @@ async def _maybe_hygiene_compact(
     if utilisation(transcript, config.compaction_capabilities) < config.compaction_hygiene_threshold:
         return transcript, None
 
-    refresh_carryover_from_workspace(config.working_dir, config.carryover_metadata)
-    pre_count = len(transcript)
-    pre_tokens = estimate_conversation_tokens(transcript)
-    new_transcript, result = await auto_compact_if_needed_async(
-        transcript,
-        capabilities=config.compaction_capabilities,
-        state=config.compactor,
-        threshold=config.compaction_threshold,
-        preserve_recent=config.compaction_preserve_recent,
-        summariser=config.compaction_summariser,
-        carryover_metadata=config.carryover_metadata,
-        working_dir=config.working_dir,
-        force=True,
-    )
-    if result is None:
-        return transcript, None
-    post_tokens = estimate_conversation_tokens(new_transcript)
-    return new_transcript, CompactionDoneEvent(
-        tier=result.tier,
-        removed_messages=max(0, pre_count - len(new_transcript)),
-        freed_tokens=max(0, pre_tokens - post_tokens),
-        resulting_utilisation=utilisation(new_transcript, config.compaction_capabilities),
+    return await _invoke_auto_compact(
+        transcript, config, force=True, fire_pre_compact=True
     )
 
 
@@ -484,11 +524,16 @@ async def _yield_context_pressure_turn(
     turn_started_at = config.now()
     yield _fire(transitions, _turn_transition(TurnState.READ, TurnState.PLAN))
     yield _fire(transitions, _turn_transition(TurnState.PLAN, TurnState.ACT))
-    yield StatusEvent(message="context pressure: skipping act loop after compaction")
+    yield StatusEvent(
+        message=(
+            f"context pressure (turn {turn_number}): "
+            "skipping act loop after compaction"
+        )
+    )
     yield _fire(transitions, _turn_transition(TurnState.ACT, TurnState.VERIFY))
     yield _fire(transitions, _turn_transition(TurnState.VERIFY, TurnState.RECORD))
     yield _TurnResult(
-        kind="context-pressure",
+        kind=TurnEndKind.CONTEXT_PRESSURE,
         tools_called=(),
         usage=UsageSnapshot(),
         started_at=turn_started_at,
@@ -507,8 +552,7 @@ async def _drive_one_turn(
     Fires the ``read->plan->act`` and ``act->verify->record`` FSM transitions
     around the streamed events, accumulates the tools called + usage, and
     classifies the terminal condition into a typed :class:`_TurnResult`
-    (``complete | timeout | coma | error``). The final yielded item is always
-    the ``_TurnResult``; everything before it is a ``SessionEvent`` to relay.
+    (``TurnEndKind``). The final yielded item is always the ``_TurnResult``; everything before it is a ``SessionEvent`` to relay.
     """
     yield _fire(transitions, _turn_transition(TurnState.READ, TurnState.PLAN))
     yield _fire(transitions, _turn_transition(TurnState.PLAN, TurnState.ACT))
@@ -516,7 +560,7 @@ async def _drive_one_turn(
     turn_started_at = config.now()
     tools_called: list[str] = []
     turn_usage = UsageSnapshot()
-    kind: TurnOutcomeKind = "complete"
+    kind: TurnEndKind = TurnEndKind.COMPLETE
     error_message: str | None = None
 
     ctx = QueryContext(
@@ -542,11 +586,11 @@ async def _drive_one_turn(
                 elif isinstance(ev, AssistantTurnComplete):
                     turn_usage = turn_usage + ev.usage
     except ComaDetected:
-        kind = "coma"
+        kind = TurnEndKind.COMA
         with contextlib.suppress(Exception):
             await inner.aclose()
     except TimeoutError:
-        kind = "timeout"
+        kind = TurnEndKind.TIMEOUT
         await inner.aclose()
     except Exception as exc:
         # Any non-timeout failure still owes the caller a terminal SessionEnd
@@ -554,7 +598,7 @@ async def _drive_one_turn(
         # catch stays broad here because ``run_query`` already narrows provider/
         # transport faults to ``ErrorEvent``; what reaches this seam is an
         # unexpected infra error we must still surface as a structured abort.
-        kind = "error"
+        kind = TurnEndKind.ERROR
         error_message = f"error: {exc}"
         with contextlib.suppress(Exception):
             await inner.aclose()
@@ -573,16 +617,16 @@ async def _drive_one_turn(
 
 
 def _classify_turn_outcome(
-    kind: TurnOutcomeKind, *, consecutive_timeouts: int
+    kind: TurnEndKind, *, consecutive_timeouts: int
 ) -> tuple[TurnOutcome, int]:
     """Map a turn's typed end-kind to a recorded ``TurnOutcome`` + timeout streak."""
-    if kind in ("coma", "error"):
-        return "aborted", 0  # any non-timeout outcome breaks the streak
-    if kind == "timeout":
-        return "timeout", consecutive_timeouts + 1
-    if kind == "context-pressure":
-        return "context-pressure", 0
-    return "complete", 0
+    if kind in (TurnEndKind.COMA, TurnEndKind.ERROR):
+        return TurnOutcome.ABORTED, 0
+    if kind == TurnEndKind.TIMEOUT:
+        return TurnOutcome.TIMEOUT, consecutive_timeouts + 1
+    if kind == TurnEndKind.CONTEXT_PRESSURE:
+        return TurnOutcome.CONTEXT_PRESSURE, 0
+    return TurnOutcome.COMPLETE, 0
 
 
 def _check_abort_conditions(
@@ -604,9 +648,9 @@ def _check_abort_conditions(
             limiter.record_tool_call()
         if (breached := limiter.breached()) is not None:
             return breached
-    if result.kind == "error":
+    if result.kind == TurnEndKind.ERROR:
         return result.error_message
-    if result.kind == "coma":
+    if result.kind == TurnEndKind.COMA:
         return "coma"
     if consecutive_timeouts >= max_consecutive_timeouts:
         return "repeated-timeout"
@@ -697,7 +741,7 @@ async def run_session(
                 ended_at=config.now(),
                 turns=0,
                 total_usage=UsageSnapshot(),
-                outcome="aborted",
+                outcome=SessionOutcome.ABORTED,
                 reason="validator-blocking",
             )
             return
@@ -752,32 +796,24 @@ async def run_session(
             yield compaction_event
 
         if _is_still_under_context_pressure(transcript, config):
-            turn_result: _TurnResult | None = None
+            pressure_result: _TurnResult | None = None
             async for item in _yield_context_pressure_turn(
                 config, turn_number=turn_number, transitions=transitions
             ):
                 if isinstance(item, _TurnResult):
-                    turn_result = item
+                    pressure_result = item
                 else:
                     yield item
-            assert turn_result is not None
-            record = TurnRecord(
-                turn_number=turn_number,
-                started_at=turn_result.started_at,
-                ended_at=turn_result.ended_at,
-                tools_called=turn_result.tools_called,
-                verification_result="skipped",
-                outcome="context-pressure",
-                usage=turn_result.usage,
+            assert pressure_result is not None
+            yield _turn_record_from_result(
+                turn_number,
+                pressure_result,
+                outcome=TurnOutcome.CONTEXT_PRESSURE,
             )
-            yield record
-            # Cannot re-enter the model while still over threshold; pending
-            # tool-result continuations would otherwise spin forever.
+            seal_warnings = True
+            last_review_items = [CONTEXT_PRESSURE_REASON]
             break
 
-        # Drive the act-loop for one turn. ``_drive_one_turn`` yields the FSM
-        # transitions + stream events, then a final ``_TurnResult`` carrying the
-        # typed outcome (complete | timeout | coma | error).
         turn_result: _TurnResult | None = None
         async for item in _drive_one_turn(config, transcript, transitions=transitions):
             if isinstance(item, _TurnResult):
@@ -786,7 +822,7 @@ async def run_session(
                 yield item
         assert turn_result is not None  # _drive_one_turn always yields one last
 
-        if turn_result.kind != "complete":
+        if turn_result.kind != TurnEndKind.COMPLETE:
             # The turn was cancelled/failed mid-flight: run_query may have appended
             # an assistant tool_use with no matching tool_result. Re-sanitize so the
             # next turn never re-enters the model with a dangling tool-call atom.
@@ -796,28 +832,17 @@ async def run_session(
             turn_result.kind, consecutive_timeouts=consecutive_timeouts
         )
 
-        record = TurnRecord(
-            turn_number=turn_number,
-            started_at=turn_result.started_at,
-            ended_at=turn_result.ended_at,
-            tools_called=turn_result.tools_called,
-            verification_result="skipped",
-            outcome=turn_outcome,
-            usage=turn_result.usage,
+        record = _turn_record_from_result(
+            turn_number, turn_result, outcome=turn_outcome
         )
         yield record
         total_usage = total_usage + turn_result.usage
 
-        # Checkpoint a successful turn (spec 03 #4) BEFORE any limit-driven
-        # abort below: a turn whose outcome is ``complete`` must persist its
-        # snapshot even when this same turn trips a hard cap, otherwise resume
-        # re-runs already-completed work. Best-effort: a snapshot writer crash
-        # must not break the session.
-        if turn_outcome == "complete" and config.checkpoint is not None:
+        if turn_outcome == TurnOutcome.COMPLETE and config.checkpoint is not None:
             with contextlib.suppress(Exception):
                 config.checkpoint(record)
 
-        if turn_result.kind == "complete":
+        if turn_result.kind == TurnEndKind.COMPLETE:
             transcript, hygiene_event = await _maybe_hygiene_compact(transcript, config)
             if hygiene_event is not None:
                 yield hygiene_event
@@ -845,7 +870,7 @@ async def run_session(
             ended_at=config.now(),
             turns=turn_number,
             total_usage=total_usage,
-            outcome="aborted",
+            outcome=SessionOutcome.ABORTED,
             reason=abort_reason,
         )
         return
@@ -862,14 +887,14 @@ async def run_session(
     session_outcome: SessionOutcome
     reason: str | None
     if seal_warnings:
-        session_outcome = "done-with-warnings"
+        session_outcome = SessionOutcome.DONE_WITH_WARNINGS
         reason = (
             "unresolved: " + "; ".join(last_review_items)
             if last_review_items
             else "unresolved (no items)"
         )
     else:
-        session_outcome = "done"
+        session_outcome = SessionOutcome.DONE
         reason = None
 
     await _fire_lifecycle(config.hook_executor, HookEvent.STOP, config.session_id)

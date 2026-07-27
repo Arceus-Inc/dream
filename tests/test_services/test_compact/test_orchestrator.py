@@ -23,10 +23,11 @@ from dream.engine._messages import (
     ToolUseBlock,
 )
 from dream.services.compact import (
-    CompactAttachment,
     CompactionResult,
     build_post_compact_messages,
 )
+from dream.services.compact._attachments import CompactAttachment, CompactAttachmentKind
+from dream.services.compact._carryover_state import BlockedStepEntry, CarryoverMetadata
 from dream.services.compact._orchestrator import (
     COMPACTOR_FAILURE_COOLDOWN,
     AutoCompactState,
@@ -354,29 +355,27 @@ def test_post_compact_messages_rebuilt_from_attachments() -> None:
         capabilities=_caps(8_000),
         state=state,
         summariser=_stub_summariser_factory(summariser_calls),
-        carryover_metadata={
-            "exec_plan_filename": "PLAN-001.md",
-            "current_step": "step-3",
-            "blocked_steps": [
-                {"step_id": "step-1", "reason": "dep missing"},
-            ],
-            "failing_tests": ["test_foo"],
-            "modified_files": ["a.py"],
-        },
+        carryover_metadata=CarryoverMetadata(
+            exec_plan_filename="PLAN-001.md",
+            exec_plan_current_step="step-3",
+            blocked_steps=[BlockedStepEntry(step_id="step-1", reason="dep missing")],
+            failing_tests=["test_foo"],
+            modified_file_paths=["a.py"],
+        ),
     )
     assert result is not None
     assert result.tier == "full"
     assert isinstance(result, CompactionResult)
     assert any(isinstance(a, CompactAttachment) for a in result.attachments)
     kinds = {a.kind for a in result.attachments}
-    assert "exec_plan" in kinds
-    assert "blocked_steps" in kinds
+    assert CompactAttachmentKind.EXEC_PLAN in kinds
+    assert CompactAttachmentKind.BLOCKED_STEPS in kinds
 
 
 def test_compaction_records_recoverable_checkpoint() -> None:
     messages = _pressure_messages(num_rounds=10, payload_chars=8_000)
     state = AutoCompactState()
-    carryover: dict[str, Any] = {}
+    carryover = CarryoverMetadata()
 
     auto_compact_if_needed(
         messages,
@@ -385,9 +384,8 @@ def test_compaction_records_recoverable_checkpoint() -> None:
         carryover_metadata=carryover,
         summariser=_stub_summariser_factory([]),
     )
-    checkpoints = carryover.get("compact_checkpoints", [])
-    assert checkpoints, "expected at least one checkpoint to be recorded"
-    assert "compact_last" in carryover
+    assert carryover.compact_checkpoints, "expected at least one checkpoint to be recorded"
+    assert carryover.compact_last is not None
 
 
 # --- failure handling -------------------------------------------------------
@@ -488,7 +486,7 @@ def test_micro_tier_returns_rebuilt_transcript_with_boundary() -> None:
     """
     messages = _pressure_messages(num_rounds=10, payload_chars=8_000)
     state = AutoCompactState()
-    carryover: dict[str, Any] = {"failing_tests": ["test_foo", "test_bar"]}
+    carryover = CarryoverMetadata(failing_tests=["test_foo", "test_bar"])
 
     returned, result = auto_compact_if_needed(
         messages,

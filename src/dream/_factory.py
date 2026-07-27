@@ -630,7 +630,7 @@ def _build_session_engine(
         # subagent's tools are intersected with this. ``None`` = no role restriction
         # (full surface), so the subagent keeps its declared tools.
         context_metadata[PARENT_TOOLS_KEY] = role_allowed
-    carryover_metadata: dict[str, Any] = {"working_dir": str(working_dir)}
+    carryover_metadata = CarryoverMetadata.for_working_dir(str(working_dir))
     from dream.services.compact._summariser import make_llm_summariser
 
     compaction_summariser = make_llm_summariser(

@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from dream.engine._messages import ConversationMessage, TextBlock
+from dream.services.compact._carryover_state import CarryoverMetadata
 from dream.services.compact._summariser import (
-    PREVIOUS_SUMMARY_KEY,
     inject_todo_snapshot,
     make_deterministic_summariser,
     parse_todo_pending,
@@ -25,14 +25,14 @@ def test_render_transcript_excerpt_flattens_roles() -> None:
 
 
 def test_deterministic_summariser_rolls_previous_summary() -> None:
-    state: dict = {PREVIOUS_SUMMARY_KEY: "prior goal"}
+    state = CarryoverMetadata(previous_summary="prior goal")
     summariser = make_deterministic_summariser(state)
     older = [ConversationMessage(role="user", content=[TextBlock(text="did thing")])]
     out = summariser(older)
     assert len(out) == 1
     assert "[Compaction summary" in out[0].text
-    assert PREVIOUS_SUMMARY_KEY in state
-    assert "did thing" in state[PREVIOUS_SUMMARY_KEY]
+    assert state.previous_summary is not None
+    assert "did thing" in state.previous_summary
 
 
 def test_parse_todo_pending_reads_unchecked_items(tmp_path: Path) -> None:
