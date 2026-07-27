@@ -35,8 +35,6 @@ from dream.engine._events import (
     ToolExecutionCompleted,
     ToolExecutionStarted,
 )
-from dream.services.compact._orchestrator import react_to_ptl
-from dream.services.compact._overflow import is_context_length_overflow
 from dream.engine._messages import (
     ContentBlock,
     ConversationMessage,
@@ -45,6 +43,8 @@ from dream.engine._messages import (
 )
 from dream.observability._events import llm_call_attrs, tool_call_attrs, tool_result_attrs
 from dream.observability._tracer import NoopTracer, Tracer
+from dream.services.compact._orchestrator import react_to_ptl
+from dream.services.compact._overflow import is_context_length_overflow
 
 
 class TurnStreamer(Protocol):

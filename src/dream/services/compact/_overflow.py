@@ -153,9 +153,12 @@ def is_context_length_overflow(exc: BaseException) -> bool:
     if code is not None:
         return False
 
-    if isinstance(exc, httpx.HTTPStatusError):
-        if status is not None and status not in _CANDIDATE_HTTP_STATUSES:
-            return False
+    if (
+        isinstance(exc, httpx.HTTPStatusError)
+        and status is not None
+        and status not in _CANDIDATE_HTTP_STATUSES
+    ):
+        return False
 
     return _message_is_overflow(text)
 
