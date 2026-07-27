@@ -6,9 +6,12 @@ Replaces string-keyed ``dict[str, Any]`` threading through the compact stack.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from dream.services.context_log import CompactTrigger
+
+if TYPE_CHECKING:
+    from dream.engine._messages import ConversationMessage
 
 UtilisationRatio = float
 """Fraction of the provider context window in use (0.0-1.0)."""
@@ -47,6 +50,12 @@ class CarryoverMetadata:
     previous_summary: str | None = None
     compact_checkpoints: list[CompactCheckpointRecord] = field(default_factory=list)
     compact_last: CompactCheckpointRecord | None = None
+    # Per-session snapshot from the last successful compaction; not shared on
+    # the harness-wide ``AutoCompactState`` so concurrent sessions cannot
+    # overwrite each other's transcript mirrors.
+    last_compacted_transcript: list[ConversationMessage] | None = field(
+        default=None, repr=False
+    )
 
     @classmethod
     def for_working_dir(cls, working_dir: str | None) -> CarryoverMetadata:

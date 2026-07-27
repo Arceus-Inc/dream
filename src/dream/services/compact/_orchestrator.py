@@ -18,9 +18,10 @@ the prompt itself.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from dream.contracts.provider import ProviderCapabilities
@@ -84,9 +85,6 @@ class AutoCompactState:
     compacted_this_turn: bool = False
     consecutive_failures: int = 0
     turn_id: str = ""
-    # Authoritative post-compact transcript from the last successful run.
-    # Session mirror copies this instead of re-running a (possibly LLM) summariser.
-    last_compacted_transcript: list[ConversationMessage] | None = field(default=None, repr=False)
 
 
 def begin_turn(state: AutoCompactState, *, turn_id: str) -> None:
@@ -99,17 +97,20 @@ async def _invoke_summariser(
     summariser: SummariserFn,
     older: list[ConversationMessage],
 ) -> list[ConversationMessage]:
-    result = summariser(older)
+    if inspect.iscoroutinefunction(summariser):
+        return await summariser(older)
+    result = await asyncio.to_thread(summariser, older)
     if inspect.isawaitable(result):
         return await result
     return result
 
 
 def _store_compact_result(
-    state: AutoCompactState,
+    carryover_metadata: CarryoverMetadata | None,
     rebuilt: list[ConversationMessage],
 ) -> None:
-    state.last_compacted_transcript = list(rebuilt)
+    if carryover_metadata is not None:
+        carryover_metadata.last_compacted_transcript = list(rebuilt)
 
 
 def _effective_summariser(
@@ -214,7 +215,7 @@ def auto_compact_if_needed(
                 resulting_utilisation=utilisation(rebuilt, capabilities),
             ),
         )
-        _store_compact_result(state, rebuilt)
+        _store_compact_result(carryover_metadata, rebuilt)
         return rebuilt, result
 
     # --- Tier 2: full LLM summarisation -------------------------------------
@@ -308,7 +309,7 @@ async def auto_compact_if_needed_async(
                 resulting_utilisation=utilisation(rebuilt, capabilities),
             ),
         )
-        _store_compact_result(state, rebuilt)
+        _store_compact_result(carryover_metadata, rebuilt)
         return rebuilt, result
 
     older, newer = split_preserving_tool_pairs(
@@ -442,7 +443,7 @@ def _finalize_full_tier(
             resulting_utilisation=utilisation(rebuilt, capabilities),
         ),
     )
-    _store_compact_result(state, rebuilt)
+    _store_compact_result(carryover_metadata, rebuilt)
     return rebuilt, result
 
 

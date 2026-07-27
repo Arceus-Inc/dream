@@ -148,6 +148,11 @@ def is_context_length_overflow(exc: BaseException) -> bool:
     if status == 413:
         return True
 
+    # Structured non-overflow codes veto prose fallback — unrelated errors that
+    # mention "token limit" in the message must not trigger PTL recovery.
+    if code is not None:
+        return False
+
     if isinstance(exc, httpx.HTTPStatusError):
         if status is not None and status not in _CANDIDATE_HTTP_STATUSES:
             return False

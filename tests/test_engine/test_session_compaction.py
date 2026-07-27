@@ -257,10 +257,10 @@ async def test_wired_summariser_hits_full_tier() -> None:
     compacted = [e for e in out if isinstance(e, CompactionDoneEvent)]
     assert len(compacted) == 1
     assert compacted[0].tier == "full"
-    assert state.last_compacted_transcript is not None
+    assert carryover.last_compacted_transcript is not None
     assert any(
         "[Compaction summary" in msg.text
-        for msg in state.last_compacted_transcript
+        for msg in carryover.last_compacted_transcript
     )
 
 

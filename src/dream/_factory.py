@@ -54,6 +54,7 @@ from dream.roles import RoleManifest
 from dream.runner._role_session import ROLE_MANIFEST_METADATA_KEY, ROLE_NAME_METADATA_KEY
 from dream.sandbox import SANDBOX_CONTEXT_KEY, SandboxAdapter, select_backend
 from dream.services import cron as cron_service
+from dream.services.compact._carryover_state import CarryoverMetadata
 from dream.services.compact._orchestrator import AutoCompactState
 from dream.services.context_log import ContextEvent
 from dream.services.core_beliefs import extract_standing_orders, render_standing_orders

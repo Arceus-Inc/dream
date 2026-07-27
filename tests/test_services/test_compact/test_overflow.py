@@ -55,6 +55,20 @@ def test_bare_400_without_overflow_signal_is_not_overflow() -> None:
     assert not is_context_length_overflow(exc)
 
 
+def test_structured_non_overflow_code_vetoes_prose_fallback() -> None:
+    """Unrelated errors that mention token limits must not classify as PTL."""
+    exc = _http_error(
+        500,
+        json_body={
+            "error": {
+                "code": "internal_server_error",
+                "message": "reduce the size of your request to stay under the token limit",
+            }
+        },
+    )
+    assert not is_context_length_overflow(exc)
+
+
 def test_auth_401_is_not_overflow() -> None:
     exc = _http_error(401, json_body={"error": {"message": "invalid key"}})
     assert not is_context_length_overflow(exc)

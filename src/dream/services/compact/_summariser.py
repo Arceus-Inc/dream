@@ -13,11 +13,12 @@ prompt + wire call, not the tier policy.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from dream.engine._messages import ConversationMessage, TextBlock
+from dream.engine._messages import ConversationMessage, TextBlock, ToolUseBlock
 from dream.services.compact._carryover_state import CarryoverMetadata
 
 _COMPACTION_SYSTEM = """\
@@ -51,7 +52,14 @@ def render_transcript_excerpt(messages: Sequence[ConversationMessage]) -> str:
             if isinstance(block, TextBlock):
                 continue  # already captured via msg.text
             name = type(block).__name__
-            snippet = getattr(block, "content", None) or getattr(block, "name", "")
+            if isinstance(block, ToolUseBlock):
+                snippet = (
+                    json.dumps(block.input, ensure_ascii=False)
+                    if block.input
+                    else block.name
+                )
+            else:
+                snippet = getattr(block, "content", None) or getattr(block, "name", "")
             if isinstance(snippet, str) and snippet.strip():
                 text = snippet.strip()
                 if len(text) > 500:
@@ -173,8 +181,12 @@ def parse_todo_pending(
     path = working_dir / todo_path
     if not path.is_file():
         return []
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return []
     pending: list[str] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in text.splitlines():
         stripped = line.strip()
         if stripped.startswith("- [ ]"):
             item = stripped[len("- [ ]") :].strip()

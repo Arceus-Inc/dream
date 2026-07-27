@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dream.engine._messages import ConversationMessage, TextBlock
+from dream.engine._messages import ConversationMessage, TextBlock, ToolUseBlock
 from dream.services.compact._carryover_state import CarryoverMetadata
 from dream.services.compact._summariser import (
     inject_todo_snapshot,
@@ -12,6 +12,30 @@ from dream.services.compact._summariser import (
     parse_todo_pending,
     render_transcript_excerpt,
 )
+
+
+def test_render_transcript_excerpt_includes_tool_use_input() -> None:
+    messages = [
+        ConversationMessage(
+            role="assistant",
+            content=[
+                ToolUseBlock(id="tu_1", name="bash", input={"command": "pytest -q"}),
+            ],
+        ),
+    ]
+    excerpt = render_transcript_excerpt(messages)
+    assert "pytest -q" in excerpt
+    assert "command" in excerpt
+
+
+def test_parse_todo_pending_tolerates_read_errors(tmp_path: Path) -> None:
+    todo = tmp_path / "TODO.md"
+    todo.write_bytes(b"- [ ] bad \xff utf8\n")
+    assert parse_todo_pending(tmp_path) == []
+
+
+def test_parse_todo_pending_tolerates_missing_workspace(tmp_path: Path) -> None:
+    assert parse_todo_pending(tmp_path / "missing") == []
 
 
 def test_render_transcript_excerpt_flattens_roles() -> None:

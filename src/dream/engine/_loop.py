@@ -72,6 +72,19 @@ class ToolDispatcher(Protocol):
     ) -> tuple[str, bool]: ...
 
 
+@contextlib.asynccontextmanager
+async def _managed_turn_stream(
+    stream: AsyncIterator[StreamEvent],
+) -> AsyncIterator[AsyncIterator[StreamEvent]]:
+    if hasattr(stream, "aclose"):
+        async with contextlib.aclosing(
+            cast(AsyncGenerator[StreamEvent, None], stream)
+        ):
+            yield stream
+    else:
+        yield stream
+
+
 @dataclass
 class QueryContext:
     """Everything ``run_query`` needs for one bounded act-loop.
@@ -129,9 +142,7 @@ async def run_query(
                     # this loop is itself closed mid-flight (timeout/coma/cancel),
                     # cascading the ``aclose()`` down to the transport so it can't leak.
                     turn_stream = ctx.client.stream_turn(messages)
-                    async with contextlib.aclosing(
-                        cast(AsyncGenerator[StreamEvent, None], turn_stream)
-                    ):
+                    async with _managed_turn_stream(turn_stream):
                         async for ev in turn_stream:
                             yielded = True
                             yield ev
