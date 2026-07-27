@@ -27,8 +27,13 @@ from dream.engine._messages import (
     ToolResultBlock,
     ToolUseBlock,
 )
+from dream.engine._outcomes import SessionOutcome, TurnOutcome
+from dream.engine._records import SessionEnd, TurnRecord
 from dream.engine._session import SessionConfig, run_session
+from dream.planner._artefacts import LedgerStep, PlannerLedger
+from dream.services.compact._carryover_state import CarryoverMetadata
 from dream.services.compact._orchestrator import AutoCompactState
+from dream.services.compact._summariser import make_deterministic_summariser
 from tests.test_engine._fakes import FakeDispatcher, FakeStreamer, FakeTurn
 
 
@@ -73,6 +78,10 @@ def _config(
     compactor: AutoCompactState | None,
     capabilities: ProviderCapabilities | None = None,
     threshold: float = 0.7,
+    summariser=None,
+    carryover: CarryoverMetadata | None = None,
+    working_dir=None,
+    hygiene_threshold: float | None = 0.85,
 ) -> SessionConfig:
     return SessionConfig(
         client=streamer,
@@ -83,6 +92,10 @@ def _config(
         compactor=compactor,
         compaction_capabilities=capabilities,
         compaction_threshold=threshold,
+        compaction_summariser=summariser,
+        carryover_metadata=carryover,
+        working_dir=working_dir,
+        compaction_hygiene_threshold=hygiene_threshold,
     )
 
 
@@ -205,3 +218,172 @@ async def test_same_turn_cooldown_prevents_double_compaction() -> None:
     # At most one event (zero if the resume sanitization brought it under
     # threshold; one if the heavy tool-results dominated).
     assert len(compacted) <= 1
+
+
+@pytest.mark.asyncio
+async def test_wired_summariser_hits_full_tier() -> None:
+    """When microcompact alone cannot reach threshold, the session path
+    escalates to tier=full if a summariser is wired (P0 #4 Wave A).
+    """
+    streamer = FakeStreamer([FakeTurn(text_chunks=["ack"])])
+    caps = ProviderCapabilities(max_context_tokens=8_000)
+    state = AutoCompactState()
+    carryover = CarryoverMetadata()
+    summariser = make_deterministic_summariser(carryover)
+    cfg = _config(
+        streamer,
+        compactor=state,
+        capabilities=caps,
+        threshold=0.5,
+        summariser=summariser,
+        carryover=carryover,
+    )
+
+    resume: list[ConversationMessage] = []
+    for i in range(8):
+        resume.append(
+            ConversationMessage(
+                role="assistant",
+                content=[ToolUseBlock(id=f"tu_f{i}", name="read_file", input={"path": "x"})],
+            )
+        )
+        resume.append(_heavy_user(f"f{i}", kb=4))
+    resume.append(ConversationMessage(role="assistant", content=[TextBlock(text="prior summary")]))
+
+    out = []
+    async for ev in run_session(cfg, [_user("next")], resume_messages=resume):
+        out.append(ev)
+
+    compacted = [e for e in out if isinstance(e, CompactionDoneEvent)]
+    assert len(compacted) == 1
+    assert compacted[0].tier == "full"
+    assert carryover.last_compacted_transcript is not None
+    assert any(
+        "[Compaction summary" in msg.text
+        for msg in carryover.last_compacted_transcript
+    )
+
+
+@pytest.mark.asyncio
+async def test_context_pressure_skips_act_loop_when_still_over_threshold() -> None:
+    """Wave C: after compaction, lingering pressure ends turn without model call."""
+    streamer = FakeStreamer([FakeTurn(text_chunks=["should-not-run"])])
+    caps = ProviderCapabilities(max_context_tokens=8_000)
+    state = AutoCompactState()
+    cfg = _config(streamer, compactor=state, capabilities=caps, threshold=0.5)
+
+    resume: list[ConversationMessage] = [ConversationMessage(role="user", content=[TextBlock(text="kick off")])]
+    for i in range(12):
+        resume.append(
+            ConversationMessage(
+                role="assistant",
+                content=[ToolUseBlock(id=f"tu_p{i}", name="read_file", input={"path": "x"})],
+            )
+        )
+        resume.append(
+            ConversationMessage(
+                role="user",
+                content=[
+                    ToolResultBlock(
+                        tool_use_id=f"tu_p{i}",
+                        content="x" * 20_000,
+                        is_error=False,
+                    )
+                ],
+            )
+        )
+
+    out = []
+    async for ev in run_session(cfg, [_user("next")], resume_messages=resume):
+        out.append(ev)
+
+    assert streamer.calls == []
+    records = [e for e in out if isinstance(e, TurnRecord)]
+    assert any(r.outcome == TurnOutcome.CONTEXT_PRESSURE for r in records)
+    compacted = [e for e in out if isinstance(e, CompactionDoneEvent)]
+    assert len(compacted) == 1
+    session_ends = [e for e in out if isinstance(e, SessionEnd)]
+    assert session_ends[-1].outcome == SessionOutcome.DONE_WITH_WARNINGS
+    assert "context-pressure" in (session_ends[-1].reason or "")
+
+
+@pytest.mark.asyncio
+async def test_hygiene_compact_runs_after_successful_turn() -> None:
+    """Wave C: end-of-turn hygiene fence compacts when utilisation crosses threshold."""
+    streamer = FakeStreamer([FakeTurn(text_chunks=["done"])])
+    caps = ProviderCapabilities(max_context_tokens=8_000)
+    state = AutoCompactState()
+    cfg = _config(
+        streamer,
+        compactor=state,
+        capabilities=caps,
+        threshold=0.95,
+        hygiene_threshold=0.4,
+    )
+
+    resume: list[ConversationMessage] = []
+    for i in range(4):
+        resume.append(
+            ConversationMessage(
+                role="assistant",
+                content=[ToolUseBlock(id=f"tu_h{i}", name="bash", input={"cmd": "x"})],
+            )
+        )
+        resume.append(_heavy_user(f"h{i}", kb=4))
+    resume.append(ConversationMessage(role="assistant", content=[TextBlock(text="prior summary")]))
+
+    out = []
+    async for ev in run_session(cfg, [_user("next")], resume_messages=resume):
+        out.append(ev)
+
+    compacted = [e for e in out if isinstance(e, CompactionDoneEvent)]
+    assert len(compacted) == 1
+    records = [e for e in out if isinstance(e, TurnRecord)]
+    assert records[0].outcome == TurnOutcome.COMPLETE
+    assert streamer.calls, "model should run before hygiene compact"
+
+
+@pytest.mark.asyncio
+async def test_maybe_compact_refreshes_carryover_from_exec_plan(tmp_path) -> None:
+    """Wave C: carryover picks up exec-plan ledger before compaction."""
+    active = tmp_path / "docs" / "exec-plans" / "active"
+    active.mkdir(parents=True)
+    ledger = PlannerLedger(
+        task_id="task-1",
+        intent="ship",
+        created_at=1.0,
+        steps=(
+            LedgerStep(id="s1", description="active", status="in_progress"),
+        ),
+    )
+    ledger.save(active / "task-1.json")
+
+    streamer = FakeStreamer([FakeTurn(text_chunks=["ack"])])
+    caps = ProviderCapabilities(max_context_tokens=8_000)
+    state = AutoCompactState()
+    carryover = CarryoverMetadata()
+    cfg = _config(
+        streamer,
+        compactor=state,
+        capabilities=caps,
+        threshold=0.5,
+        carryover=carryover,
+        working_dir=tmp_path,
+    )
+
+    resume: list[ConversationMessage] = []
+    for i in range(4):
+        resume.append(
+            ConversationMessage(
+                role="assistant",
+                content=[ToolUseBlock(id=f"tu_c{i}", name="bash", input={"cmd": "x"})],
+            )
+        )
+        resume.append(_heavy_user(f"c{i}", kb=4))
+    resume.append(ConversationMessage(role="assistant", content=[TextBlock(text="prior summary")]))
+
+    async for _ in run_session(cfg, [_user("next")], resume_messages=resume):
+        pass
+
+    assert carryover.exec_plan_filename == "task-1.json"
+    assert carryover.exec_plan_current_step == "s1"

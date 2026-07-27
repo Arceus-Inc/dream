@@ -30,6 +30,7 @@ from typing import Any, Protocol, cast
 
 from dream.engine._events import (
     AssistantTurnComplete,
+    StatusEvent,
     StreamEvent,
     ToolExecutionCompleted,
     ToolExecutionStarted,
@@ -42,6 +43,8 @@ from dream.engine._messages import (
 )
 from dream.observability._events import llm_call_attrs, tool_call_attrs, tool_result_attrs
 from dream.observability._tracer import NoopTracer, Tracer
+from dream.services.compact._orchestrator import react_to_ptl
+from dream.services.compact._overflow import is_context_length_overflow
 
 
 class TurnStreamer(Protocol):
@@ -69,6 +72,19 @@ class ToolDispatcher(Protocol):
     ) -> tuple[str, bool]: ...
 
 
+@contextlib.asynccontextmanager
+async def _managed_turn_stream(
+    stream: AsyncIterator[StreamEvent],
+) -> AsyncIterator[AsyncIterator[StreamEvent]]:
+    if hasattr(stream, "aclose"):
+        async with contextlib.aclosing(
+            cast(AsyncGenerator[StreamEvent, None], stream)
+        ):
+            yield stream
+    else:
+        yield stream
+
+
 @dataclass
 class QueryContext:
     """Everything ``run_query`` needs for one bounded act-loop.
@@ -83,6 +99,10 @@ class QueryContext:
     tracer: Tracer = field(default_factory=NoopTracer)
     model: str = ""
     system: str = "openai"
+    # Spec 04 reactive PTL: when set, a context-overflow provider error on a
+    # turn that has not yet yielded events triggers one ``react_to_ptl`` shrink
+    # + retry. ``None`` disables (default; session enables when compactor set).
+    ptl_preserve_recent: int | None = None
 
 
 async def run_query(
@@ -114,17 +134,47 @@ async def run_query(
             ),
         ) as llm_span:
             complete: AssistantTurnComplete | None = None
-            # ``aclosing`` ensures the per-turn provider stream is closed when
-            # this loop is itself closed mid-flight (timeout/coma/cancel),
-            # cascading the ``aclose()`` down to the transport so it can't leak.
-            turn_stream = ctx.client.stream_turn(messages)
-            async with contextlib.aclosing(
-                cast(AsyncGenerator[StreamEvent, None], turn_stream)
-            ):
-                async for ev in turn_stream:
-                    yield ev
-                    if isinstance(ev, AssistantTurnComplete):
-                        complete = ev
+            ptl_attempted = False
+            while True:
+                yielded = False
+                try:
+                    # ``aclosing`` ensures the per-turn provider stream is closed when
+                    # this loop is itself closed mid-flight (timeout/coma/cancel),
+                    # cascading the ``aclose()`` down to the transport so it can't leak.
+                    turn_stream = ctx.client.stream_turn(messages)
+                    async with _managed_turn_stream(turn_stream):
+                        async for ev in turn_stream:
+                            yielded = True
+                            yield ev
+                            if isinstance(ev, AssistantTurnComplete):
+                                complete = ev
+                except Exception as exc:
+                    # Mid-turn overflow after partial events: do not replay
+                    # (Spec 04 / Failover §13). CancelledError is BaseException —
+                    # deliberately not caught here so cooperative cancel propagates.
+                    if yielded:
+                        raise
+                    if (
+                        ptl_attempted
+                        or ctx.ptl_preserve_recent is None
+                        or not is_context_length_overflow(exc)
+                    ):
+                        raise
+                    shrunk, did_shrink = react_to_ptl(
+                        messages,
+                        already_attempted=False,
+                        preserve_recent=ctx.ptl_preserve_recent,
+                    )
+                    if not did_shrink:
+                        raise
+                    messages[:] = shrunk
+                    ptl_attempted = True
+                    yield StatusEvent(
+                        message="context overflow: shrunk transcript, retrying once"
+                    )
+                    continue
+                break
+
             if complete is None:
                 return
 

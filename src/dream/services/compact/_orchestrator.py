@@ -18,24 +18,32 @@ the prompt itself.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+import asyncio
+import inspect
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from typing import Any
+from pathlib import Path
+from typing import cast
 
 from dream.contracts.provider import ProviderCapabilities
 from dream.engine._messages import ConversationMessage
 from dream.services.compact import (
     DEFAULT_KEEP_RECENT,
-    CompactionResult,
-    build_compact_attachments,
-    build_post_compact_messages,
-    create_compact_boundary_message,
     microcompact_messages,
     record_compact_checkpoint,
     split_preserving_tool_pairs,
     truncate_head_for_ptl_retry,
     try_context_collapse,
 )
+from dream.services.compact._attachments import (
+    CompactionBoundaryInfo,
+    CompactionResult,
+    build_compact_attachments,
+    build_post_compact_messages,
+    create_compact_boundary_message,
+)
+from dream.services.compact._carryover_state import CarryoverMetadata
+from dream.services.compact._summariser import inject_todo_snapshot
 from dream.services.context_log import (
     CompactTrigger,
     ContextCompactionCompleted,
@@ -49,11 +57,17 @@ from dream.services.token_estimation import (
 )
 
 EventSink = Callable[[ContextEvent], None]
-SummariserFn = Callable[[list[ConversationMessage]], list[ConversationMessage]]
+SummariserFn = Callable[
+    [list[ConversationMessage]],
+    list[ConversationMessage] | Awaitable[list[ConversationMessage]],
+]
 
 # Triggers that bypass the same-turn cooldown. ``reactive`` rescues an
 # in-flight provider call so it MUST be allowed even after a same-turn
 # auto compaction (Spec 04 §"Key decisions" #4 — last sentence).
+# Spec 04 #9: after this many consecutive summariser failures, skip the LLM tier.
+COMPACTOR_FAILURE_COOLDOWN = 2
+
 _COOLDOWN_EXEMPT: frozenset[CompactTrigger] = frozenset({"reactive", "manual"})
 
 
@@ -80,6 +94,40 @@ def begin_turn(state: AutoCompactState, *, turn_id: str) -> None:
     state.turn_id = turn_id
 
 
+async def _invoke_summariser(
+    summariser: SummariserFn,
+    older: list[ConversationMessage],
+) -> list[ConversationMessage]:
+    if inspect.iscoroutinefunction(summariser):
+        return cast(list[ConversationMessage], await summariser(older))
+    raw: list[ConversationMessage] | Awaitable[list[ConversationMessage]] = (
+        await asyncio.to_thread(summariser, older)
+    )
+    if inspect.isawaitable(raw):
+        return await raw
+    return raw
+
+
+def _store_compact_result(
+    carryover_metadata: CarryoverMetadata | None,
+    rebuilt: list[ConversationMessage],
+) -> None:
+    if carryover_metadata is not None:
+        carryover_metadata.last_compacted_transcript = list(rebuilt)
+
+
+def _effective_summariser(
+    summariser: SummariserFn | None,
+    state: AutoCompactState,
+) -> SummariserFn | None:
+    """Skip the LLM tier after repeated summariser failures (Spec 04 #9)."""
+    if summariser is None:
+        return None
+    if state.consecutive_failures >= COMPACTOR_FAILURE_COOLDOWN:
+        return None
+    return summariser
+
+
 # --- orchestrator ------------------------------------------------------------
 
 
@@ -95,9 +143,10 @@ def auto_compact_if_needed(
     # Open continuity-state dict threaded to the attachment builders +
     # checkpoint trail; see ``compact._attachments`` module docstring for the
     # recognized keys (exec_plan_filename, blocked_steps, failing_tests, …).
-    carryover_metadata: dict[str, Any] | None = None,
+    carryover_metadata: CarryoverMetadata | None = None,
     event_sink: EventSink | None = None,
     force: bool = False,
+    working_dir: Path | None = None,
 ) -> tuple[list[ConversationMessage], CompactionResult | None]:
     """Run compaction if needed; return ``(messages, result_or_none)``.
 
@@ -145,7 +194,8 @@ def auto_compact_if_needed(
 
     post_util = utilisation(microcompacted, capabilities)
     microcompact_sufficient = post_util < threshold
-    if microcompact_sufficient or summariser is None:
+    tier2_summariser = _effective_summariser(summariser, state)
+    if microcompact_sufficient or tier2_summariser is None:
         # Microcompact-only result: rebuild the contract via attachments so
         # downstream consumers always see the same shape.
         result = _build_microcompact_result(
@@ -168,14 +218,108 @@ def auto_compact_if_needed(
                 resulting_utilisation=utilisation(rebuilt, capabilities),
             ),
         )
+        _store_compact_result(carryover_metadata, rebuilt)
         return rebuilt, result
 
     # --- Tier 2: full LLM summarisation -------------------------------------
+    return _run_full_tier_sync(
+        messages,
+        microcompacted=microcompacted,
+        capabilities=capabilities,
+        state=state,
+        trigger=trigger,
+        preserve_recent=preserve_recent,
+        summariser=tier2_summariser,
+        carryover_metadata=carryover_metadata,
+        event_sink=event_sink,
+        pre_compact_message_count=len(messages),
+        pre_compact_token_count=estimate_conversation_tokens(messages),
+        working_dir=working_dir,
+    )
+
+
+async def auto_compact_if_needed_async(
+    messages: list[ConversationMessage],
+    *,
+    capabilities: ProviderCapabilities | None,
+    state: AutoCompactState,
+    trigger: CompactTrigger = "auto",
+    threshold: float = 0.7,
+    preserve_recent: int = DEFAULT_KEEP_RECENT,
+    summariser: SummariserFn | None = None,
+    carryover_metadata: CarryoverMetadata | None = None,
+    event_sink: EventSink | None = None,
+    force: bool = False,
+    working_dir: Path | None = None,
+) -> tuple[list[ConversationMessage], CompactionResult | None]:
+    """Async entry point — awaits async summarisers; sync summarisers still work."""
+    if (
+        trigger == "auto"
+        and state.compacted_this_turn
+        and not force
+    ):
+        return messages, None
+
+    pre_util = utilisation(messages, capabilities)
+    needs_compaction = (
+        force
+        or trigger in _COOLDOWN_EXEMPT
+        or should_auto_compact(messages, capabilities, threshold=threshold)
+    )
+    if not needs_compaction:
+        return messages, None
+
+    _emit(event_sink, ContextCompactionTriggered(utilisation=pre_util, trigger=trigger))
+    record_compact_checkpoint(
+        carryover_metadata,
+        checkpoint=f"{trigger}_triggered",
+        trigger=trigger,
+        message_count=len(messages),
+        token_count=estimate_conversation_tokens(messages),
+    )
+
+    microcompacted, tokens_freed = microcompact_messages(
+        messages, keep_recent=preserve_recent
+    )
+    record_compact_checkpoint(
+        carryover_metadata,
+        checkpoint="microcompact_end",
+        trigger=trigger,
+        message_count=len(microcompacted),
+        token_count=estimate_conversation_tokens(microcompacted),
+        details={"tokens_freed": tokens_freed},
+    )
+
+    post_util = utilisation(microcompacted, capabilities)
+    microcompact_sufficient = post_util < threshold
+    tier2_summariser = _effective_summariser(summariser, state)
+    if microcompact_sufficient or tier2_summariser is None:
+        result = _build_microcompact_result(
+            microcompacted,
+            trigger=trigger,
+            preserve_recent=preserve_recent,
+            carryover_metadata=carryover_metadata,
+            pre_compact_message_count=len(messages),
+            pre_compact_token_count=estimate_conversation_tokens(messages),
+        )
+        state.compacted_this_turn = True
+        rebuilt = build_post_compact_messages(result)
+        _emit(
+            event_sink,
+            ContextCompactionCompleted(
+                tier="microcompact",
+                preserved_attachments=len(result.attachments),
+                resulting_utilisation=utilisation(rebuilt, capabilities),
+            ),
+        )
+        _store_compact_result(carryover_metadata, rebuilt)
+        return rebuilt, result
+
     older, newer = split_preserving_tool_pairs(
         microcompacted, preserve_recent=preserve_recent
     )
     try:
-        summary_messages = summariser(older)
+        summary_messages = await _invoke_summariser(tier2_summariser, older)
     except Exception as exc:
         state.consecutive_failures += 1
         record_compact_checkpoint(
@@ -191,14 +335,94 @@ def auto_compact_if_needed(
         )
         return messages, None
 
-    attachments = build_compact_attachments(carryover_metadata or {})
+    return _finalize_full_tier(
+        messages,
+        microcompacted=microcompacted,
+        newer=newer,
+        summary_messages=summary_messages,
+        capabilities=capabilities,
+        state=state,
+        trigger=trigger,
+        carryover_metadata=carryover_metadata,
+        event_sink=event_sink,
+        working_dir=working_dir,
+    )
+
+
+def _run_full_tier_sync(
+    messages: list[ConversationMessage],
+    *,
+    microcompacted: list[ConversationMessage],
+    capabilities: ProviderCapabilities | None,
+    state: AutoCompactState,
+    trigger: CompactTrigger,
+    preserve_recent: int,
+    summariser: SummariserFn,
+    carryover_metadata: CarryoverMetadata | None,
+    event_sink: EventSink | None,
+    pre_compact_message_count: int,
+    pre_compact_token_count: int,
+    working_dir: Path | None,
+) -> tuple[list[ConversationMessage], CompactionResult | None]:
+    older, newer = split_preserving_tool_pairs(
+        microcompacted, preserve_recent=preserve_recent
+    )
+    try:
+        summary_messages = summariser(older)
+        if inspect.isawaitable(summary_messages):
+            raise TypeError(
+                "async summariser requires auto_compact_if_needed_async"
+            )
+    except Exception as exc:
+        state.consecutive_failures += 1
+        record_compact_checkpoint(
+            carryover_metadata,
+            checkpoint=f"{trigger}_failed",
+            trigger=trigger,
+            message_count=len(microcompacted),
+            token_count=estimate_conversation_tokens(microcompacted),
+            details={
+                "reason": str(exc),
+                "consecutive_failures": state.consecutive_failures,
+            },
+        )
+        return messages, None
+
+    return _finalize_full_tier(
+        messages,
+        microcompacted=microcompacted,
+        newer=newer,
+        summary_messages=summary_messages,
+        capabilities=capabilities,
+        state=state,
+        trigger=trigger,
+        carryover_metadata=carryover_metadata,
+        event_sink=event_sink,
+        working_dir=working_dir,
+    )
+
+
+def _finalize_full_tier(
+    messages: list[ConversationMessage],
+    *,
+    microcompacted: list[ConversationMessage],
+    newer: list[ConversationMessage],
+    summary_messages: list[ConversationMessage],
+    capabilities: ProviderCapabilities | None,
+    state: AutoCompactState,
+    trigger: CompactTrigger,
+    carryover_metadata: CarryoverMetadata | None,
+    event_sink: EventSink | None,
+    working_dir: Path | None,
+) -> tuple[list[ConversationMessage], CompactionResult | None]:
+    attachments = build_compact_attachments(carryover_metadata or CarryoverMetadata())
     boundary = create_compact_boundary_message(
-        {
-            "trigger": trigger,
-            "tier": "full",
-            "pre_compact_message_count": len(messages),
-            "pre_compact_token_count": estimate_conversation_tokens(messages),
-        }
+        CompactionBoundaryInfo(
+            trigger=trigger,
+            tier="full",
+            pre_compact_message_count=len(messages),
+            pre_compact_token_count=estimate_conversation_tokens(messages),
+        )
     )
     result = CompactionResult(
         trigger=trigger,
@@ -212,8 +436,8 @@ def auto_compact_if_needed(
     state.compacted_this_turn = True
     state.consecutive_failures = 0
 
-    # Build the rebuilt list for utilisation measurement + return.
     rebuilt = build_post_compact_messages(result)
+    rebuilt = inject_todo_snapshot(rebuilt, working_dir)
     _emit(
         event_sink,
         ContextCompactionCompleted(
@@ -222,6 +446,7 @@ def auto_compact_if_needed(
             resulting_utilisation=utilisation(rebuilt, capabilities),
         ),
     )
+    _store_compact_result(carryover_metadata, rebuilt)
     return rebuilt, result
 
 
@@ -267,7 +492,7 @@ def _build_microcompact_result(
     *,
     trigger: CompactTrigger,
     preserve_recent: int,
-    carryover_metadata: dict[str, Any] | None,
+    carryover_metadata: CarryoverMetadata | None,
     pre_compact_message_count: int,
     pre_compact_token_count: int,
 ) -> CompactionResult:
@@ -278,14 +503,14 @@ def _build_microcompact_result(
     """
     _ = preserve_recent  # boundary placement is downstream; field documented for symmetry
     boundary = create_compact_boundary_message(
-        {
-            "trigger": trigger,
-            "tier": "microcompact",
-            "pre_compact_message_count": pre_compact_message_count,
-            "pre_compact_token_count": pre_compact_token_count,
-        }
+        CompactionBoundaryInfo(
+            trigger=trigger,
+            tier="microcompact",
+            pre_compact_message_count=pre_compact_message_count,
+            pre_compact_token_count=pre_compact_token_count,
+        )
     )
-    attachments = build_compact_attachments(carryover_metadata or {})
+    attachments = build_compact_attachments(carryover_metadata or CarryoverMetadata())
     return CompactionResult(
         trigger=trigger,
         tier="microcompact",
@@ -298,10 +523,12 @@ def _build_microcompact_result(
 
 
 __all__: list[str] = [
+    "COMPACTOR_FAILURE_COOLDOWN",
     "AutoCompactState",
     "EventSink",
     "SummariserFn",
     "auto_compact_if_needed",
+    "auto_compact_if_needed_async",
     "begin_turn",
     "react_to_ptl",
 ]

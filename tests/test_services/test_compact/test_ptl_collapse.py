@@ -25,6 +25,7 @@ from dream.services.compact import (
     truncate_head_for_ptl_retry,
     try_context_collapse,
 )
+from dream.services.compact._carryover_state import CarryoverMetadata
 
 
 def _user_text(text: str) -> ConversationMessage:
@@ -60,7 +61,7 @@ def test_compaction_result_is_dataclass_with_required_fields() -> None:
 
 
 def test_record_checkpoint_creates_list_when_missing() -> None:
-    carryover: dict = {}
+    carryover = CarryoverMetadata()
     record_compact_checkpoint(
         carryover,
         checkpoint="post_microcompact",
@@ -68,12 +69,11 @@ def test_record_checkpoint_creates_list_when_missing() -> None:
         message_count=12,
         token_count=8_000,
     )
-    assert isinstance(carryover["compact_checkpoints"], list)
-    assert len(carryover["compact_checkpoints"]) == 1
+    assert len(carryover.compact_checkpoints) == 1
 
 
 def test_record_checkpoint_appends_in_order() -> None:
-    carryover: dict = {}
+    carryover = CarryoverMetadata()
     for name in ("pre", "post_microcompact", "post_full"):
         record_compact_checkpoint(
             carryover,
@@ -82,24 +82,25 @@ def test_record_checkpoint_appends_in_order() -> None:
             message_count=10,
             token_count=1_000,
         )
-    names = [entry["checkpoint"] for entry in carryover["compact_checkpoints"]]
+    names = [entry.checkpoint for entry in carryover.compact_checkpoints]
     assert names == ["pre", "post_microcompact", "post_full"]
 
 
 def test_record_checkpoint_sets_compact_last_to_latest() -> None:
-    carryover: dict = {}
+    carryover = CarryoverMetadata()
     record_compact_checkpoint(
         carryover, checkpoint="first", trigger="auto", message_count=1, token_count=1
     )
     record_compact_checkpoint(
         carryover, checkpoint="latest", trigger="manual", message_count=2, token_count=2
     )
-    assert carryover["compact_last"]["checkpoint"] == "latest"
-    assert carryover["compact_last"]["trigger"] == "manual"
+    assert carryover.compact_last is not None
+    assert carryover.compact_last.checkpoint == "latest"
+    assert carryover.compact_last.trigger == "manual"
 
 
 def test_record_checkpoint_includes_optional_attempt_and_details() -> None:
-    carryover: dict = {}
+    carryover = CarryoverMetadata()
     record_compact_checkpoint(
         carryover,
         checkpoint="ptl_retry",
@@ -109,9 +110,9 @@ def test_record_checkpoint_includes_optional_attempt_and_details() -> None:
         attempt=1,
         details={"reason": "ptl"},
     )
-    entry = carryover["compact_checkpoints"][0]
-    assert entry["attempt"] == 1
-    assert entry["reason"] == "ptl"
+    entry = carryover.compact_checkpoints[0]
+    assert entry.attempt == 1
+    assert entry.details["reason"] == "ptl"
 
 
 def test_record_checkpoint_handles_none_carryover_gracefully() -> None:
@@ -123,8 +124,8 @@ def test_record_checkpoint_handles_none_carryover_gracefully() -> None:
         message_count=1,
         token_count=1,
     )
-    assert payload["checkpoint"] == "pre"
-    assert payload["trigger"] == "auto"
+    assert payload.checkpoint == "pre"
+    assert payload.trigger == "auto"
 
 
 # --- try_context_collapse ----------------------------------------------------

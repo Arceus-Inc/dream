@@ -54,6 +54,7 @@ from dream.roles import RoleManifest
 from dream.runner._role_session import ROLE_MANIFEST_METADATA_KEY, ROLE_NAME_METADATA_KEY
 from dream.sandbox import SANDBOX_CONTEXT_KEY, SandboxAdapter, select_backend
 from dream.services import cron as cron_service
+from dream.services.compact._carryover_state import CarryoverMetadata
 from dream.services.compact._orchestrator import AutoCompactState
 from dream.services.context_log import ContextEvent
 from dream.services.core_beliefs import extract_standing_orders, render_standing_orders
@@ -630,6 +631,15 @@ def _build_session_engine(
         # subagent's tools are intersected with this. ``None`` = no role restriction
         # (full surface), so the subagent keeps its declared tools.
         context_metadata[PARENT_TOOLS_KEY] = role_allowed
+    carryover_metadata = CarryoverMetadata.for_working_dir(str(working_dir))
+    from dream.services.compact._summariser import make_llm_summariser
+
+    compaction_summariser = make_llm_summariser(
+        api_key=api_key,
+        base_url=base_url,
+        model=options.model or model,
+        state=carryover_metadata,
+    )
     return build_query_engine(
         streamer=streamer,
         registry=tool_registry,
@@ -643,6 +653,8 @@ def _build_session_engine(
         context_metadata=context_metadata,
         compactor=compactor,
         compaction_capabilities=capabilities,
+        compaction_summariser=compaction_summariser,
+        carryover_metadata=carryover_metadata,
         tracer=tracer,
         model=options.model or model,
         hook_executor=hook_executor,
