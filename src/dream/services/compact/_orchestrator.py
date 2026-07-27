@@ -23,6 +23,7 @@ import inspect
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 from dream.contracts.provider import ProviderCapabilities
 from dream.engine._messages import ConversationMessage
@@ -98,11 +99,13 @@ async def _invoke_summariser(
     older: list[ConversationMessage],
 ) -> list[ConversationMessage]:
     if inspect.iscoroutinefunction(summariser):
-        return await summariser(older)
-    result = await asyncio.to_thread(summariser, older)
-    if inspect.isawaitable(result):
-        return await result
-    return result
+        return cast(list[ConversationMessage], await summariser(older))
+    raw: list[ConversationMessage] | Awaitable[list[ConversationMessage]] = (
+        await asyncio.to_thread(summariser, older)
+    )
+    if inspect.isawaitable(raw):
+        return await raw
+    return raw
 
 
 def _store_compact_result(

@@ -52,6 +52,7 @@ def render_transcript_excerpt(messages: Sequence[ConversationMessage]) -> str:
             if isinstance(block, TextBlock):
                 continue  # already captured via msg.text
             name = type(block).__name__
+            snippet: str | None
             if isinstance(block, ToolUseBlock):
                 snippet = (
                     json.dumps(block.input, ensure_ascii=False)
@@ -59,7 +60,8 @@ def render_transcript_excerpt(messages: Sequence[ConversationMessage]) -> str:
                     else block.name
                 )
             else:
-                snippet = getattr(block, "content", None) or getattr(block, "name", "")
+                raw = getattr(block, "content", None) or getattr(block, "name", "")
+                snippet = raw if isinstance(raw, str) else None
             if isinstance(snippet, str) and snippet.strip():
                 text = snippet.strip()
                 if len(text) > 500:
