@@ -373,7 +373,8 @@ class Session:
             return
         carryover = engine.carryover_metadata
         if carryover is not None and carryover.last_compacted_transcript is not None:
-            self._transcript[:] = carryover.last_compacted_transcript
+            self._transcript[:] = list(carryover.last_compacted_transcript)
+            carryover.last_compacted_transcript = None
             return
         compactor = engine.compactor
         # Local import keeps the orchestrator out of the module import graph

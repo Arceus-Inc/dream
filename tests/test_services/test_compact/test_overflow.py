@@ -69,6 +69,20 @@ def test_structured_non_overflow_code_vetoes_prose_fallback() -> None:
     assert not is_context_length_overflow(exc)
 
 
+def test_generic_invalid_request_error_still_uses_message_fallback() -> None:
+    """OpenAI reuses invalid_request_error for PTL; message needles must still apply."""
+    exc = _http_error(
+        400,
+        json_body={
+            "error": {
+                "code": "invalid_request_error",
+                "message": "This model's maximum context length is 128000 tokens",
+            }
+        },
+    )
+    assert is_context_length_overflow(exc)
+
+
 def test_auth_401_is_not_overflow() -> None:
     exc = _http_error(401, json_body={"error": {"message": "invalid key"}})
     assert not is_context_length_overflow(exc)

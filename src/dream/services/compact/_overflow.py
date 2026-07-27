@@ -118,6 +118,17 @@ def _extract_signals(exc: BaseException) -> tuple[str | None, str, int | None]:
     return code, "\n".join(parts), status
 
 
+# Provider wrapper codes — reused for many failure modes; message fallback still
+# applies when these are present (OpenAI uses invalid_request_error for PTL too).
+_GENERIC_ERROR_CODES: frozenset[str] = frozenset(
+    {
+        "invalid_request_error",
+        "api_error",
+        "error",
+    }
+)
+
+
 def _code_is_overflow(code: str | None) -> bool:
     if not code:
         return False
@@ -126,6 +137,16 @@ def _code_is_overflow(code: str | None) -> bool:
         return True
     # Soft match: vendor codes often embed the contract name.
     return "context_length" in normalized or normalized.endswith("too_long")
+
+
+def _code_vetoes_message_fallback(code: str | None) -> bool:
+    """True when a specific structured code blocks prose needle matching."""
+    if not code:
+        return False
+    normalized = code.strip().lower().replace("-", "_")
+    if normalized in _GENERIC_ERROR_CODES:
+        return False
+    return not _code_is_overflow(code)
 
 
 def _message_is_overflow(text: str) -> bool:
@@ -148,9 +169,9 @@ def is_context_length_overflow(exc: BaseException) -> bool:
     if status == 413:
         return True
 
-    # Structured non-overflow codes veto prose fallback — unrelated errors that
-    # mention "token limit" in the message must not trigger PTL recovery.
-    if code is not None:
+    # Specific structured non-overflow codes veto prose fallback — unrelated
+    # errors that mention "token limit" must not trigger PTL recovery.
+    if _code_vetoes_message_fallback(code):
         return False
 
     if (

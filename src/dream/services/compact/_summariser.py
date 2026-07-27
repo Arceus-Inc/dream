@@ -54,11 +54,11 @@ def render_transcript_excerpt(messages: Sequence[ConversationMessage]) -> str:
             name = type(block).__name__
             snippet: str | None
             if isinstance(block, ToolUseBlock):
-                snippet = (
-                    json.dumps(block.input, ensure_ascii=False)
-                    if block.input
-                    else block.name
-                )
+                if block.input:
+                    payload = json.dumps(block.input, ensure_ascii=False, default=str)
+                    snippet = f"{block.name} {payload}"
+                else:
+                    snippet = block.name
             else:
                 raw = getattr(block, "content", None) or getattr(block, "name", "")
                 snippet = raw if isinstance(raw, str) else None

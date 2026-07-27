@@ -24,8 +24,8 @@ def test_render_transcript_excerpt_includes_tool_use_input() -> None:
         ),
     ]
     excerpt = render_transcript_excerpt(messages)
+    assert "bash" in excerpt
     assert "pytest -q" in excerpt
-    assert "command" in excerpt
 
 
 def test_parse_todo_pending_tolerates_read_errors(tmp_path: Path) -> None:
