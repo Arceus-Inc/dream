@@ -29,6 +29,7 @@ from dream.engine._messages import (
 )
 from dream.engine._session import SessionConfig, run_session
 from dream.services.compact._orchestrator import AutoCompactState
+from dream.services.compact._summariser import make_deterministic_summariser
 from tests.test_engine._fakes import FakeDispatcher, FakeStreamer, FakeTurn
 
 
@@ -73,6 +74,8 @@ def _config(
     compactor: AutoCompactState | None,
     capabilities: ProviderCapabilities | None = None,
     threshold: float = 0.7,
+    summariser=None,
+    carryover: dict | None = None,
 ) -> SessionConfig:
     return SessionConfig(
         client=streamer,
@@ -83,6 +86,8 @@ def _config(
         compactor=compactor,
         compaction_capabilities=capabilities,
         compaction_threshold=threshold,
+        compaction_summariser=summariser,
+        carryover_metadata=carryover,
     )
 
 
@@ -205,3 +210,47 @@ async def test_same_turn_cooldown_prevents_double_compaction() -> None:
     # At most one event (zero if the resume sanitization brought it under
     # threshold; one if the heavy tool-results dominated).
     assert len(compacted) <= 1
+
+
+@pytest.mark.asyncio
+async def test_wired_summariser_hits_full_tier() -> None:
+    """When microcompact alone cannot reach threshold, the session path
+    escalates to tier=full if a summariser is wired (P0 #4 Wave A).
+    """
+    streamer = FakeStreamer([FakeTurn(text_chunks=["ack"])])
+    caps = ProviderCapabilities(max_context_tokens=8_000)
+    state = AutoCompactState()
+    carryover: dict = {}
+    summariser = make_deterministic_summariser(carryover)
+    cfg = _config(
+        streamer,
+        compactor=state,
+        capabilities=caps,
+        threshold=0.5,
+        summariser=summariser,
+        carryover=carryover,
+    )
+
+    resume: list[ConversationMessage] = []
+    for i in range(8):
+        resume.append(
+            ConversationMessage(
+                role="assistant",
+                content=[ToolUseBlock(id=f"tu_f{i}", name="read_file", input={"path": "x"})],
+            )
+        )
+        resume.append(_heavy_user(f"f{i}", kb=4))
+    resume.append(ConversationMessage(role="assistant", content=[TextBlock(text="prior summary")]))
+
+    out = []
+    async for ev in run_session(cfg, [_user("next")], resume_messages=resume):
+        out.append(ev)
+
+    compacted = [e for e in out if isinstance(e, CompactionDoneEvent)]
+    assert len(compacted) == 1
+    assert compacted[0].tier == "full"
+    assert state.last_compacted_transcript is not None
+    assert any(
+        "[Compaction summary" in msg.text
+        for msg in state.last_compacted_transcript
+    )

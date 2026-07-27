@@ -39,6 +39,7 @@ from collections.abc import (
 )
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Literal, cast
 
 from dream.contracts.hook import HookEvent
@@ -88,7 +89,8 @@ from dream.permissions import SessionLimiter
 from dream.services.compact import DEFAULT_KEEP_RECENT
 from dream.services.compact._orchestrator import (
     AutoCompactState,
-    auto_compact_if_needed,
+    SummariserFn,
+    auto_compact_if_needed_async,
     begin_turn,
 )
 from dream.services.token_estimation import (
@@ -128,6 +130,9 @@ class SessionConfig:
     compaction_threshold: float = 0.7
     compaction_preserve_recent: int = DEFAULT_KEEP_RECENT
     compaction_capabilities: ProviderCapabilities | None = None
+    compaction_summariser: SummariserFn | None = None
+    carryover_metadata: dict[str, Any] | None = None
+    working_dir: Path | None = None
     tracer: Tracer = field(default_factory=NoopTracer)
     model: str = ""
     # Spec 13D: hard per-session limits. A fresh limiter per session means
@@ -379,12 +384,15 @@ async def _maybe_compact(
             HookEvent.PRE_COMPACT,
             {"session_id": config.session_id, "message_count": pre_count, "token_count": pre_tokens},
         )
-    new_transcript, result = auto_compact_if_needed(
+    new_transcript, result = await auto_compact_if_needed_async(
         transcript,
         capabilities=config.compaction_capabilities,
         state=config.compactor,
         threshold=config.compaction_threshold,
         preserve_recent=config.compaction_preserve_recent,
+        summariser=config.compaction_summariser,
+        carryover_metadata=config.carryover_metadata,
+        working_dir=config.working_dir,
     )
     if result is None:
         return transcript, None
@@ -437,6 +445,9 @@ async def _drive_one_turn(
         max_turns=config.max_turns,
         tracer=config.tracer,
         model=config.model,
+        ptl_preserve_recent=(
+            config.compaction_preserve_recent if config.compactor is not None else None
+        ),
     )
     # ``run_query`` is declared as ``AsyncIterator`` but is in fact an async
     # generator; the cast lets us call ``aclose()`` on timeout to release the

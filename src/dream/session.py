@@ -363,15 +363,18 @@ class Session:
 
         ``run_session`` compacts an internal copy of the transcript; the
         ``CompactionDoneEvent`` carries only deltas, not the compacted
-        messages. Microcompaction is a pure function of the input, so we
-        reproduce the same shape by re-running the engine's compactor over
-        our mirror with ``force=True`` (the engine already consumed this
-        turn's cooldown). A no-op when no engine / compactor is bound.
+        messages. When the engine compactor holds ``last_compacted_transcript``
+        from the live run, copy it directly so the mirror matches what the
+        model saw (including LLM full tier). Otherwise fall back to
+        deterministic re-run with ``force=True``.
         """
         engine = self._engine
         if engine is None or engine.compactor is None:
             return
         compactor = engine.compactor
+        if compactor.last_compacted_transcript is not None:
+            self._transcript[:] = compactor.last_compacted_transcript
+            return
         # Local import keeps the orchestrator out of the module import graph
         # for engine-less sessions (e.g. the unit-level _translate test).
         from dream.services.compact._orchestrator import auto_compact_if_needed
@@ -383,6 +386,9 @@ class Session:
             trigger="manual",
             threshold=engine.compaction_threshold,
             preserve_recent=engine.compaction_preserve_recent,
+            summariser=engine.compaction_summariser,
+            carryover_metadata=engine.carryover_metadata,
+            working_dir=engine.working_dir,
             force=True,
         )
         if result is not None:

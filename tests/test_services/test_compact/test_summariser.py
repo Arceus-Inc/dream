@@ -1,0 +1,59 @@
+"""Compaction summariser + TODO reinject (P0 #4 Wave A)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from dream.engine._messages import ConversationMessage, TextBlock
+from dream.services.compact._summariser import (
+    PREVIOUS_SUMMARY_KEY,
+    inject_todo_snapshot,
+    make_deterministic_summariser,
+    parse_todo_pending,
+    render_transcript_excerpt,
+)
+
+
+def test_render_transcript_excerpt_flattens_roles() -> None:
+    messages = [
+        ConversationMessage(role="user", content=[TextBlock(text="hello")]),
+        ConversationMessage(role="assistant", content=[TextBlock(text="world")]),
+    ]
+    excerpt = render_transcript_excerpt(messages)
+    assert "USER: hello" in excerpt
+    assert "ASSISTANT: world" in excerpt
+
+
+def test_deterministic_summariser_rolls_previous_summary() -> None:
+    state: dict = {PREVIOUS_SUMMARY_KEY: "prior goal"}
+    summariser = make_deterministic_summariser(state)
+    older = [ConversationMessage(role="user", content=[TextBlock(text="did thing")])]
+    out = summariser(older)
+    assert len(out) == 1
+    assert "[Compaction summary" in out[0].text
+    assert PREVIOUS_SUMMARY_KEY in state
+    assert "did thing" in state[PREVIOUS_SUMMARY_KEY]
+
+
+def test_parse_todo_pending_reads_unchecked_items(tmp_path: Path) -> None:
+    (tmp_path / "TODO.md").write_text(
+        "# TODO\n- [ ] alpha\n- [x] done\n- [ ] beta\n",
+        encoding="utf-8",
+    )
+    assert parse_todo_pending(tmp_path) == ["alpha", "beta"]
+
+
+def test_inject_todo_snapshot_appends_user_message(tmp_path: Path) -> None:
+    (tmp_path / "TODO.md").write_text("# TODO\n- [ ] ship it\n", encoding="utf-8")
+    base = [
+        ConversationMessage(role="user", content=[TextBlock(text="boundary")]),
+    ]
+    out = inject_todo_snapshot(base, tmp_path)
+    assert len(out) == 2
+    assert "ship it" in out[-1].text
+    assert "TODO snapshot" in out[-1].text
+
+
+def test_inject_todo_snapshot_noop_when_empty(tmp_path: Path) -> None:
+    base = [ConversationMessage(role="user", content=[TextBlock(text="x")])]
+    assert inject_todo_snapshot(base, tmp_path) is base

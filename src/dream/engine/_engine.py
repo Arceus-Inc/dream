@@ -35,7 +35,7 @@ from dream.hooks import HookExecutor
 from dream.observability._tracer import NoopTracer, Tracer
 from dream.permissions import SessionLimiter, SessionLimits
 from dream.services.compact import DEFAULT_KEEP_RECENT
-from dream.services.compact._orchestrator import AutoCompactState
+from dream.services.compact._orchestrator import AutoCompactState, SummariserFn
 from dream.tools._registry import ToolRegistry
 
 
@@ -63,6 +63,8 @@ class QueryEngine:
     compaction_threshold: float = 0.7
     compaction_preserve_recent: int = DEFAULT_KEEP_RECENT
     compaction_capabilities: ProviderCapabilities | None = None
+    compaction_summariser: SummariserFn | None = None
+    carryover_metadata: dict[str, Any] | None = None
     tracer: Tracer = field(default_factory=NoopTracer)
     model: str = ""
     # Spec 13D: per-session hard caps. A fresh SessionLimiter is minted per
@@ -100,6 +102,9 @@ class QueryEngine:
             compaction_threshold=self.compaction_threshold,
             compaction_preserve_recent=self.compaction_preserve_recent,
             compaction_capabilities=self.compaction_capabilities,
+            compaction_summariser=self.compaction_summariser,
+            carryover_metadata=self.carryover_metadata,
+            working_dir=self.working_dir,
             tracer=self.tracer,
             model=self.model,
             limiter=SessionLimiter(self.limits) if self.limits is not None else None,
@@ -125,6 +130,8 @@ def build_query_engine(
     compaction_threshold: float = 0.7,
     compaction_preserve_recent: int = DEFAULT_KEEP_RECENT,
     compaction_capabilities: ProviderCapabilities | None = None,
+    compaction_summariser: SummariserFn | None = None,
+    carryover_metadata: dict[str, Any] | None = None,
     tracer: Tracer | None = None,
     model: str = "",
     hook_executor: HookExecutor | None = None,
@@ -157,6 +164,8 @@ def build_query_engine(
         compaction_threshold=compaction_threshold,
         compaction_preserve_recent=compaction_preserve_recent,
         compaction_capabilities=compaction_capabilities,
+        compaction_summariser=compaction_summariser,
+        carryover_metadata=carryover_metadata,
         tracer=tracer or NoopTracer(),
         model=model,
         limits=limits,

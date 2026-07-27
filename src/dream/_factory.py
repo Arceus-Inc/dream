@@ -630,6 +630,15 @@ def _build_session_engine(
         # subagent's tools are intersected with this. ``None`` = no role restriction
         # (full surface), so the subagent keeps its declared tools.
         context_metadata[PARENT_TOOLS_KEY] = role_allowed
+    carryover_metadata: dict[str, Any] = {"working_dir": str(working_dir)}
+    from dream.services.compact._summariser import make_llm_summariser
+
+    compaction_summariser = make_llm_summariser(
+        api_key=api_key,
+        base_url=base_url,
+        model=options.model or model,
+        state=carryover_metadata,
+    )
     return build_query_engine(
         streamer=streamer,
         registry=tool_registry,
@@ -643,6 +652,8 @@ def _build_session_engine(
         context_metadata=context_metadata,
         compactor=compactor,
         compaction_capabilities=capabilities,
+        compaction_summariser=compaction_summariser,
+        carryover_metadata=carryover_metadata,
         tracer=tracer,
         model=options.model or model,
         hook_executor=hook_executor,
