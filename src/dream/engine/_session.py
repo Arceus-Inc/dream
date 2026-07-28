@@ -230,6 +230,8 @@ class SessionConfig:
     hook_executor: HookExecutor | None = None
     # Bound for STOP continue nudges (Hermes max_verify_nudges default 3).
     max_verify_nudges: int = 3
+    # Role name (planner/generator/evaluator) for role-scoped STOP hooks.
+    role: str | None = None
 
     def __post_init__(self) -> None:
         # 0/negative would satisfy ``consecutive_timeouts >= max`` immediately
@@ -791,6 +793,7 @@ async def run_session(
                         "session_id": config.session_id,
                         "phase": "pre_seal",
                         "verify_nudges": verify_nudges,
+                        "role": config.role,
                     },
                 )
                 if stop_outcome.continue_message:

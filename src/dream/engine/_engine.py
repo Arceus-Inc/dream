@@ -80,6 +80,8 @@ class QueryEngine:
     # set). chorus uses it to prepend ``AGENTS.md`` to every beat so an employee reads the cross-child
     # contract before writing. ``None`` leaves the session loop byte-for-byte unchanged (the default).
     orientation: OrientationConfig | None = None
+    # Role name from session metadata (planner/generator/evaluator) for STOP hooks.
+    role: str | None = None
 
     def make_session_config(
         self,
@@ -111,6 +113,7 @@ class QueryEngine:
             limiter=SessionLimiter(self.limits) if self.limits is not None else None,
             hook_executor=self.hook_executor,
             orientation=self.orientation,
+            role=self.role,
         )
 
 
@@ -155,6 +158,8 @@ def build_query_engine(
         role_allowed_tools=role_allowed_tools,
         hook_executor=hook_executor,
     )
+    meta = context_metadata or {}
+    role_raw = meta.get("dream.role")
     return QueryEngine(
         streamer=streamer,
         dispatcher=dispatcher,
@@ -172,6 +177,7 @@ def build_query_engine(
         limits=limits,
         hook_executor=hook_executor,
         orientation=orientation,
+        role=role_raw if isinstance(role_raw, str) else None,
     )
 
 
