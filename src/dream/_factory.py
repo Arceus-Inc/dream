@@ -58,7 +58,6 @@ from dream.services import cron as cron_service
 from dream.services.compact._carryover_state import CarryoverMetadata
 from dream.services.compact._orchestrator import AutoCompactState
 from dream.services.context_log import ContextEvent
-from dream.services.core_beliefs import resolve_core_beliefs_path
 from dream.session import SessionOptions
 from dream.skills import (
     SKILL_CONTEXT_KEY,
@@ -110,15 +109,17 @@ def build_harness(
     policy_warning_sink: PolicyWarningSink | None = None,
     env: Mapping[str, str] | None = None,
     wake_model: str | None = None,
+    employee_mode: bool = False,
 ) -> Harness:
     """Build a Harness whose engine factory produces a real, tool-wired engine.
 
     ``model`` / ``api_key`` / ``base_url`` name any OpenAI-compatible chat
     endpoint (vanilla OpenAI, Azure's ``/openai/v1`` path, vLLM, gateways).
 
-    Standing orders (workforce identity, resume/recall, tool choice) come from
-    ``docs/design-docs/core-beliefs.md`` — worktree file if present, else Dream's
-    packaged constitution.
+    ``employee_mode`` (default off) injects Dream's workforce Base Prompt
+    ("You are an employee of a AI Workforce…") plus Hermes-style tool-gated
+    resume/recall/tool-choice directives into every session. Chorus sets this
+    for org employees; standalone Dream users leave it off.
 
     ``registry`` may be supplied so the caller can register additional tools
     (e.g. MCP adapters) into the same registry *after* this returns but
@@ -285,6 +286,7 @@ def build_harness(
             capabilities=capabilities,
             harness=harness,
             subagents=subagents,
+            employee_mode=employee_mode,
         )
 
     config._engine_factory = _factory
@@ -409,6 +411,18 @@ def _select_sandbox_adapter(paths: DreamPaths) -> SandboxAdapter:
     return select_backend("subprocess")
 
 
+def _session_tool_names_for_prompt(
+    *,
+    registry_tools: list[Any],
+    manifest: RoleManifest | None,
+) -> frozenset[str]:
+    """Tool names the model can call this session — drives Hermes-style gating."""
+    names = frozenset(t.name for t in registry_tools)
+    if manifest is None or manifest.tools is None:
+        return names
+    return frozenset(manifest.tools)
+
+
 def _assemble_system_prompt(
     *,
     paths: DreamPaths,
@@ -416,18 +430,27 @@ def _assemble_system_prompt(
     catalogue: str,
     memory_catalogue: str,
     system_prompt: str | None,
+    employee_mode: bool = False,
+    metadata: dict[str, Any] | None = None,
+    tool_names: frozenset[str] | None = None,
+    is_subagent: bool = False,
 ) -> str:
     """Assemble the per-session system prompt from its ordered blocks.
 
-    Order: standing orders from ``core-beliefs.md`` FIRST, then runtime info,
+    Order (Hermes-aligned): governance standing orders FIRST, then the
+    workforce Base Prompt when employee_mode applies, then runtime info,
     skill/memory catalogues, and the caller-supplied role/craft prompt.
     """
     return assemble_session_system_prompt(
-        standing_orders_path=resolve_core_beliefs_path(paths.repo),
+        standing_orders_path=paths.repo / "docs" / "design-docs" / "core-beliefs.md",
         runtime_info=runtime_info,
         catalogue=catalogue,
         memory_catalogue=memory_catalogue,
         system_prompt=system_prompt,
+        employee_mode=employee_mode,
+        metadata=metadata,
+        tool_names=tool_names,
+        is_subagent=is_subagent,
     )
 
 
@@ -455,6 +478,7 @@ def _build_session_engine(
     capabilities: ProviderCapabilities,
     harness: Harness,
     subagents: SubagentSet | None = None,
+    employee_mode: bool = False,
 ) -> QueryEngine:
     """Construct one session's ``QueryEngine`` from explicit, pre-resolved deps.
 
@@ -504,12 +528,22 @@ def _build_session_engine(
     )
     from dream.subagents._inline_executor import SUBAGENT_NAME_METADATA_KEY
 
+    manifest_for_prompt = options.metadata.get(ROLE_MANIFEST_METADATA_KEY)
+    prompt_manifest = (
+        manifest_for_prompt if isinstance(manifest_for_prompt, RoleManifest) else None
+    )
     system_prompt = _assemble_system_prompt(
         paths=paths,
         runtime_info=runtime_info,
         catalogue=catalogue,
         memory_catalogue=memory_catalogue,
         system_prompt=options.system_prompt,
+        employee_mode=employee_mode,
+        metadata=options.metadata,
+        tool_names=_session_tool_names_for_prompt(
+            registry_tools=tools, manifest=prompt_manifest
+        ),
+        is_subagent=SUBAGENT_NAME_METADATA_KEY in options.metadata,
     )
     # Failover harvest (2026-07-18): every beat's turn rides FailoverStreamer, so a 429/5xx
     # gets bounded retry instead of killing the beat. One substrate today — the rotation seam
