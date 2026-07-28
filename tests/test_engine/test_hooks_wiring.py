@@ -218,7 +218,7 @@ async def test_full_lifecycle_order(tmp_path: Path) -> None:
 
     by_event = {ev: payload for ev, payload in hook.seen}
     assert by_event[HookEvent.SESSION_START] == {"session_id": "s_lifecycle"}
-    assert by_event[HookEvent.STOP] == {"session_id": "s_lifecycle"}
+    assert by_event[HookEvent.STOP]["session_id"] == "s_lifecycle"
     assert by_event[HookEvent.PRE_TOOL_USE]["tool_name"] == "echo"
     assert by_event[HookEvent.PRE_TOOL_USE]["tool_input"] == {}
     post = by_event[HookEvent.POST_TOOL_USE]

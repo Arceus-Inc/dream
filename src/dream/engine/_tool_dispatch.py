@@ -109,25 +109,44 @@ class EngineToolDispatcher:
     context_metadata: dict[str, Any] = field(default_factory=dict)
     # Optional spec-13 lifecycle hook executor. When set, PRE_TOOL_USE fires
     # immediately before the dispatch atom and POST_TOOL_USE immediately after
-    # the ``(content, is_error)`` result exists -- observer-only (hooks never
-    # veto), so the call proceeds regardless. ``None`` means no firing, so
-    # existing call sites are byte-for-byte unaffected.
+    # the ``(content, is_error)`` result exists. Opt-in ``allow_block`` hooks may
+    # veto PRE (Hermes pre_tool_call). ``None`` means no firing.
     hook_executor: HookExecutor | None = None
 
     async def dispatch(self, name: str, input: dict[str, Any]) -> tuple[str, bool]:
-        # Spec 13: PRE_TOOL_USE fires *before* the dispatch atom, then the result
-        # is produced, then POST_TOOL_USE fires *after* it exists. The hook is an
-        # observer (spec 13 divergence #1: it never vetoes) and ``fire`` never
-        # raises, so a faulty hook can't break the loop or split the tool-call
-        # atom. Wrapping the whole inner pipeline guarantees POST sees a result
-        # for *every* exit (role-refused, unknown, invalid, denied, timeout, ok).
+        # PRE_TOOL_USE → (optional veto / replace input) → execute → POST_TOOL_USE.
+        # ``fire`` never raises (crash-isolated); a blocked PRE skips execute.
         if self.hook_executor is None:
             return await self._dispatch_inner(name, input)
-        await self.hook_executor.fire(
-            HookEvent.PRE_TOOL_USE, {"tool_name": name, "tool_input": dict(input)}
+
+        tool_input = dict(input)
+        if name == "spawn_subagent":
+            await self.hook_executor.fire(
+                HookEvent.SUBAGENT_START,
+                {
+                    "tool_name": name,
+                    "subagent_name": str(tool_input.get("name", "")),
+                    "tool_input": tool_input,
+                },
+            )
+
+        pre = await self.hook_executor.fire(
+            HookEvent.PRE_TOOL_USE, {"tool_name": name, "tool_input": tool_input}
         )
-        content, is_error = await self._dispatch_inner(name, input)
-        await self.hook_executor.fire(
+        if pre.blocked:
+            feedback = pre.feedback or "blocked by hook"
+            return (
+                f"Error: tool call blocked by hook.\n"
+                f"root_cause: hook_block\n"
+                f"safe_retry: {feedback}\n"
+                f"stop_condition: A PRE_TOOL_USE hook with allow_block vetoed this call.",
+                True,
+            )
+        if pre.replacement_input is not None:
+            tool_input = dict(pre.replacement_input)
+
+        content, is_error = await self._dispatch_inner(name, tool_input)
+        post = await self.hook_executor.fire(
             HookEvent.POST_TOOL_USE,
             {
                 "tool_name": name,
@@ -135,16 +154,17 @@ class EngineToolDispatcher:
                 "result_summary": content[:_RESULT_SUMMARY_MAX_CHARS],
             },
         )
-        # Spec 13: SUBAGENT_STOP fires when a spawned subagent finishes — the
-        # per-child analog of the session STOP. ``spawn_subagent`` is dream's
-        # inline-subagent entry point, so its POST is the subagent's stop.
+        if post.replacement_result is not None:
+            content = post.replacement_result
         if name == "spawn_subagent":
             await self.hook_executor.fire(
                 HookEvent.SUBAGENT_STOP,
                 {
                     "tool_name": name,
+                    "subagent_name": str(tool_input.get("name", "")),
                     "is_error": is_error,
                     "result_summary": content[:_RESULT_SUMMARY_MAX_CHARS],
+                    "mode": "sync",
                 },
             )
         return content, is_error

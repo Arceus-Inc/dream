@@ -61,7 +61,26 @@ class SpawnSubagentInput(BaseModel):
         description="Name of the subagent to dispatch. Must be one of the available subagents."
     )
     prompt: str = Field(
-        description="The bounded task for the subagent. Be specific about what you need."
+        default="",
+        description=(
+            "Bounded task for the subagent (legacy). Prefer ``goal`` + optional ``context`` "
+            "for a Hermes-style context firewall."
+        ),
+    )
+    goal: str | None = Field(
+        default=None,
+        description="Delegated task for a fresh-session specialist (preferred over prompt).",
+    )
+    context: str | None = Field(
+        default=None,
+        description="Packed extras for the child — not parent history. Artifact paths, contracts.",
+    )
+    background: bool = Field(
+        default=False,
+        description=(
+            "If true, prefer keep-working join. When the async drain rail is unavailable, "
+            "forced sync with a note (Hermes capacity fallback)."
+        ),
     )
 
 
@@ -144,6 +163,18 @@ class SpawnSubagentTool(BaseTool):
                 },
             )
 
+        goal = (args.goal or args.prompt or "").strip()
+        if not goal:
+            return ToolResult(
+                content="spawn_subagent requires goal or prompt.",
+                is_error=True,
+                metadata={
+                    "root_cause": "missing_goal",
+                    "safe_retry": "Pass goal=… (or prompt=…) describing the bounded task.",
+                    "stop_condition": "No task text provided for the subagent.",
+                },
+            )
+
         # --- Emit observability event: subagent.spawn ---
         tracer: Tracer | None = ctx.metadata.get(TRACER_KEY)
         spawn_time = time.time()
@@ -152,7 +183,7 @@ class SpawnSubagentTool(BaseTool):
                 "subagent.spawn",
                 {
                     "subagent_name": args.name,
-                    "prompt": args.prompt,
+                    "prompt": goal,
                     "depth": agent.depth,
                     "tools": list(agent.tools),
                     "model": agent.model or "parent_model",
@@ -160,27 +191,42 @@ class SpawnSubagentTool(BaseTool):
                 },
             )
 
-        # --- Execute the subagent as a real bounded session ---
-        # Capability minimization (§05): the subagent's tools are intersected with
-        # the parent's live allow-list inside the executor — narrower-wins, can only
-        # drop. ``None`` means the parent had no role restriction (full surface), so
-        # the subagent keeps its declared tools.
+        # --- Execute: inline co-writers vs Hermes-style fresh-session delegate ---
+        from dream.subagents._delegate import INLINE_SUBAGENTS, run_subagent_delegate
         from dream.subagents._inline_executor import run_subagent_inline
 
         parent_tools: frozenset[str] | None = ctx.metadata.get(PARENT_TOOLS_KEY)
 
-        result = await run_subagent_inline(
-            agent,
-            prompt=args.prompt,
-            harness=harness,
-            parent_tools=parent_tools,
-            # Depth-2: hand the SAME per-beat counter + tracer down, so a spawn-eligible child's own
-            # spawns increment this beat's cap (spans the whole tree) and stay observable.
-            spawn_counter=counter,
-            tracer=tracer,
-            # Forward the run_role observer so a NESTED spawn surfaces on the same bus (depth-2).
-            observer=ctx.metadata.get(OBSERVER_KEY),
-        )
+        # Background keep-working: forced sync until completion drain ships (Hermes fallback).
+        background_note = ""
+        if args.background:
+            background_note = (
+                "\n\n[note: background=true forced sync — async drain rail not enabled; "
+                "parent waited for this child.]"
+            )
+
+        if args.name in INLINE_SUBAGENTS:
+            result = await run_subagent_inline(
+                agent,
+                prompt=goal if not args.context else f"{goal}\n\nCONTEXT:\n{args.context}",
+                harness=harness,
+                parent_tools=parent_tools,
+                spawn_counter=counter,
+                tracer=tracer,
+                observer=ctx.metadata.get(OBSERVER_KEY),
+            )
+        else:
+            result = await run_subagent_delegate(
+                agent,
+                goal=goal,
+                context=args.context,
+                harness=harness,
+                parent_tools=parent_tools,
+                spawn_counter=counter,
+                tracer=tracer,
+                observer=ctx.metadata.get(OBSERVER_KEY),
+                working_dir=ctx.working_dir,
+            )
 
         elapsed = time.time() - spawn_time
 
@@ -215,7 +261,7 @@ class SpawnSubagentTool(BaseTool):
 
         # Surface an output-schema guardrail warning inline, so the parent sees the contract was not
         # fully met (fail-open) rather than silently trusting a best-effort result.
-        content = result.output
+        content = result.output + background_note
         if result.warning:
             content = f"{result.warning}\n\n{content}"
         return ToolResult(
@@ -232,5 +278,7 @@ class SpawnSubagentTool(BaseTool):
                 "tool_errors": result.tool_errors,
                 "elapsed_seconds": round(elapsed, 2),
                 "output_warning": result.warning,
+                "mode": "inline" if args.name in INLINE_SUBAGENTS else "delegate",
+                "background_forced_sync": args.background,
             },
         )

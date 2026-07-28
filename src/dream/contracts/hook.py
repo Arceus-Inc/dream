@@ -21,6 +21,7 @@ class HookEvent(StrEnum):
     POST_TOOL_USE = "post_tool_use"
     PRE_COMPACT = "pre_compact"
     POST_COMPACT = "post_compact"
+    SUBAGENT_START = "subagent_start"
     SUBAGENT_STOP = "subagent_stop"
     STOP = "stop"
     NOTIFICATION = "notification"
@@ -30,15 +31,20 @@ class HookEvent(StrEnum):
 class HookResult:
     """A hook's reply to one event.
 
-    `blocked=True` requires the hook's `HookSpec.allow_block` to be set,
-    otherwise the executor ignores the block flag and emits a warning
-    event. `replacement_input`, when present, replaces the tool input
-    before execution (pre-tool only).
+    Powers are opt-in via ``HookSpec``:
+    - ``blocked=True`` requires ``allow_block`` (else ``hook.blocked.ignored``).
+    - ``continue_message`` requires ``allow_continue`` on STOP (else ignored).
+    - ``replacement_input`` replaces tool args before execute (PRE_TOOL_USE).
+    - ``replacement_result`` replaces tool result text (POST_TOOL_USE).
+    - ``inject_context`` appends to the API user message (USER_PROMPT_SUBMIT).
     """
 
     blocked: bool = False
     feedback: str | None = None
     replacement_input: dict[str, Any] | None = None
+    replacement_result: str | None = None
+    inject_context: str | None = None
+    continue_message: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -49,6 +55,7 @@ class HookSpec:
     events: tuple[HookEvent, ...]
     priority: int = 0
     allow_block: bool = False
+    allow_continue: bool = False
 
 
 @runtime_checkable

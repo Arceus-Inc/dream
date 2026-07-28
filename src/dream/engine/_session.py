@@ -71,6 +71,7 @@ from dream.engine._loop import (
 )
 from dream.engine._messages import (
     ConversationMessage,
+    TextBlock,
     has_pending_continuation,
     sanitize_conversation_messages,
 )
@@ -223,10 +224,12 @@ class SessionConfig:
     limiter: SessionLimiter | None = None
     # Spec 13: optional lifecycle hook executor. When set, SESSION_START fires
     # once at session entry and STOP fires once before the terminal SessionEnd
-    # on every exit path (validator-block, abort, normal seal). Observer-only —
-    # the executor swallows crashes/timeouts, so firing can't abort the
-    # session. ``None`` disables firing, leaving the loop unchanged.
+    # on every exit path (validator-block, abort, normal seal). Opt-in
+    # ``allow_continue`` hooks on STOP may nudge another turn (Hermes pre_verify).
+    # ``None`` disables firing, leaving the loop unchanged.
     hook_executor: HookExecutor | None = None
+    # Bound for STOP continue nudges (Hermes max_verify_nudges default 3).
+    max_verify_nudges: int = 3
 
     def __post_init__(self) -> None:
         # 0/negative would satisfy ``consecutive_timeouts >= max`` immediately
@@ -760,6 +763,8 @@ async def run_session(
     review_rounds = 0
     last_review_items: list[str] = []
     seal_warnings = False
+    verify_nudges = 0
+    stop_fired_for_seal = False
 
     while True:
         decision, user_idx = await _select_turn_driver(
@@ -773,10 +778,33 @@ async def run_session(
         if decision.review_item is not None:
             review_rounds += 1
             last_review_items = decision.review_item
-        if decision.action == "seal":
-            break
-        if decision.action == "seal-with-warnings":
-            seal_warnings = True
+        if decision.action in {"seal", "seal-with-warnings"}:
+            # Hermes-style STOP continue: allow_continue hooks may inject a
+            # synthetic user nudge and keep the session working (≤ max_verify_nudges).
+            if (
+                config.hook_executor is not None
+                and verify_nudges < config.max_verify_nudges
+            ):
+                stop_outcome = await config.hook_executor.fire(
+                    HookEvent.STOP,
+                    {
+                        "session_id": config.session_id,
+                        "phase": "pre_seal",
+                        "verify_nudges": verify_nudges,
+                    },
+                )
+                if stop_outcome.continue_message:
+                    verify_nudges += 1
+                    nudge = ConversationMessage(
+                        role="user",
+                        content=[TextBlock(text=stop_outcome.continue_message)],
+                    )
+                    transcript.append(nudge)
+                    user_messages = [*user_messages, nudge]
+                    continue
+                stop_fired_for_seal = True
+            if decision.action == "seal-with-warnings":
+                seal_warnings = True
             break
 
         turn_number += 1
@@ -897,7 +925,9 @@ async def run_session(
         session_outcome = SessionOutcome.DONE
         reason = None
 
-    await _fire_lifecycle(config.hook_executor, HookEvent.STOP, config.session_id)
+    # Avoid double-STOP when we already fired at pre_seal (continue check).
+    if not stop_fired_for_seal:
+        await _fire_lifecycle(config.hook_executor, HookEvent.STOP, config.session_id)
     yield SessionEnd(
         session_id=config.session_id,
         started_at=session_started_at,
