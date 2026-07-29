@@ -36,6 +36,7 @@ HARNESS_KEY = "dream.harness"
 SPAWN_COUNT_KEY = "dream.subagent_spawn_count"
 
 MAX_SPAWNS_PER_BEAT = 10
+SPAWN_SUBAGENT_TOOL = "spawn_subagent"
 
 
 class SpawnJoinMode(StrEnum):
@@ -173,7 +174,7 @@ class SpawnSubagentInput(BaseModel):
 class SpawnSubagentTool(BaseTool):
     """Dispatch a subagent to do bounded work and return its result."""
 
-    name = "spawn_subagent"
+    name = SPAWN_SUBAGENT_TOOL
     description = (
         "Spawn a focused subagent in an isolated context. "
         "Pick subagent_type from the enum (generalPurpose or a role specialist). "

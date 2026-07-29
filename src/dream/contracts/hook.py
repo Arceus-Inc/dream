@@ -54,6 +54,82 @@ class UserPromptPayload(TypedDict, total=False):
     prompt: str
 
 
+class SubagentJoinMode(StrEnum):
+    """How the parent joined a spawned child (lifecycle observers)."""
+
+    SYNC = "sync"
+
+
+@dataclass(frozen=True)
+class PreToolHookPayload:
+    """PRE_TOOL_USE hook payload — built at dispatch, serialized for hooks."""
+
+    tool_name: str
+    tool_input: dict[str, Any]
+    subagent_name: str | None = None
+
+    def to_dict(self) -> PreToolPayload:
+        payload: PreToolPayload = {
+            "tool_name": self.tool_name,
+            "tool_input": self.tool_input,
+        }
+        if self.subagent_name is not None:
+            payload["subagent_name"] = self.subagent_name
+        return payload
+
+
+@dataclass(frozen=True)
+class PostToolHookPayload:
+    """POST_TOOL_USE hook payload."""
+
+    tool_name: str
+    is_error: bool
+    result_summary: str
+
+    def to_dict(self) -> PreToolPayload:
+        return {
+            "tool_name": self.tool_name,
+            "is_error": self.is_error,
+            "result_summary": self.result_summary,
+        }
+
+
+@dataclass(frozen=True)
+class SubagentStartPayload:
+    """SUBAGENT_START hook payload (post-PRE effective input)."""
+
+    tool_name: str
+    subagent_name: str
+    tool_input: dict[str, Any]
+
+    def to_dict(self) -> PreToolPayload:
+        return {
+            "tool_name": self.tool_name,
+            "subagent_name": self.subagent_name,
+            "tool_input": self.tool_input,
+        }
+
+
+@dataclass(frozen=True)
+class SubagentStopPayload:
+    """SUBAGENT_STOP hook payload."""
+
+    tool_name: str
+    subagent_name: str
+    is_error: bool
+    result_summary: str
+    mode: SubagentJoinMode = SubagentJoinMode.SYNC
+
+    def to_dict(self) -> PreToolPayload:
+        return {
+            "tool_name": self.tool_name,
+            "subagent_name": self.subagent_name,
+            "is_error": self.is_error,
+            "result_summary": self.result_summary,
+            "mode": self.mode,
+        }
+
+
 @dataclass(frozen=True)
 class HookResult:
     """A hook's reply to one event.

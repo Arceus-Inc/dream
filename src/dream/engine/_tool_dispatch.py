@@ -46,7 +46,13 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
-from dream.contracts.hook import HookEvent
+from dream.contracts.hook import (
+    HookEvent,
+    PostToolHookPayload,
+    PreToolHookPayload,
+    SubagentStartPayload,
+    SubagentStopPayload,
+)
 from dream.hooks import HookExecutor
 from dream.permissions import Outcome, PermissionDecision, PermissionRequest
 from dream.services.tool_outputs import offload_tool_output
@@ -122,17 +128,17 @@ class EngineToolDispatcher:
         tool_input = dict(input)
         # Child sessions stamp dream.subagent_name — forge hooks skip when set.
         from dream.subagents._inline_executor import SUBAGENT_NAME_METADATA_KEY
-        from dream.tools.builtin.spawn_subagent import spawn_label_from_input
+        from dream.tools.builtin.spawn_subagent import SPAWN_SUBAGENT_TOOL, spawn_label_from_input
 
         session_subagent = self.context_metadata.get(SUBAGENT_NAME_METADATA_KEY)
 
         pre = await self.hook_executor.fire(
             HookEvent.PRE_TOOL_USE,
-            {
-                "tool_name": name,
-                "tool_input": tool_input,
-                "subagent_name": session_subagent,
-            },
+            PreToolHookPayload(
+                tool_name=name,
+                tool_input=tool_input,
+                subagent_name=session_subagent,
+            ).to_dict(),
         )
         if pre.blocked:
             feedback = pre.feedback or "blocked by hook"
@@ -147,37 +153,36 @@ class EngineToolDispatcher:
             tool_input = dict(pre.replacement_input)
 
         spawn_label = spawn_label_from_input(tool_input)
-        if name == "spawn_subagent":
+        if name == SPAWN_SUBAGENT_TOOL:
             await self.hook_executor.fire(
                 HookEvent.SUBAGENT_START,
-                {
-                    "tool_name": name,
-                    "subagent_name": spawn_label,
-                    "tool_input": tool_input,
-                },
+                SubagentStartPayload(
+                    tool_name=SPAWN_SUBAGENT_TOOL,
+                    subagent_name=spawn_label,
+                    tool_input=tool_input,
+                ).to_dict(),
             )
 
         content, is_error = await self._dispatch_inner(name, tool_input)
         post = await self.hook_executor.fire(
             HookEvent.POST_TOOL_USE,
-            {
-                "tool_name": name,
-                "is_error": is_error,
-                "result_summary": content[:_RESULT_SUMMARY_MAX_CHARS],
-            },
+            PostToolHookPayload(
+                tool_name=name,
+                is_error=is_error,
+                result_summary=content[:_RESULT_SUMMARY_MAX_CHARS],
+            ).to_dict(),
         )
         if post.replacement_result is not None:
             content = post.replacement_result
-        if name == "spawn_subagent":
+        if name == SPAWN_SUBAGENT_TOOL:
             await self.hook_executor.fire(
                 HookEvent.SUBAGENT_STOP,
-                {
-                    "tool_name": name,
-                    "subagent_name": spawn_label,
-                    "is_error": is_error,
-                    "result_summary": content[:_RESULT_SUMMARY_MAX_CHARS],
-                    "mode": "sync",
-                },
+                SubagentStopPayload(
+                    tool_name=SPAWN_SUBAGENT_TOOL,
+                    subagent_name=spawn_label,
+                    is_error=is_error,
+                    result_summary=content[:_RESULT_SUMMARY_MAX_CHARS],
+                ).to_dict(),
             )
         return content, is_error
 

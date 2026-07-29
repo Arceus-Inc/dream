@@ -19,7 +19,7 @@ from dream.subagents._delegate import _safe_spill_basename, _write_spill_file, a
 from dream.tools._base import BaseTool, ToolDeclaration
 from dream.tools._context import ToolExecutionContext
 from dream.tools._registry import ToolRegistry, ToolSource
-from dream.tools.builtin.spawn_subagent import resolve_spawn_goal
+from dream.tools.builtin.spawn_subagent import SPAWN_SUBAGENT_TOOL, resolve_spawn_goal
 
 
 class _Hook:
@@ -50,7 +50,7 @@ class _SpawnEchoInput(BaseModel):
 
 
 class _SpawnEchoTool(BaseTool):
-    name = "spawn_subagent"
+    name = SPAWN_SUBAGENT_TOOL
     description = "test stub"
     declaration = ToolDeclaration(risk="safe", tier_required=0, timeout_seconds=5.0)
     input_model = _SpawnEchoInput
@@ -174,7 +174,7 @@ async def test_subagent_start_uses_post_pre_replacement_label(tmp_path: Path) ->
     )
 
     content, is_error = await disp.dispatch(
-        "spawn_subagent",
+        SPAWN_SUBAGENT_TOOL,
         {"subagent_type": "generalPurpose", "goal": "do work"},
     )
     assert not is_error
