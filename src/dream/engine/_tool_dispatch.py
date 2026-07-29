@@ -120,18 +120,30 @@ class EngineToolDispatcher:
             return await self._dispatch_inner(name, input)
 
         tool_input = dict(input)
+        # Child sessions stamp dream.subagent_name — forge hooks skip when set.
+        from dream.subagents._inline_executor import SUBAGENT_NAME_METADATA_KEY
+
+        session_subagent = self.context_metadata.get(SUBAGENT_NAME_METADATA_KEY)
+        spawn_label = str(
+            tool_input.get("subagent_type") or tool_input.get("name") or ""
+        )
         if name == "spawn_subagent":
             await self.hook_executor.fire(
                 HookEvent.SUBAGENT_START,
                 {
                     "tool_name": name,
-                    "subagent_name": str(tool_input.get("name", "")),
+                    "subagent_name": spawn_label,
                     "tool_input": tool_input,
                 },
             )
 
         pre = await self.hook_executor.fire(
-            HookEvent.PRE_TOOL_USE, {"tool_name": name, "tool_input": tool_input}
+            HookEvent.PRE_TOOL_USE,
+            {
+                "tool_name": name,
+                "tool_input": tool_input,
+                "subagent_name": session_subagent,
+            },
         )
         if pre.blocked:
             feedback = pre.feedback or "blocked by hook"
@@ -161,7 +173,7 @@ class EngineToolDispatcher:
                 HookEvent.SUBAGENT_STOP,
                 {
                     "tool_name": name,
-                    "subagent_name": str(tool_input.get("name", "")),
+                    "subagent_name": spawn_label,
                     "is_error": is_error,
                     "result_summary": content[:_RESULT_SUMMARY_MAX_CHARS],
                     "mode": "sync",

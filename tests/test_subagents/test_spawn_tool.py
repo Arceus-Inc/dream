@@ -47,12 +47,13 @@ def _simple_subagent_set() -> SubagentSet:
 
 
 class TestSpawnSubagentTool:
-    async def test_no_subagent_set(self) -> None:
+    async def test_no_subagent_set_rejects_specialist(self) -> None:
         tool = SpawnSubagentTool()
         ctx = _make_ctx(subagent_set=None)
         result = await tool.execute({"name": "reviewer", "prompt": "review this"}, ctx)
         assert result.is_error
-        assert "configured" in result.content
+        assert "not found" in result.content
+        assert "generalPurpose" in result.content
 
     async def test_unknown_subagent_name(self) -> None:
         tool = SpawnSubagentTool()
@@ -61,6 +62,7 @@ class TestSpawnSubagentTool:
         assert result.is_error
         assert "not found" in result.content
         assert "reviewer" in result.content
+        assert "generalPurpose" in result.content
 
     async def test_no_harness_returns_error(self) -> None:
         """Without a harness wired, the tool returns a structured error."""
@@ -88,7 +90,7 @@ class TestSpawnSubagentTool:
         )
 
         with patch(
-            "dream.subagents._inline_executor.run_subagent_inline",
+            "dream.subagents._delegate.run_subagent_inline",
             return_value=mock_result,
         ):
             ctx = _make_ctx(
@@ -123,7 +125,7 @@ class TestSpawnSubagentTool:
         mock_result = SubagentResult(name="reviewer", output="ok", success=True)
 
         with patch(
-            "dream.subagents._inline_executor.run_subagent_inline",
+            "dream.subagents._delegate.run_subagent_inline",
             return_value=mock_result,
         ):
             # Session 1: spend the whole cap, then the next spawn is denied.
