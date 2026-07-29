@@ -122,20 +122,9 @@ class EngineToolDispatcher:
         tool_input = dict(input)
         # Child sessions stamp dream.subagent_name — forge hooks skip when set.
         from dream.subagents._inline_executor import SUBAGENT_NAME_METADATA_KEY
+        from dream.tools.builtin.spawn_subagent import spawn_label_from_input
 
         session_subagent = self.context_metadata.get(SUBAGENT_NAME_METADATA_KEY)
-        spawn_label = str(
-            tool_input.get("subagent_type") or tool_input.get("name") or ""
-        )
-        if name == "spawn_subagent":
-            await self.hook_executor.fire(
-                HookEvent.SUBAGENT_START,
-                {
-                    "tool_name": name,
-                    "subagent_name": spawn_label,
-                    "tool_input": tool_input,
-                },
-            )
 
         pre = await self.hook_executor.fire(
             HookEvent.PRE_TOOL_USE,
@@ -156,6 +145,17 @@ class EngineToolDispatcher:
             )
         if pre.replacement_input is not None:
             tool_input = dict(pre.replacement_input)
+
+        spawn_label = spawn_label_from_input(tool_input)
+        if name == "spawn_subagent":
+            await self.hook_executor.fire(
+                HookEvent.SUBAGENT_START,
+                {
+                    "tool_name": name,
+                    "subagent_name": spawn_label,
+                    "tool_input": tool_input,
+                },
+            )
 
         content, is_error = await self._dispatch_inner(name, tool_input)
         post = await self.hook_executor.fire(

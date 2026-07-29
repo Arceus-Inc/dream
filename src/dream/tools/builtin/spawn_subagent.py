@@ -10,6 +10,8 @@ spawn_subagent(subagent_type, goal, context?) -> SubagentResult
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
@@ -34,6 +36,13 @@ HARNESS_KEY = "dream.harness"
 SPAWN_COUNT_KEY = "dream.subagent_spawn_count"
 
 MAX_SPAWNS_PER_BEAT = 10
+
+
+class SpawnJoinMode(StrEnum):
+    INLINE = "inline"
+    DELEGATE = "delegate"
+
+
 GENERAL_PURPOSE = "generalPurpose"
 
 _DEFAULT_GP_TOOLS = (
@@ -50,6 +59,29 @@ def spawn_type_names(subagent_set: SubagentSet | None) -> list[str]:
     """Enum values for this beat: generalPurpose first, then Spec names."""
     names = list(subagent_set.names()) if subagent_set else []
     return [GENERAL_PURPOSE, *names]
+
+
+def spawn_label_from_input(tool_input: Mapping[str, Any]) -> str:
+    """Resolved spawn type/name from tool args (post-hook replacement)."""
+    return str(tool_input.get("subagent_type") or tool_input.get("name") or "").strip()
+
+
+def resolve_spawn_goal(goal: str | None, prompt: str | None) -> str:
+    """Prefer non-blank goal; fall back to legacy prompt."""
+    return (goal or "").strip() or (prompt or "").strip()
+
+
+def unknown_subagent_result(type_name: str, available: list[str]) -> ToolResult:
+    """Fail-closed when subagent_type is not in the beat enum."""
+    return ToolResult(
+        content=f"Subagent {type_name!r} not found. Available subagents: {available}",
+        is_error=True,
+        metadata={
+            "root_cause": f"unknown_subagent: {type_name}",
+            "safe_retry": f"Use one of: {available}",
+            "stop_condition": "The requested subagent does not exist.",
+        },
+    )
 
 
 def general_purpose_agent(parent_tools: frozenset[str] | None) -> Subagent:
@@ -174,36 +206,15 @@ class SpawnSubagentTool(BaseTool):
 
         # Allow GP even when the Spec set is empty/missing (builtins-only session).
         if type_name != GENERAL_PURPOSE and (subagent_set is None or not subagent_set):
-            return ToolResult(
-                content=(
-                    f"Subagent {type_name!r} not found. Available subagents: {available}"
-                ),
-                is_error=True,
-                metadata={
-                    "root_cause": f"unknown_subagent: {type_name}",
-                    "safe_retry": f"Use one of: {available}",
-                    "stop_condition": "The requested subagent does not exist.",
-                },
-            )
+            return unknown_subagent_result(type_name, available)
 
         parent_tools: frozenset[str] | None = ctx.metadata.get(PARENT_TOOLS_KEY)
         if type_name == GENERAL_PURPOSE:
             agent = general_purpose_agent(parent_tools)
         else:
-            assert subagent_set is not None
-            agent = subagent_set.get(type_name)
+            agent = subagent_set.get(type_name) if subagent_set is not None else None
             if agent is None:
-                return ToolResult(
-                    content=(
-                        f"Subagent {type_name!r} not found. Available subagents: {available}"
-                    ),
-                    is_error=True,
-                    metadata={
-                        "root_cause": f"unknown_subagent: {type_name}",
-                        "safe_retry": f"Use one of: {available}",
-                        "stop_condition": "The requested subagent does not exist.",
-                    },
-                )
+                return unknown_subagent_result(type_name, available)
 
         counter: list[int] | None = ctx.metadata.get(SPAWN_COUNT_KEY)
         if counter is None:
@@ -236,7 +247,7 @@ class SpawnSubagentTool(BaseTool):
                 },
             )
 
-        goal = (args.goal or args.prompt or "").strip()
+        goal = resolve_spawn_goal(args.goal, args.prompt)
         if not goal:
             return ToolResult(
                 content="spawn_subagent requires goal or prompt.",
@@ -271,8 +282,12 @@ class SpawnSubagentTool(BaseTool):
                 "parent waited for this child.]"
             )
 
-        mode = "inline" if type_name in INLINE_SUBAGENTS else "delegate"
-        if mode == "inline":
+        mode = (
+            SpawnJoinMode.INLINE
+            if type_name in INLINE_SUBAGENTS
+            else SpawnJoinMode.DELEGATE
+        )
+        if mode == SpawnJoinMode.INLINE:
             result = await run_subagent_inline(
                 agent,
                 prompt=goal if not args.context else f"{goal}\n\nCONTEXT:\n{args.context}",
@@ -342,7 +357,7 @@ class SpawnSubagentTool(BaseTool):
                 "tool_errors": result.tool_errors,
                 "elapsed_seconds": round(elapsed, 2),
                 "output_warning": result.warning,
-                "mode": mode,
+                "mode": str(mode),
                 "background_forced_sync": args.background,
                 "artifacts": [],
                 "next_actions": (),

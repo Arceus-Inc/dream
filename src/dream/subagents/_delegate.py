@@ -6,6 +6,7 @@ not the parent transcript. Parent sees a budgeted summary (Hermes ``_apply_summa
 
 from __future__ import annotations
 
+import re
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -64,7 +65,9 @@ def build_child_prompt(
 
 def apply_summary_budget(text: str, *, max_chars: int = DEFAULT_MAX_SUMMARY_CHARS) -> str:
     """Truncate to ``max_chars`` with head+tail keep (Hermes summary budget)."""
-    if max_chars < 1 or len(text) <= max_chars:
+    if max_chars < 1:
+        max_chars = DEFAULT_MAX_SUMMARY_CHARS
+    if len(text) <= max_chars:
         return text
     keep = max(max_chars // 2, min(_MIN_SUMMARY_CHARS, max_chars // 2))
     # Ensure head+tail+marker fit.
@@ -75,6 +78,22 @@ def apply_summary_budget(text: str, *, max_chars: int = DEFAULT_MAX_SUMMARY_CHAR
     head = budget // 2
     tail = budget - head
     return text[:head] + marker + text[-tail:]
+
+
+def _safe_spill_basename(agent_name: str) -> str:
+    """Sanitize agent name for spill filenames (no path separators)."""
+    safe = re.sub(r"[^\w\-]+", "_", agent_name.strip())[:64]
+    return safe or "subagent"
+
+
+def _write_spill_file(spill_dir: Path, agent_name: str, full: str) -> Path:
+    """Write full summary under spill_dir; reject path traversal."""
+    spill_dir = spill_dir.resolve()
+    spill_dir.mkdir(parents=True, exist_ok=True)
+    spill_path = (spill_dir / f"{_safe_spill_basename(agent_name)}-{uuid.uuid4().hex[:8]}.txt").resolve()
+    spill_path.relative_to(spill_dir)
+    spill_path.write_text(full, encoding="utf-8")
+    return spill_path
 
 
 async def run_subagent_delegate(
@@ -116,10 +135,9 @@ async def run_subagent_delegate(
 
     note = ""
     if working_dir is not None:
-        spill_dir = Path(working_dir) / ".harness" / "delegation"
-        spill_dir.mkdir(parents=True, exist_ok=True)
-        spill_path = spill_dir / f"{agent.name}-{uuid.uuid4().hex[:8]}.txt"
-        spill_path.write_text(full, encoding="utf-8")
+        spill_path = _write_spill_file(
+            Path(working_dir) / ".harness" / "delegation", agent.name, full
+        )
         note = f"\n\n[full summary spilled to {spill_path}]"
 
     return SubagentResult(

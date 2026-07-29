@@ -130,3 +130,19 @@ async def test_general_purpose_works_with_empty_set() -> None:
             _ctx(SubagentSet(), harness=AsyncMock()),
         )
     assert not result.is_error
+
+
+async def test_whitespace_goal_falls_back_to_prompt() -> None:
+    tool = SpawnSubagentTool()
+    mock_result = SubagentResult(name=GENERAL_PURPOSE, output="done", success=True)
+    with patch(
+        "dream.subagents._delegate.run_subagent_delegate",
+        new_callable=AsyncMock,
+        return_value=mock_result,
+    ) as mock_delegate:
+        result = await tool.execute(
+            {"subagent_type": GENERAL_PURPOSE, "goal": "   ", "prompt": "real task"},
+            _ctx(SubagentSet(), harness=AsyncMock()),
+        )
+    assert not result.is_error
+    assert mock_delegate.await_args.kwargs["goal"] == "real task"

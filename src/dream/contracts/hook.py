@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, TypedDict, runtime_checkable
 
 
 class HookEvent(StrEnum):
@@ -25,6 +25,33 @@ class HookEvent(StrEnum):
     SUBAGENT_STOP = "subagent_stop"
     STOP = "stop"
     NOTIFICATION = "notification"
+
+
+class PreToolPayload(TypedDict, total=False):
+    """PRE_TOOL_USE / SUBAGENT_* hook payload shape."""
+
+    tool_name: str
+    tool_input: dict[str, Any]
+    subagent_name: str | None
+    is_error: bool
+    result_summary: str
+    mode: str
+
+
+class StopPayload(TypedDict, total=False):
+    """STOP hook payload shape."""
+
+    session_id: str
+    phase: str
+    verify_nudges: int
+    role: str
+
+
+class UserPromptPayload(TypedDict, total=False):
+    """USER_PROMPT_SUBMIT hook payload shape."""
+
+    session_id: str
+    prompt: str
 
 
 @dataclass(frozen=True)

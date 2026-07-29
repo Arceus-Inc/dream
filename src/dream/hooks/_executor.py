@@ -138,7 +138,7 @@ class HookExecutor:
                         feedback=result.continue_message,
                     )
 
-            if result.replacement_input is not None and replacement_input is None:
+            if result.replacement_input and replacement_input is None:
                 replacement_input = dict(result.replacement_input)
             if result.replacement_result and replacement_result is None:
                 replacement_result = result.replacement_result

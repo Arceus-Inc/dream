@@ -83,7 +83,7 @@ from dream.engine._records import (
 )
 from dream.engine._reviewer import ReviewerConfig
 from dream.engine._transitions import TransitionBus, TransitionEvent
-from dream.hooks import HookExecutor
+from dream.hooks import FireOutcome, HookExecutor
 from dream.observability._events import state_transition_attrs, validator_finding_attrs
 from dream.observability._tracer import NoopTracer, Tracer
 from dream.permissions import SessionLimiter
@@ -266,7 +266,7 @@ async def _fire_lifecycle(
 
 async def _fire_event(
     executor: HookExecutor | None, event: HookEvent, payload: dict[str, Any]
-) -> None:
+) -> FireOutcome:
     """Fire a spec-13 hook carrying a richer payload than the bare session id.
 
     Same observer-only, crash-isolated contract as :func:`_fire_lifecycle`
@@ -275,8 +275,8 @@ async def _fire_event(
     prompt text or the compaction token deltas.
     """
     if executor is None:
-        return
-    await executor.fire(event, payload)
+        return FireOutcome()
+    return await executor.fire(event, payload)
 
 
 def _session_transition(src: SessionState, dst: SessionState) -> TransitionEvent:
@@ -687,11 +687,17 @@ async def run_session(
     # right after SESSION_START. Payload carries the prompt text so a hook can
     # log / gate / annotate; observer-only, so it can't rewrite the prompt.
     if user_messages:
-        await _fire_event(
+        submit_outcome = await _fire_event(
             config.hook_executor,
             HookEvent.USER_PROMPT_SUBMIT,
             {"session_id": config.session_id, "prompt": user_messages[0].text},
         )
+        if submit_outcome.inject_context:
+            first = user_messages[0]
+            first.content = [
+                *first.content,
+                TextBlock(text="\n\n" + submit_outcome.inject_context),
+            ]
 
     # Mirror every FSM transition into the trace (Spec 12a). Registered before
     # the first ``_fire`` so the starting->orienting edge is captured too; a
@@ -802,7 +808,7 @@ async def run_session(
                         role="user",
                         content=[TextBlock(text=stop_outcome.continue_message)],
                     )
-                    transcript.append(nudge)
+                    # Queue only — _select_turn_driver appends to transcript once.
                     user_messages = [*user_messages, nudge]
                     continue
                 stop_fired_for_seal = True
