@@ -7,29 +7,43 @@ Operators override per-field via ``.harness/roles/{role}.toml`` (see
   so any accidental side effect is deflected to an explicit plan output.
 - generator: ``tools=None`` (= all registered tools, intersected with the
   active sandbox tier at #13); ``permission_mode="default"``.
-- evaluator: read-only triplet (no writers, no shell); contract-named
-  verifiers may be added at spawn time as an explicit list, since #12 owns
-  the verifier registry.
+- evaluator: reads + ``bash`` for in-session verify (Hermes/CC shape); no
+  writers and no ``spawn_subagent``. No harness oracle sidecar.
 """
 
 from __future__ import annotations
 
 from dream.roles._manifest import RoleManifest, RoleName
 
-# The read-only triplet — every read tool a planner/evaluator may use without
-# any tier requirement above READ_ONLY. Tools absent from the registry are
-# silently dropped by ``compute_minimum_toolset``, so listing extras here
-# (e.g. ``query_logs`` from #12) is safe before those tools land.
+# The read-only triplet — every read tool a planner may use without any tier
+# requirement above READ_ONLY. Tools absent from the registry are silently
+# dropped by ``compute_minimum_toolset``, so listing extras here (e.g.
+# ``query_logs`` from #12) is safe before those tools land.
 _READ_ONLY_TRIPLET: tuple[str, ...] = (
     "read_file",
     "git",
     "query_logs",
 )
 
+# Evaluator: same reads + bash so verification runs inside the judge session.
+_EVALUATOR_TOOLS: tuple[str, ...] = (
+    "read_file",
+    "git",
+    "query_logs",
+    "bash",
+)
+
 _WRITERS_DENIED: tuple[str, ...] = (
     "write_file",
     "edit_file",
     "bash",
+)
+
+# Writers only — spawn_subagent is absent from the default registry (added when
+# subagents are enabled); keep it out of the allow-list via tools= explicit.
+_EVALUATOR_DENIED: tuple[str, ...] = (
+    "write_file",
+    "edit_file",
 )
 
 
@@ -69,13 +83,14 @@ _EVALUATOR = RoleManifest(
     name="evaluator",
     description="Verifies the generator's output against the sprint contract.",
     system_prompt=(
-        "You are the evaluator. You may read code, logs, and prior artefacts, "
-        "and run the contract-named verifiers. You may not modify source files. "
-        "Produce a verification report with pass/fail per acceptance criterion."
+        "You are the evaluator. Read code and artefacts, run verification via "
+        "bash yourself, and judge the contract. You may not modify source files "
+        "or spawn subagents. Produce a verification report with pass/fail per "
+        "acceptance criterion."
     ),
-    tools=_READ_ONLY_TRIPLET,
-    disallowed_tools=_WRITERS_DENIED,
-    permission_mode="plan",
+    tools=_EVALUATOR_TOOLS,
+    disallowed_tools=_EVALUATOR_DENIED,
+    permission_mode="default",
     effort="medium",
     color="magenta",
 )

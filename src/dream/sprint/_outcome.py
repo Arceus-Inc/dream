@@ -5,9 +5,10 @@ Spec 10 §"Generator + evaluator loop" step 6:
 - ``pass``           → step transitions to ``done`` (and advances).
 - ``needs-changes``  → step stays ``in_progress``; evaluator notes are
   accumulated on the step so the generator retries with context rather
-  than an identical prompt.  After ``NEEDS_CHANGES_LIMIT`` consecutive
-  rejections the step transitions to ``blocked`` instead, preventing the
-  sprint budget from being burned on a structurally blocked step.
+  than an identical prompt.  The runner stops the *current* ``run_task``
+  after ``NEEDS_CHANGES_LIMIT`` consecutive rejections in that invocation
+  (see :func:`dream.runner.run_task`) so sprint budget is not burned —
+  without durable-``blocked``, so a later RESUME beat can continue.
 - ``fail``           → step transitions to ``blocked``; evaluator notes
   are also carried onto the step (the blocked reason is then readable
   without opening the tech-debt file); a tech-debt entry is appended to
@@ -21,7 +22,6 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
 
 from dream.planner import LedgerStep, PlannerLedger
 from dream.utils.file_lock import exclusive_file_lock
@@ -31,11 +31,11 @@ from ._contract import tech_debt_path
 from ._evaluation import EvaluationRecord
 from ._ledger_ops import replace_step_by_id
 
-__all__ = ["append_tech_debt", "apply_outcome"]
+__all__ = ["NEEDS_CHANGES_LIMIT", "append_tech_debt", "apply_outcome"]
 
-# Maximum number of ``needs-changes`` evaluations before a step is escalated
-# to ``blocked`` to avoid burning the entire sprint budget on a structurally
-# impossible step.
+# Max consecutive ``needs-changes`` in one ``run_task`` before the runner
+# stops that invocation. Durable step status stays ``in_progress`` so an
+# outer RESUME can continue; only ``fail`` durable-blocks a step.
 NEEDS_CHANGES_LIMIT: int = 2
 
 
@@ -62,6 +62,7 @@ def apply_outcome(ledger: PlannerLedger, record: EvaluationRecord) -> PlannerLed
 
     Raises ``KeyError`` if the step id isn't present in the ledger.
     """
+
     def _transition(step: LedgerStep) -> LedgerStep:
         if step.status != "in_progress":
             raise ValueError(
@@ -78,17 +79,15 @@ def apply_outcome(ledger: PlannerLedger, record: EvaluationRecord) -> PlannerLed
                 step.notes, record.notes, record.sprint_number
             )
             return replace(step, status="blocked", notes=new_notes)
-        # needs-changes: accumulate notes and count; escalate when limit hit.
+        # needs-changes: stay in_progress; accumulate notes + strike count.
+        # Stopping the current run_task is the runner's job (NEEDS_CHANGES_LIMIT).
         new_count = step.needs_changes_count + 1
         new_notes = _append_evaluator_notes(
             step.notes, record.notes, record.sprint_number
         )
-        new_status: Literal["blocked", "in_progress"] = (
-            "blocked" if new_count >= NEEDS_CHANGES_LIMIT else "in_progress"
-        )
         return replace(
             step,
-            status=new_status,
+            status="in_progress",
             notes=new_notes,
             needs_changes_count=new_count,
         )

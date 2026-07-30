@@ -1,7 +1,7 @@
 """Spec 10 slice A — bundled default role manifests.
 
 Pins the *content* of the three canonical roles: planner is read-only (no
-writers, no shell), evaluator is read-only + may run named verifiers, and
+writers, no shell), evaluator has reads + bash for in-session verify, and
 generator is the only role allowed to use ``tools: None`` (= "all,
 intersected with the sandbox tier at #13").
 """
@@ -67,22 +67,31 @@ def test_generator_default_permission_mode_is_default() -> None:
     assert m.permission_mode == "default"
 
 
-# --- evaluator: read-only triplet ------------------------------------------
+# --- evaluator: reads + bash verify; no writers / spawn ---------------------
 
 
-def test_evaluator_default_tools_are_read_only_plus_no_writers() -> None:
+def test_evaluator_default_tools_include_bash_for_in_session_verify() -> None:
     m = default_role_manifest("evaluator")
     assert m.tools is not None
     tools = set(m.tools)
     assert "read_file" in tools
+    assert "bash" in tools
     assert "write_file" not in tools
     assert "edit_file" not in tools
-    assert "bash" not in tools
+    assert "spawn_subagent" not in tools
 
 
-def test_evaluator_default_disallowed_lists_writers() -> None:
+def test_evaluator_default_disallowed_lists_writers_not_bash() -> None:
     m = default_role_manifest("evaluator")
-    assert {"write_file", "edit_file", "bash"} <= set(m.disallowed_tools)
+    disallowed = set(m.disallowed_tools)
+    assert {"write_file", "edit_file"} <= disallowed
+    assert "bash" not in disallowed
+
+
+def test_evaluator_default_permission_mode_allows_tool_execution() -> None:
+    # plan mode is for the planner; evaluator must execute bash verify steps.
+    m = default_role_manifest("evaluator")
+    assert m.permission_mode == "default"
 
 
 # --- registry alignment (names must match real registered tools) ------------
@@ -115,3 +124,5 @@ def test_default_manifest_tool_names_exist_in_default_registry() -> None:
             m, sandbox_tier=SandboxTier.REPO_WRITE, declarations=declarations
         )
         assert "read_file" in effective, f"{role} cannot read files: {sorted(effective)}"
+        if role == "evaluator":
+            assert "bash" in effective, f"evaluator cannot verify via bash: {sorted(effective)}"

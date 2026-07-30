@@ -510,8 +510,7 @@ async def test_intent_includes_verification_steps() -> None:
         1,
         _contract(
             verification_steps=(
-                # echo keeps the oracle green + fast while the prompt still
-                # carries the literal step text the assertions pin.
+                # echo is a cheap listed command; the evaluator runs it via bash.
                 {"kind": "test", "command": "echo pytest tests/foo"},
                 {"kind": "eval", "command": "echo axe http://localhost"},
             )
@@ -524,21 +523,19 @@ async def test_intent_includes_verification_steps() -> None:
     assert "axe http://localhost" in prompt
 
 
-async def test_intent_tells_the_evaluator_it_has_no_shell_and_judges_on_evidence() -> None:
-    """The evaluator is the read-only triplet (roles/_defaults: no writers, no shell). Verification
-    commands are run *for* it by the harness oracle. The prompt must say so, so the model judges each
-    criterion from readable code + oracle evidence and does NOT withhold a ``pass`` merely because it
-    could not personally execute a command (the failure mode that strands correct work on needs-changes).
-    """
+async def test_intent_tells_the_evaluator_to_run_verify_via_bash() -> None:
+    """No harness oracle: the evaluator runs verification itself (Hermes/CC shape)."""
     harness, streamer = _harness_with_reply(_verdict())
     head = make_evaluator_head(harness)
 
     await head("task-001", 1, _contract(), _step())
 
     prompt = streamer.last_user_text.lower()
-    assert "no shell" in prompt  # the evaluator's own capability is stated
-    assert "run for you" in prompt  # the oracle runs verification commands on its behalf
-    assert "withhold" in prompt  # … and it must not withhold a pass for inability to execute
+    assert "bash" in prompt or "run" in prompt
+    assert "verification steps" in prompt or "discover" in prompt
+    assert "oracle" not in prompt
+    assert "run for you" not in prompt
+    assert "no shell" not in prompt
 
 
 async def test_intent_explains_verdict_envelope() -> None:
@@ -555,6 +552,48 @@ async def test_intent_explains_verdict_envelope() -> None:
     assert "pass" in prompt
     assert "needs-changes" in prompt
     assert "fail" in prompt
+
+
+async def test_intent_teaches_durable_outcome_semantics() -> None:
+    """Outcome vocabulary alone is not enough — the model must know when
+    durable-``fail`` (blocks the step) vs ``needs-changes`` (repair) applies.
+
+    First-principles harness contract: repairable red verification stays
+    ``needs-changes`` so the generator can continue; ``fail`` is only for
+    no honest in-tree repair path. No ticket-specific hardcoding.
+    """
+    harness, streamer = _harness_with_reply(_verdict())
+    head = make_evaluator_head(harness)
+
+    await head("task-001", 1, _contract(), _step())
+
+    prompt = streamer.last_user_text.lower()
+    assert "needs-changes" in prompt
+    assert "fail" in prompt
+    # Repairable work stays in the loop.
+    assert "repair" in prompt or "in-tree" in prompt or "generator can fix" in prompt
+    # Durable fail is reserved for non-repairable cases.
+    assert "no honest" in prompt or "no repair" in prompt or "irrecoverable" in prompt or "abandon" in prompt
+    # Prefer needs-changes when concrete items exist.
+    assert "prefer" in prompt and "needs-changes" in prompt
+
+
+async def test_intent_rejects_weaker_substitute_than_task_intent() -> None:
+    """Done-looking work that weakens the Intent is not pass.
+
+    Embed the task Intent and require fidelity to it (domain-agnostic).
+    """
+    harness, streamer = _harness_with_reply(_verdict())
+    head = make_evaluator_head(
+        harness,
+        task_intent="Ship a one-page brief with audience, offer, and a single CTA.",
+    )
+
+    await head("task-001", 1, _contract(), _step())
+
+    prompt = streamer.last_user_text.lower()
+    assert "audience, offer, and a single cta" in prompt or "task intent" in prompt
+    assert "weaker" in prompt or "weaken" in prompt or "fidelity" in prompt or "source of truth" in prompt
 
 
 # --------------------------------------------------------------------------

@@ -24,6 +24,9 @@ with no parseable JSON object at all parses into
 Unlike the generator head, ``contract`` is always present here —
 ``run_task`` skips the evaluator entirely when it is disabled, so this
 head never sees ``None``.
+
+Verification runs **inside** the evaluator session via ``bash`` (Hermes /
+Claude Code shape). There is no harness ``run_oracle`` sidecar.
 """
 
 from __future__ import annotations
@@ -31,12 +34,10 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Awaitable, Callable
-from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from dream.runner._head_retry import ask_until_parsed
-from dream.runner._oracle import OracleResult, run_oracle
 from dream.sprint import EvaluationRecord
 
 if TYPE_CHECKING:
@@ -52,9 +53,8 @@ __all__ = [
 ]
 
 
-# v2: the oracle block (spec 15 P3) changed the prompt and added the
-# oracle-red → needs-changes downgrade; v1 verdicts judged without evidence.
-DEFAULT_EVALUATOR_VERSION = "head-v2"
+# v3: in-session bash verify; oracle sidecar removed (Hermes/CC-aligned).
+DEFAULT_EVALUATOR_VERSION = "head-v3"
 
 
 class EvaluatorHeadParseError(RuntimeError):
@@ -76,6 +76,7 @@ _VERDICT_EXAMPLE = """\
 EVALUATOR_INSTRUCTION_TEMPLATE = (
     "You are verifying sprint {sprint_number} of task {task_id}.\n"
     "\n"
+    "{intent_block}"
     "{contract_block}\n"
     "\n"
     "STEP UNDER REVIEW\n"
@@ -84,13 +85,33 @@ EVALUATOR_INSTRUCTION_TEMPLATE = (
     "\n"
     "WHAT TO DO\n"
     "----------\n"
-    "Read the changed files and decide whether every acceptance criterion holds.\n"
-    "You are read-only and have no shell of your own: any verification commands are\n"
-    "run for you by the harness, and their results appear in the ORACLE section\n"
-    "below (absent that section, no commands were configured). Judge each criterion\n"
-    "from the code and artefacts you can read plus any oracle evidence. Do NOT\n"
-    "withhold a 'pass' merely because you could not personally run a command — if the\n"
-    "code satisfies the criteria and no oracle failure is shown, return 'pass'.\n"
+    "Read the changed files. You have bash: run verification yourself in this session.\n"
+    "- If VERIFICATION STEPS are listed above: run each command via bash.\n"
+    "- If none: discover this repo's test/build gate from manifests/lockfiles and run it\n"
+    "  (stack-agnostic — do not assume pytest or any one stack).\n"
+    "Judge every acceptance criterion and the REVIEW RUBRIC (if present) from the\n"
+    "artefacts you read AND the tool output you just produced. outcome=pass only when\n"
+    "those gates exited 0 (or the rubric honestly allows absence for report-only work).\n"
+    "Never invent green results. Do not modify source files.\n"
+    "\n"
+    "INTENT FIDELITY\n"
+    "---------------\n"
+    "TASK INTENT is the source of truth. Pass requires the deliverable to meet the\n"
+    "Intent as stated — not a weaker or narrower substitute that is easier to mark\n"
+    "done. Verification that only covers a reduced contract is still needs-changes\n"
+    "(or fail if there is no honest repair path).\n"
+    "\n"
+    "OUTCOME SEMANTICS (durable ledger — choose carefully)\n"
+    "----------------------------------------------------\n"
+    "- pass: every acceptance criterion and the rubric hold; verification exited 0;\n"
+    "  and the work matches TASK INTENT (no weakened substitute).\n"
+    "- needs-changes: verification is red OR criteria/Intent fidelity incomplete, AND\n"
+    "  you can list concrete items the generator can fix in-tree on the next sprint.\n"
+    "  Prefer needs-changes whenever useful repair items exist — that keeps the step\n"
+    "  in_progress so repair can continue.\n"
+    "- fail: no honest repair path (abandoned / impossible / wrong problem / unsafe\n"
+    "  to continue). fail durable-blocks the step; do not use it for ordinary red\n"
+    "  verification or missing criteria you can still describe as items.\n"
     "\n"
     "OUTPUT FORMAT\n"
     "-------------\n"
@@ -138,7 +159,7 @@ def _format_contract_block(contract: SprintContract) -> str:
     if contract.verification_steps:
         parts += [
             "",
-            "VERIFICATION STEPS  (run these against the generator's output)",
+            "VERIFICATION STEPS  (run these yourself via bash against the generator's output)",
             "-" * 60,
         ]
         for vs in contract.verification_steps:
@@ -157,21 +178,32 @@ def _format_contract_block(contract: SprintContract) -> str:
     return "\n".join(parts)
 
 
+def _format_task_intent_block(task_intent: str) -> str:
+    """Render TASK INTENT for the evaluator prompt (empty when unset)."""
+    text = task_intent.strip()
+    if not text:
+        return ""
+    return (
+        "TASK INTENT  (source of truth — do not accept a weaker substitute)\n"
+        "------------------------------------------------------------------\n"
+        f"{text}\n"
+        "\n"
+    )
+
+
 def _build_intent(
     *,
     task_id: str,
     sprint_number: int,
     contract: SprintContract,
     step: LedgerStep,
-    oracle: OracleResult | None = None,
+    task_intent: str = "",
 ) -> str:
-    contract_block = _format_contract_block(contract)
-    if oracle is not None:
-        contract_block = f"{contract_block}\n\n{oracle.render_block()}"
     return EVALUATOR_INSTRUCTION_TEMPLATE.format(
         task_id=task_id,
         sprint_number=sprint_number,
-        contract_block=contract_block,
+        intent_block=_format_task_intent_block(task_intent),
+        contract_block=_format_contract_block(contract),
         step_id=step.id,
         step_description=step.description,
         example=_VERDICT_EXAMPLE,
@@ -273,25 +305,23 @@ def _coerce_record(
 def make_evaluator_head(
     harness: Harness,
     *,
+    task_intent: str = "",
     harness_dir: Path | None = None,
     evaluator_version: str = DEFAULT_EVALUATOR_VERSION,
     observer: RunTaskObserver | None = None,
-    worktree_root: Path | None = None,
-    oracle_timeout_seconds: float = 300.0,
+    worktree_root: Path | None = None,  # kept for call-site compat; unused (no oracle)
+    oracle_timeout_seconds: float = 300.0,  # kept for call-site compat; unused
 ) -> Callable[
     [str, int, SprintContract, LedgerStep],
     Awaitable[EvaluationRecord],
 ]:
     """Build an :data:`EvaluatorRun` driven by :meth:`Harness.run_role`.
 
-    The returned coroutine first executes the contract's verification
-    steps as real subprocesses (the oracle, spec 15 P3 — run in
-    ``worktree_root``, defaulting to the harness working dir), injects
-    the structured results into the verdict prompt, then asks the
-    evaluator LLM for a strict ``<verdict>{JSON}</verdict>`` envelope.
-    The evaluator judges *evidence*: when verification steps exist, a
-    model ``pass`` over a red oracle is downgraded to ``needs-changes``
-    with the failing commands as carry items.
+    The evaluator LLM session has ``bash`` and runs verification itself.
+    There is no pre-session ``run_oracle`` subprocess.
+
+    ``task_intent`` is the original task Intent (source of truth). When set,
+    it is embedded so pass cannot rest on a weaker substitute than the Intent.
 
     ``harness_dir`` is forwarded so per-task role overlays in
     ``{harness_dir}/roles/evaluator.toml`` are honoured.
@@ -299,10 +329,11 @@ def make_evaluator_head(
     ``evaluator_version`` is stamped onto every record this head
     produces; bump it when the prompt or parser changes in a way that
     invalidates prior verdicts.
+
+    ``worktree_root`` / ``oracle_timeout_seconds`` are accepted but ignored
+    (ponytail: keep call sites green; remove in a later cleanup).
     """
-    oracle_cwd = (
-        worktree_root if worktree_root is not None else harness.config.working_dir
-    )
+    del worktree_root, oracle_timeout_seconds
 
     async def evaluator(
         task_id: str,
@@ -310,16 +341,14 @@ def make_evaluator_head(
         contract: SprintContract,
         step: LedgerStep,
     ) -> EvaluationRecord:
-        oracle = await run_oracle(
-            contract, cwd=oracle_cwd, timeout_seconds=oracle_timeout_seconds
-        )
         prompt = _build_intent(
             task_id=task_id,
             sprint_number=sprint_number,
             contract=contract,
             step=step,
-            oracle=oracle,
+            task_intent=task_intent,
         )
+
         async def _ask(p: str) -> Any:
             return await harness.run_role(
                 "evaluator", p, harness_dir=harness_dir, observer=observer
@@ -346,31 +375,12 @@ def make_evaluator_head(
                 data=data,
             )
 
-        record = await ask_until_parsed(
+        return await ask_until_parsed(
             _ask,
             _parse,
             prompt=prompt,
             parse_error=EvaluatorHeadParseError,
             on_retry=_on_retry,
         )
-        return _enforce_oracle(record, oracle)
 
     return evaluator
-
-
-def _enforce_oracle(
-    record: EvaluationRecord, oracle: OracleResult | None
-) -> EvaluationRecord:
-    """The hard gate: a red oracle invalidates a model ``pass``.
-
-    On any non-green oracle the failing commands ride along as carry
-    items so the generator sees the concrete failures next sprint.
-    """
-    if oracle is None or oracle.green:
-        return record
-    items = record.items + oracle.failure_items()
-    if record.outcome != "pass":
-        return replace(record, items=items)
-    note = "oracle override: model said pass but executed verification steps failed"
-    notes = f"{record.notes} [{note}]" if record.notes else note
-    return replace(record, outcome="needs-changes", items=items, notes=notes)

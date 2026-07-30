@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from dream.planner import PlannerCallable
     from dream.roles import RoleManifest, RoleName
     from dream.runner._observer import RunTaskObserver
+    from dream.runner._plan_admission import PlanAdmission
     from dream.runner._role_session import RunRoleResult
     from dream.runner._run import (
         EvaluatorRun,
@@ -228,6 +229,7 @@ class Harness:
         goal_for_step: SprintGoalProvider | None = None,
         observer: RunTaskObserver | None = None,
         rubric: str | None = None,
+        plan_admission: PlanAdmission | None = None,
     ) -> RunTaskResult:
         """Run an end-to-end task: planner → bounded sprint loop.
 
@@ -297,6 +299,8 @@ class Harness:
             kwargs["goal_for_step"] = goal_for_step
         if rubric is not None:
             kwargs["rubric"] = rubric
+        if plan_admission is not None:
+            kwargs["plan_admission"] = plan_admission
         result = await _run_task(**kwargs)
         return _replace(result, usage_by_model=meter.usage_by_model)
 
@@ -352,7 +356,7 @@ class Harness:
             planner = make_planner_head(self, harness_dir=harness_dir, observer=observer)
         if generator_execute is None:
             generator_execute = make_generator_head(
-                self, harness_dir=harness_dir, observer=observer
+                self, task_intent=intent, harness_dir=harness_dir, observer=observer
             )
         if evaluator_propose is None:
             evaluator_propose = make_evaluator_propose_head(
@@ -365,10 +369,10 @@ class Harness:
         if evaluator_run is None:
             evaluator_run = make_evaluator_head(
                 self,
+                task_intent=intent,
                 harness_dir=harness_dir,
                 observer=observer,
-                # The oracle (spec 15 P3) runs verification steps in the same
-                # tree the generator wrote to.
+                # worktree_root kept for API compat; evaluator verifies in-session via bash.
                 worktree_root=worktree_root,
             )
         return (

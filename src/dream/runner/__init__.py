@@ -59,6 +59,7 @@ from dream.runner._role_session import (
     resolve_role_manifest,
     run_role,
 )
+from dream.runner._plan_admission import PlanAdmission
 from dream.runner._run import (
     EvaluatorRun,
     GeneratorExecute,
@@ -74,6 +75,7 @@ __all__ = [
     "EvaluatorRun",
     "GeneratorExecute",
     "GeneratorRespondHeadParseError",
+    "PlanAdmission",
     "PlannerHeadParseError",
     "RoleSessionError",
     "RunRoleResult",

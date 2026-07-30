@@ -102,6 +102,29 @@ class FileEditTool(BaseTool):
                 stop_condition="do not retry with the same old_str",
             )
 
+        # Mutation honesty (Hermes-simple): refuse ambiguous single-replace so the
+        # agent cannot claim a unique edit when several matches exist.
+        if occurrences > 1 and not args.replace_all:
+            return ToolResult(
+                content=f"old_str matches {occurrences} places; refuse ambiguous edit",
+                is_error=True,
+                metadata={
+                    "root_cause": "non-unique old_str without replace_all",
+                    "safe_retry": (
+                        "pass more surrounding context to make old_str unique, "
+                        "or set replace_all=true"
+                    ),
+                    "stop_condition": "do not retry the same ambiguous old_str",
+                    "occurrences": occurrences,
+                    "status": "error",
+                    "summary": "ambiguous edit refused",
+                    "next_actions": (
+                        "narrow old_str with surrounding context",
+                        "or set replace_all=true",
+                    ),
+                },
+            )
+
         if args.replace_all:
             updated = original.replace(args.old_str, args.new_str)
             replacements = occurrences
@@ -110,6 +133,23 @@ class FileEditTool(BaseTool):
             replacements = 1
 
         atomic_write_text(path, updated)
+        # Verify disk matches claim (write honesty).
+        try:
+            on_disk = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return _err(
+                f"edit claimed success but could not re-read {path}: {exc}",
+                root_cause=str(exc),
+                safe_retry="re-read the file and retry the edit",
+                stop_condition="stop if re-read keeps failing",
+            )
+        if on_disk != updated:
+            return _err(
+                f"edit did not persist to disk: {path}",
+                root_cause="post-write content mismatch",
+                safe_retry="retry the edit after confirming filesystem health",
+                stop_condition="do not claim success when disk content differs",
+            )
         lines_before = original.count("\n") + (0 if original.endswith("\n") else 1)
         lines_after = updated.count("\n") + (0 if updated.endswith("\n") else 1)
         lines_changed = abs(lines_after - lines_before) or replacements
@@ -121,6 +161,8 @@ class FileEditTool(BaseTool):
                 "lines_changed": lines_changed,
                 "artifacts": [str(path)],
                 "summary": f"replaced {replacements} of {occurrences} occurrence(s)",
+                "status": "success",
+                "next_actions": ("continue implementing or run tests",),
             },
         )
 

@@ -44,11 +44,12 @@ class LedgerStep:
     sprint_target: int | None = None
     notes: str = ""
     needs_changes_count: int = 0
-    """How many times this step has received a ``needs-changes`` evaluation.
+    """Lifetime cumulative ``needs-changes`` evaluations on this step.
 
-    Tracked so the runner can escalate to ``blocked`` after
-    ``NEEDS_CHANGES_LIMIT`` consecutive rejections without burning the full
-    sprint budget on a structurally impossible step.
+    The runner uses a *per-invocation* strike counter against
+    ``NEEDS_CHANGES_LIMIT`` to stop the current ``run_task`` without
+    durable-blocking; this field is the audit trail / carry-forward signal.
+    Only outcome ``fail`` sets status to ``blocked``.
     """
 
     def __post_init__(self) -> None:

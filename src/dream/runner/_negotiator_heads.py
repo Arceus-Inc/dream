@@ -90,10 +90,13 @@ EVALUATOR_PROPOSE_INSTRUCTION_TEMPLATE = (
     "- Tie every criterion to THIS task's intent above; do not propose generic\n"
     '  boilerplate ("preserve backward compatibility", "pass the existing\n'
     '  suite") that the task did not call for.\n'
-    "- Treat the task intent as the complete product contract. You MUST NOT add\n"
-    "  unstated product behavior, validation rules, limits, APIs, artifacts, or\n"
-    "  compatibility obligations. You may clarify a testable implication of a\n"
-    "  stated requirement, but may not widen it.\n"
+    "- Treat the task intent as the complete work contract. You MUST NOT add\n"
+    "  unstated product behavior, validation rules, limits, deliverables,\n"
+    "  artifacts, or compatibility obligations. You may clarify a testable\n"
+    "  implication of a stated requirement, but may not widen it.\n"
+    "- You MUST NOT weaken or omit requirements stated in the Intent. Short\n"
+    "  criteria may paraphrase, but must keep every concrete obligation the\n"
+    "  Intent named — a weaker substitute than the Intent is a bad proposal.\n"
     "- Every criterion MUST be verifiable by reading the files in the working\n"
     "  tree or running a test. Do NOT propose criteria that require\n"
     "  documentation, a README/changelog, commit messages, or git history as\n"
@@ -142,9 +145,11 @@ GENERATOR_RESPOND_INSTRUCTION_TEMPLATE = (
     '- "counter" is a JSON list of strings when "accept" is false,\n'
     "  or null/omitted when accepting.\n"
     "- Compare every proposal to the TASK INTENT. If any criterion widens the\n"
-    "  product contract with unstated behavior, validation, limits, APIs,\n"
+    "  work contract with unstated behavior, validation, limits, deliverables,\n"
     "  artifacts, or compatibility obligations, do not accept it: COUNTER with\n"
     "  the smallest criteria faithful to the stated intent.\n"
+    "- Also COUNTER if a criterion weakens or omits a concrete requirement from\n"
+    "  the Intent (a narrower substitute than what the Intent asked for).\n"
     "- Counter only on substantive disagreement — bounce-back wastes a round.\n"
 )
 
