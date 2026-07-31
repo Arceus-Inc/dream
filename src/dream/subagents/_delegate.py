@@ -106,12 +106,17 @@ async def run_subagent_delegate(
     tracer: object | None = None,
     observer: RunTaskObserver | None = None,
     working_dir: Path | str | None = None,
+    spill_dir: Path | str | None = None,
     summary_budget: int = DEFAULT_MAX_SUMMARY_CHARS,
 ) -> SubagentResult:
     """Run a specialist in a fresh ``run_role`` session; return budgeted summary.
 
     History starts empty (``run_role`` / ``run_subagent_inline`` always mint a new
     session). The firewall is the prompt inlet: only ``goal`` + packed ``context``.
+
+    ``spill_dir`` is the session scratch dir: an over-budget summary is written
+    there, never into the caller's worktree. Without it the summary is truncated
+    with no spill.
     """
     workspace = str(working_dir) if working_dir is not None else None
     prompt = build_child_prompt(goal, context, workspace_path=workspace)
@@ -133,10 +138,8 @@ async def run_subagent_delegate(
         return result
 
     note = ""
-    if working_dir is not None:
-        spill_path = _write_spill_file(
-            Path(working_dir) / ".harness" / "delegation", agent.name, full
-        )
+    if spill_dir is not None:
+        spill_path = _write_spill_file(Path(spill_dir) / "delegation", agent.name, full)
         note = f"\n\n[full summary spilled to {spill_path}]"
 
     return SubagentResult(

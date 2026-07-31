@@ -50,7 +50,7 @@ _DEFAULT_GP_TOOLS = (
     "read_file",
     "grep",
     "glob",
-    "run_command",
+    "bash",
     "write_file",
     "edit_file",
 )
@@ -312,6 +312,7 @@ class SpawnSubagentTool(BaseTool):
                 tracer=tracer,
                 observer=ctx.metadata.get(OBSERVER_KEY),
                 working_dir=ctx.working_dir,
+                spill_dir=ctx.scratch_dir,
             )
 
         elapsed = time.time() - spawn_time

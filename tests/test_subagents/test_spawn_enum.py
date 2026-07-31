@@ -146,3 +146,17 @@ async def test_whitespace_goal_falls_back_to_prompt() -> None:
         )
     assert not result.is_error
     assert mock_delegate.await_args.kwargs["goal"] == "real task"
+
+
+def test_general_purpose_tool_names_exist_in_default_registry() -> None:
+    # Regression: the default list named ``run_command`` while the registered
+    # shell tool is ``bash``; ``compute_minimum_toolset`` drops unknown names,
+    # so generalPurpose silently lost the shell.
+    from dream.tools.builtin import default_registry
+    from dream.tools.builtin.spawn_subagent import general_purpose_agent
+
+    registered = {t.name for t in default_registry().list_tools()}
+    agent = general_purpose_agent(None)
+    for name in agent.tools or ():
+        assert name in registered, f"unknown tool name {name!r}"
+    assert "bash" in (agent.tools or ())
