@@ -45,8 +45,8 @@ from dream.sprint import (
     sprint_contract_path,
     transition_step_to_in_progress,
 )
-from dream.sprint._outcome import NEEDS_CHANGES_LIMIT
 from dream.sprint._evaluation import EvaluationRecord
+from dream.sprint._outcome import NEEDS_CHANGES_LIMIT
 from dream.swarm._handoff import HandoffArtefact, handoff_event
 
 __all__ = [

@@ -1,7 +1,7 @@
 """Default ``spawn_subagent`` tool — Cursor-style type enum + Hermes child isolation.
 
 spawn_subagent(subagent_type, goal, context?) -> SubagentResult
-  # subagent_type — enum: generalPurpose ∪ SubagentSet names (fail-closed)
+  # subagent_type — enum: generalPurpose plus SubagentSet names (fail-closed)
   # goal — bounded task (alias: prompt); context — packed inlet, not parent history
 
 ``name`` is accepted as an alias for ``subagent_type`` for one release.
@@ -87,6 +87,7 @@ def unknown_subagent_result(type_name: str, available: list[str]) -> ToolResult:
 
 def general_purpose_agent(parent_tools: frozenset[str] | None) -> Subagent:
     """Hermes leaf worker — parent tools minus spawn (no nesting)."""
+    tools: tuple[str, ...]
     if parent_tools is None:
         tools = _DEFAULT_GP_TOOLS
     else:
@@ -210,12 +211,14 @@ class SpawnSubagentTool(BaseTool):
             return unknown_subagent_result(type_name, available)
 
         parent_tools: frozenset[str] | None = ctx.metadata.get(PARENT_TOOLS_KEY)
+        agent: Subagent
         if type_name == GENERAL_PURPOSE:
             agent = general_purpose_agent(parent_tools)
         else:
-            agent = subagent_set.get(type_name) if subagent_set is not None else None
-            if agent is None:
+            resolved = subagent_set.get(type_name) if subagent_set is not None else None
+            if resolved is None:
                 return unknown_subagent_result(type_name, available)
+            agent = resolved
 
         counter: list[int] | None = ctx.metadata.get(SPAWN_COUNT_KEY)
         if counter is None:

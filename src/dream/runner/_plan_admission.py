@@ -8,10 +8,10 @@ continues the sprint loop (needs-changes / in_progress carry-forward).
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 
-class PlanAdmission(str, Enum):
+class PlanAdmission(StrEnum):
     """Admission policy for the planner phase of :func:`dream.runner.run_task`.
 
     Using a str Enum (not free-form strings) keeps call sites typed and

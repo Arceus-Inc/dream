@@ -68,8 +68,8 @@ class PreToolHookPayload:
     tool_input: dict[str, Any]
     subagent_name: str | None = None
 
-    def to_dict(self) -> PreToolPayload:
-        payload: PreToolPayload = {
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
             "tool_name": self.tool_name,
             "tool_input": self.tool_input,
         }
@@ -86,7 +86,7 @@ class PostToolHookPayload:
     is_error: bool
     result_summary: str
 
-    def to_dict(self) -> PreToolPayload:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "tool_name": self.tool_name,
             "is_error": self.is_error,
@@ -102,7 +102,7 @@ class SubagentStartPayload:
     subagent_name: str
     tool_input: dict[str, Any]
 
-    def to_dict(self) -> PreToolPayload:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "tool_name": self.tool_name,
             "subagent_name": self.subagent_name,
@@ -120,7 +120,7 @@ class SubagentStopPayload:
     result_summary: str
     mode: SubagentJoinMode = SubagentJoinMode.SYNC
 
-    def to_dict(self) -> PreToolPayload:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "tool_name": self.tool_name,
             "subagent_name": self.subagent_name,

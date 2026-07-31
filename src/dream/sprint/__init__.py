@@ -43,6 +43,7 @@ from ._negotiation import (
 from ._outcome import NEEDS_CHANGES_LIMIT, append_tech_debt, apply_outcome
 
 __all__ = [
+    "NEEDS_CHANGES_LIMIT",
     "VALID_VERIFICATION_KINDS",
     "EvaluationAlreadyRecorded",
     "EvaluationOutcome",
@@ -58,7 +59,6 @@ __all__ = [
     "acquire_role_lock",
     "append_tech_debt",
     "apply_outcome",
-    "NEEDS_CHANGES_LIMIT",
     "build_contract_from_negotiation",
     "evaluation_record_path",
     "is_evaluator_enabled_for_sprint",

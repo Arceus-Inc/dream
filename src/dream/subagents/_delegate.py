@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 from dream.subagents._inline_executor import run_subagent_inline
 from dream.subagents._projection import SubagentResult
+from dream.utils.fs import atomic_write_text
 
 if TYPE_CHECKING:
     from dream.harness import Harness
@@ -28,7 +29,6 @@ __all__ = [
 ]
 
 DEFAULT_MAX_SUMMARY_CHARS = 24_000
-_MIN_SUMMARY_CHARS = 2_000
 
 # Co-writers share the parent's worktree intent — Hermes: "don't delegate, just do it."
 INLINE_SUBAGENTS = frozenset({"test_author"})
@@ -69,7 +69,6 @@ def apply_summary_budget(text: str, *, max_chars: int = DEFAULT_MAX_SUMMARY_CHAR
         max_chars = DEFAULT_MAX_SUMMARY_CHARS
     if len(text) <= max_chars:
         return text
-    keep = max(max_chars // 2, min(_MIN_SUMMARY_CHARS, max_chars // 2))
     # Ensure head+tail+marker fit.
     marker = "\n\n…[summary truncated for parent context]…\n\n"
     budget = max_chars - len(marker)
@@ -92,7 +91,7 @@ def _write_spill_file(spill_dir: Path, agent_name: str, full: str) -> Path:
     spill_dir.mkdir(parents=True, exist_ok=True)
     spill_path = (spill_dir / f"{_safe_spill_basename(agent_name)}-{uuid.uuid4().hex[:8]}.txt").resolve()
     spill_path.relative_to(spill_dir)
-    spill_path.write_text(full, encoding="utf-8")
+    atomic_write_text(spill_path, full)
     return spill_path
 
 

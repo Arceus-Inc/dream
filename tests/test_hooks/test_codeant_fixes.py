@@ -6,11 +6,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
 from pydantic import BaseModel
 
-from dream.contracts.tool import ToolResult
 from dream.contracts.hook import HookEvent, HookResult, HookSpec
+from dream.contracts.tool import ToolResult
 from dream.engine._messages import ConversationMessage, TextBlock
 from dream.engine._session import _select_turn_driver
 from dream.engine._tool_dispatch import EngineToolDispatcher
@@ -144,8 +143,6 @@ async def test_stop_nudge_appended_once_via_turn_driver() -> None:
 
 @pytest.mark.asyncio
 async def test_subagent_start_uses_post_pre_replacement_label(tmp_path: Path) -> None:
-    events: list[tuple[HookEvent, dict[str, Any]]] = []
-
     def on_pre(event: HookEvent, payload: dict[str, Any]) -> HookResult:
         if event == HookEvent.PRE_TOOL_USE:
             return HookResult(
