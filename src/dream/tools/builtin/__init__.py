@@ -10,6 +10,7 @@ from dream.tools.builtin.cron_list import CronListTool
 from dream.tools.builtin.cron_show import CronShowTool
 from dream.tools.builtin.cron_toggle import CronToggleTool
 from dream.tools.builtin.enter_worktree import EnterWorktreeTool
+from dream.tools.builtin.execute_code import ExecuteCodeTool
 from dream.tools.builtin.exit_worktree import ExitWorktreeTool
 from dream.tools.builtin.file_edit import FileEditTool
 from dream.tools.builtin.file_read import FileReadTool
@@ -75,6 +76,7 @@ _DEFAULT_ORDER: tuple[str, ...] = (
     "todo_write",
     "web_search",
     "web_extract",
+    "execute_code",
 )
 
 
@@ -112,6 +114,7 @@ def default_registry() -> ToolRegistry:
     registry.register(TodoWriteTool(), source=ToolSource.DEFAULT)
     registry.register(WebSearchTool(), source=ToolSource.DEFAULT)
     registry.register(WebExtractTool(), source=ToolSource.DEFAULT)
+    registry.register(ExecuteCodeTool(), source=ToolSource.DEFAULT)
     return registry
 
 

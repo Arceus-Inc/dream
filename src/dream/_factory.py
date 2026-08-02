@@ -582,9 +582,13 @@ def _build_session_engine(
     # Dispatcher context_metadata: skill + task contexts keyed for the
     # `skill` / task tools to fetch out of the dispatcher, plus the sandbox
     # adapter the `bash` tool routes execution through (Spec 13B).
+    from dream.tools.execute_code import EXECUTE_CODE_REGISTRY_KEY
+
     context_metadata: dict[str, Any] = {
         TASK_CONTEXT_KEY: task_context,
         SANDBOX_CONTEXT_KEY: sandbox_adapter,
+        # execute_code nested RPC dispatches through the live session registry.
+        EXECUTE_CODE_REGISTRY_KEY: tool_registry,
     }
     if ROLE_NAME_METADATA_KEY in options.metadata:
         context_metadata[ROLE_NAME_METADATA_KEY] = options.metadata[ROLE_NAME_METADATA_KEY]
