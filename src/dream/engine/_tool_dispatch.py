@@ -41,7 +41,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from pydantic import ValidationError
@@ -50,15 +50,20 @@ from dream.contracts.hook import (
     HookEvent,
     PostToolHookPayload,
     PreToolHookPayload,
+    SubagentJoinMode,
     SubagentStartPayload,
     SubagentStopPayload,
 )
+from dream.contracts.tool import ToolResult
 from dream.hooks import HookExecutor
 from dream.permissions import Outcome, PermissionDecision, PermissionRequest
 from dream.services.tool_outputs import offload_tool_output
 from dream.tools._base import BaseTool
 from dream.tools._context import ToolExecutionContext
 from dream.tools._registry import ToolRegistry
+
+if TYPE_CHECKING:
+    from dream.subagents._async_delegation import AsyncDelegationManager
 
 PermissionGate = Callable[[PermissionRequest], PermissionDecision]
 """A pure decision function the dispatcher consults before executing a tool."""
@@ -83,6 +88,16 @@ class DispatchRecord:
     is_error: bool
     elapsed_seconds: float
     offloaded: bool
+
+
+@dataclass(frozen=True)
+class _DispatchOutcome:
+    content: str
+    is_error: bool
+    tool_result: ToolResult | None = None
+
+    def pair(self) -> tuple[str, bool]:
+        return self.content, self.is_error
 
 
 _DispatchObserver = Callable[[DispatchRecord], None]
@@ -118,6 +133,7 @@ class EngineToolDispatcher:
     # the ``(content, is_error)`` result exists. Opt-in ``allow_block`` hooks may
     # veto PRE (Hermes pre_tool_call). ``None`` means no firing.
     hook_executor: HookExecutor | None = None
+    delegations: AsyncDelegationManager | None = None
 
     async def dispatch(self, name: str, input: dict[str, Any]) -> tuple[str, bool]:
         # PRE_TOOL_USE → (optional veto / replace input) → execute → POST_TOOL_USE.
@@ -163,7 +179,8 @@ class EngineToolDispatcher:
                 ).to_dict(),
             )
 
-        content, is_error = await self._dispatch_inner(name, tool_input)
+        dispatch_outcome = await self._dispatch_outcome(name, tool_input)
+        content, is_error = dispatch_outcome.pair()
         post = await self.hook_executor.fire(
             HookEvent.POST_TOOL_USE,
             PostToolHookPayload(
@@ -175,6 +192,14 @@ class EngineToolDispatcher:
         if post.replacement_result is not None:
             content = post.replacement_result
         if name == SPAWN_SUBAGENT_TOOL:
+            result = dispatch_outcome.tool_result
+            metadata = result.metadata if result is not None else {}
+            join_raw = metadata.get("join_mode", metadata.get("mode", "sync"))
+            try:
+                join_mode = SubagentJoinMode(str(join_raw))
+            except ValueError:
+                join_mode = SubagentJoinMode.SYNC
+            delegation_raw = metadata.get("delegation_id")
             await self.hook_executor.fire(
                 HookEvent.SUBAGENT_STOP,
                 SubagentStopPayload(
@@ -182,42 +207,52 @@ class EngineToolDispatcher:
                     subagent_name=spawn_label,
                     is_error=is_error,
                     result_summary=content[:_RESULT_SUMMARY_MAX_CHARS],
+                    mode=join_mode,
+                    delegation_id=(
+                        delegation_raw if isinstance(delegation_raw, str) else None
+                    ),
+                    working_dir=str(self.working_dir),
+                    structured=result.structured if result is not None else None,
                 ).to_dict(),
             )
         return content, is_error
 
     async def _dispatch_inner(self, name: str, input: dict[str, Any]) -> tuple[str, bool]:
+        return (await self._dispatch_outcome(name, input)).pair()
+
+    async def _dispatch_outcome(self, name: str, input: dict[str, Any]) -> _DispatchOutcome:
         # ``input`` is the raw tool-call argument map straight off the model's
         # ToolUseBlock (e.g. {"path": "src/x.py", "content": "..."}); it is
         # validated against ``tool.input_model`` before any side-effecting work.
         if self.role_allowed_tools is not None and name not in self.role_allowed_tools:
-            return self._role_refused(name)
+            return _DispatchOutcome(*self._role_refused(name))
 
         tool = self.registry.get(name)
         if tool is None:
-            return self._unknown(name)
+            return _DispatchOutcome(*self._unknown(name))
 
         validation_error = self._validate_input(name, tool, input)
         if validation_error is not None:
-            return validation_error
+            return _DispatchOutcome(*validation_error)
 
         is_read_only = tool.is_read_only_for(input)
         if self.permission_gate is not None:
             request = self._permission_request(name, tool, input, is_read_only)
             decision = self.permission_gate(request)
             if not decision.allowed:
-                return self._denied(name, decision, is_read_only)
+                return _DispatchOutcome(*self._denied(name, decision, is_read_only))
 
         ctx = ToolExecutionContext(
             working_dir=self.working_dir,
             session_id=self.session_id,
             scratch_dir=self._resolved_scratch(),
             metadata=dict(self.context_metadata),  # copy: a tool can't leak into the next call
+            delegations=self.delegations,
         )
         result, elapsed = await self._run_with_timeout(name, tool, input, ctx, is_read_only)
         if isinstance(result, tuple):
             # A synthetic timeout result (already recorded) rather than a ToolResult.
-            return result
+            return _DispatchOutcome(*result)
         return self._offload_and_record(name, result, is_read_only=is_read_only, elapsed=elapsed)
 
     def _validate_input(
@@ -286,8 +321,8 @@ class EngineToolDispatcher:
         return self.scratch_dir or (self.working_dir / ".dream" / "scratch")
 
     def _offload_and_record(
-        self, name: str, result: Any, *, is_read_only: bool, elapsed: float
-    ) -> tuple[str, bool]:
+        self, name: str, result: ToolResult, *, is_read_only: bool, elapsed: float
+    ) -> _DispatchOutcome:
         """Offload an oversized payload, emit the dispatch record, return inline."""
         scratch = self._resolved_scratch()
         inline, pointer = offload_tool_output(
@@ -304,7 +339,7 @@ class EngineToolDispatcher:
             elapsed=elapsed,
             offloaded=offloaded,
         )
-        return inline, result.is_error
+        return _DispatchOutcome(inline, result.is_error, result)
 
     def _permission_request(
         self, name: str, tool: BaseTool, input: dict[str, Any], is_read_only: bool

@@ -27,6 +27,13 @@ class HookEvent(StrEnum):
     NOTIFICATION = "notification"
 
 
+class SubagentJoinMode(StrEnum):
+    """How the parent joined a spawned child (lifecycle observers)."""
+
+    SYNC = "sync"
+    BACKGROUND = "background"
+
+
 class PreToolPayload(TypedDict, total=False):
     """PRE_TOOL_USE / SUBAGENT_* hook payload shape."""
 
@@ -35,7 +42,10 @@ class PreToolPayload(TypedDict, total=False):
     subagent_name: str | None
     is_error: bool
     result_summary: str
-    mode: str
+    mode: SubagentJoinMode
+    delegation_id: str
+    working_dir: str
+    structured: object
 
 
 class StopPayload(TypedDict, total=False):
@@ -54,12 +64,6 @@ class UserPromptPayload(TypedDict, total=False):
     prompt: str
 
 
-class SubagentJoinMode(StrEnum):
-    """How the parent joined a spawned child (lifecycle observers)."""
-
-    SYNC = "sync"
-
-
 @dataclass(frozen=True)
 class PreToolHookPayload:
     """PRE_TOOL_USE hook payload — built at dispatch, serialized for hooks."""
@@ -68,8 +72,8 @@ class PreToolHookPayload:
     tool_input: dict[str, Any]
     subagent_name: str | None = None
 
-    def to_dict(self) -> dict[str, Any]:
-        payload: dict[str, Any] = {
+    def to_dict(self) -> PreToolPayload:
+        payload: PreToolPayload = {
             "tool_name": self.tool_name,
             "tool_input": self.tool_input,
         }
@@ -86,7 +90,7 @@ class PostToolHookPayload:
     is_error: bool
     result_summary: str
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> PreToolPayload:
         return {
             "tool_name": self.tool_name,
             "is_error": self.is_error,
@@ -102,7 +106,7 @@ class SubagentStartPayload:
     subagent_name: str
     tool_input: dict[str, Any]
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> PreToolPayload:
         return {
             "tool_name": self.tool_name,
             "subagent_name": self.subagent_name,
@@ -119,15 +123,25 @@ class SubagentStopPayload:
     is_error: bool
     result_summary: str
     mode: SubagentJoinMode = SubagentJoinMode.SYNC
+    delegation_id: str | None = None
+    working_dir: str | None = None
+    structured: object | None = None
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
+    def to_dict(self) -> PreToolPayload:
+        payload: PreToolPayload = {
             "tool_name": self.tool_name,
             "subagent_name": self.subagent_name,
             "is_error": self.is_error,
             "result_summary": self.result_summary,
             "mode": self.mode,
         }
+        if self.delegation_id is not None:
+            payload["delegation_id"] = self.delegation_id
+        if self.working_dir is not None:
+            payload["working_dir"] = self.working_dir
+        if self.structured is not None:
+            payload["structured"] = self.structured
+        return payload
 
 
 @dataclass(frozen=True)

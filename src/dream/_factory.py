@@ -66,6 +66,7 @@ from dream.skills import (
     build_session_skill_registry,
     render_skill_catalogue,
 )
+from dream.subagents._async_delegation import AsyncDelegationManager
 from dream.subagents._declaration import SubagentSet
 from dream.tasks import (
     TASK_CONTEXT_KEY,
@@ -230,6 +231,7 @@ def build_harness(
     config = HarnessConfig(
         working_dir=working_dir,
         task_manager=task_manager,
+        delegations=AsyncDelegationManager(),
         cron_registry_path=task_context.cron_registry_path,
         paths=paths,
         # MCP connect + plugin import are async/IO, so they hang off the
@@ -617,8 +619,10 @@ def _build_session_engine(
         OBSERVER_KEY,
         PARENT_TOOLS_KEY,
         SPAWN_COUNT_KEY,
+        SPAWN_LEDGER_KEY,
         SUBAGENT_SET_CONTEXT_KEY,
         TRACER_KEY,
+        SpawnLedger,
     )
 
     # The run_role observer (when present) rides into the tool context, so the spawn tool can
@@ -637,6 +641,9 @@ def _build_session_engine(
         # cap spans the whole tree), else seed fresh (per-beat, never accumulating on the shared tool
         # instance — the cross-session DoS).
         context_metadata[SPAWN_COUNT_KEY] = options.metadata.get(SPAWN_COUNT_KEY, [0])
+        context_metadata[SPAWN_LEDGER_KEY] = options.metadata.get(
+            SPAWN_LEDGER_KEY, SpawnLedger()
+        )
         # Parent's live tool allow-list, for capability minimization (§05): the
         # subagent's tools are intersected with this. ``None`` = no role restriction
         # (full surface), so the subagent keeps its declared tools.
@@ -668,4 +675,5 @@ def _build_session_engine(
         tracer=tracer,
         model=options.model or model,
         hook_executor=hook_executor,
+        delegations=harness.config.delegations,
     )

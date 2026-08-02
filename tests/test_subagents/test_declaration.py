@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from dream.subagents._declaration import Subagent, SubagentSet
+from dream.subagents._declaration import Subagent, SubagentExecutionMode, SubagentSet
 
 
 class TestSubagentDeclaration:
@@ -22,6 +22,7 @@ class TestSubagentDeclaration:
         assert agent.skills == ()
         assert agent.permission_overlay == ()
         assert agent.max_turns == 8
+        assert agent.execution_mode is SubagentExecutionMode.DELEGATE
 
     def test_empty_name_raises(self) -> None:
         with pytest.raises(ValueError, match="non-empty string"):
@@ -56,6 +57,7 @@ class TestSubagentDeclaration:
             spawned_by=("analyst",),
             system_prompt="You are a SQL expert.",
             max_turns=4,
+            execution_mode=SubagentExecutionMode.INLINE,
         )
         d = agent.to_dict()
         restored = Subagent.from_dict(d)
@@ -67,6 +69,7 @@ class TestSubagentDeclaration:
         assert agent.depth == 1
         assert agent.model is None
         assert agent.max_turns == 8
+        assert agent.execution_mode is SubagentExecutionMode.DELEGATE
 
 
 class TestSubagentSet:

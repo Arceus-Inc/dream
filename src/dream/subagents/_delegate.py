@@ -22,16 +22,12 @@ if TYPE_CHECKING:
 
 __all__ = [
     "DEFAULT_MAX_SUMMARY_CHARS",
-    "INLINE_SUBAGENTS",
     "apply_summary_budget",
     "build_child_prompt",
     "run_subagent_delegate",
 ]
 
 DEFAULT_MAX_SUMMARY_CHARS = 24_000
-
-# Co-writers share the parent's worktree intent — Hermes: "don't delegate, just do it."
-INLINE_SUBAGENTS = frozenset({"test_author"})
 
 
 def build_child_prompt(
@@ -89,7 +85,9 @@ def _write_spill_file(spill_dir: Path, agent_name: str, full: str) -> Path:
     """Write full summary under spill_dir; reject path traversal."""
     spill_dir = spill_dir.resolve()
     spill_dir.mkdir(parents=True, exist_ok=True)
-    spill_path = (spill_dir / f"{_safe_spill_basename(agent_name)}-{uuid.uuid4().hex[:8]}.txt").resolve()
+    spill_path = (
+        spill_dir / f"{_safe_spill_basename(agent_name)}-{uuid.uuid4().hex[:8]}.txt"
+    ).resolve()
     spill_path.relative_to(spill_dir)
     atomic_write_text(spill_path, full)
     return spill_path

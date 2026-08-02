@@ -40,7 +40,7 @@ from collections.abc import (
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from dream.contracts.hook import HookEvent
 from dream.contracts.provider import ProviderCapabilities
@@ -102,6 +102,9 @@ from dream.services.token_estimation import (
     should_auto_compact,
     utilisation,
 )
+
+if TYPE_CHECKING:
+    from dream.subagents._async_delegation import AsyncDelegationManager
 
 
 def _default_now() -> datetime:
@@ -232,6 +235,9 @@ class SessionConfig:
     max_verify_nudges: int = 3
     # Role name (planner/generator/evaluator) for role-scoped STOP hooks.
     role: str | None = None
+    # Per-harness background owner. Completions are consumed only between
+    # turns and become synthetic user messages; never splice them mid-tool.
+    delegations: AsyncDelegationManager | None = None
 
     def __post_init__(self) -> None:
         # 0/negative would satisfy ``consecutive_timeouts >= max`` immediately
@@ -775,6 +781,19 @@ async def run_session(
     stop_fired_for_seal = False
 
     while True:
+        if config.delegations is not None:
+            completions = config.delegations.drain(config.session_id)
+            if completions:
+                user_messages = [
+                    *user_messages,
+                    *(
+                        ConversationMessage(
+                            role="user",
+                            content=[TextBlock(text=completion.render())],
+                        )
+                        for completion in completions
+                    ),
+                ]
         decision, user_idx = await _select_turn_driver(
             transcript,
             user_messages,
@@ -787,6 +806,19 @@ async def run_session(
             review_rounds += 1
             last_review_items = decision.review_item
         if decision.action in {"seal", "seal-with-warnings"}:
+            if (
+                config.delegations is not None
+                and config.delegations.active(config.session_id) > 0
+            ):
+                completion = await config.delegations.wait_next(config.session_id)
+                user_messages = [
+                    *user_messages,
+                    ConversationMessage(
+                        role="user",
+                        content=[TextBlock(text=completion.render())],
+                    ),
+                ]
+                continue
             # Hermes-style STOP continue: allow_continue hooks may inject a
             # synthetic user nudge and keep the session working (≤ max_verify_nudges).
             if (

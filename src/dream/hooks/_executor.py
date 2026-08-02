@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -73,7 +73,7 @@ class HookExecutor:
         matched.sort(key=lambda h: -h.spec.priority)
         return matched
 
-    async def fire(self, event: HookEvent, payload: dict[str, Any]) -> FireOutcome:
+    async def fire(self, event: HookEvent, payload: Mapping[str, Any]) -> FireOutcome:
         """Run every subscriber for ``event``; never raises. Opt-in powers honored."""
         fired = errors = timeouts = 0
         feedback: list[str] = []
@@ -87,7 +87,7 @@ class HookExecutor:
             fired += 1
             try:
                 async with asyncio.timeout(self._deadline):
-                    result = await hook(event, payload)
+                    result = await hook(event, dict(payload))
             except asyncio.CancelledError:
                 raise
             except TimeoutError:

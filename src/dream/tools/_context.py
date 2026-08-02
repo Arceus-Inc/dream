@@ -20,11 +20,14 @@ import asyncio
 import contextlib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from dream.contracts.tool import ToolResult
 from dream.services.tool_outputs import offload_tool_output
+
+if TYPE_CHECKING:
+    from dream.subagents._async_delegation import AsyncDelegationManager
 
 
 @dataclass
@@ -39,6 +42,7 @@ class ToolExecutionContext:
     session_id: str
     metadata: dict[str, Any] = field(default_factory=dict)
     scratch_dir: Path | None = None
+    delegations: AsyncDelegationManager | None = None
     cancel_requested: bool = False
 
     def request_cancel(self) -> None:

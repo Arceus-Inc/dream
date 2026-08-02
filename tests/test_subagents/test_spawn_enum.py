@@ -58,6 +58,9 @@ def test_build_spawn_parameters_sets_enum() -> None:
     assert "generalPurpose" in patched.get("description", prop.get("description", "")) or (
         "generalPurpose" in prop["description"]
     )
+    assert patched["$defs"]["SpawnTaskInput"]["properties"]["subagent_type"][
+        "enum"
+    ] == [GENERAL_PURPOSE, "reviewer"]
 
 
 async def test_unknown_type_fails_with_available_enum() -> None:

@@ -1,10 +1,10 @@
-"""Chorus → dream projection: Subagent → TeammateSpawnConfig.
+"""Project a role-agnostic Subagent onto a TeammateSpawnConfig.
 
-The factory resolves a role's Tier-1 Subagents + any referenced Tier-2 registry
+The factory resolves a role's Tier-1 Subagents plus any referenced Tier-2 registry
 entries, intersects each against the parent's live toolset/permissions (§05:
 narrower-wins), and emits a TeammateSpawnConfig template per subagent.
 
-Spec §04b: the factory projects chorus → dream.
+Role names and application policy remain outside Dream.
 """
 
 from __future__ import annotations
@@ -60,7 +60,7 @@ def project_subagent(
     cwd: str,
     prompt: str,
 ) -> TeammateSpawnConfig:
-    """Project a chorus Subagent declaration into a dream TeammateSpawnConfig.
+    """Project a Subagent declaration into a Dream TeammateSpawnConfig.
 
     Applies capability minimization (§05):
     - tools: agent.tools ∩ parent_tools (strict subset — narrower-wins)

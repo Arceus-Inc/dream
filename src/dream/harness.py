@@ -36,6 +36,7 @@ if TYPE_CHECKING:
         SprintGoalProvider,
     )
     from dream.sprint import EvaluatorPropose, GeneratorRespond
+    from dream.subagents._async_delegation import AsyncDelegationManager
     from dream.tasks import BackgroundTaskManager
 
 
@@ -73,6 +74,7 @@ class HarnessConfig:
     # scheduler tick loop polls. ``None`` when the harness was constructed
     # without the factory (e.g. bare engine-factory tests).
     task_manager: BackgroundTaskManager | None = None
+    delegations: AsyncDelegationManager | None = None
     cron_registry_path: Path | None = None
     # The env-resolved storage roots the factory built the harness against,
     # so the runtime reuses the exact same roots (DREAM_HOME honoured) rather
@@ -386,6 +388,8 @@ class Harness:
     # -- lifecycle --------------------------------------------------------
 
     async def aclose(self) -> None:
+        if self.config.delegations is not None:
+            await self.config.delegations.close()
         if self._teardown is not None:
             teardown, self._teardown = self._teardown, None
             await teardown()
