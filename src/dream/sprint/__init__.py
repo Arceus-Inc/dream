@@ -23,6 +23,7 @@ from ._evaluation import (
     EvaluationRecord,
     evaluation_record_path,
     load_pending_carry_items,
+    next_sprint_number,
     record_evaluation,
 )
 from ._generator import (
@@ -39,9 +40,10 @@ from ._negotiation import (
     negotiate_contract,
     negotiate_contract_async,
 )
-from ._outcome import append_tech_debt, apply_outcome
+from ._outcome import NEEDS_CHANGES_LIMIT, append_tech_debt, apply_outcome
 
 __all__ = [
+    "NEEDS_CHANGES_LIMIT",
     "VALID_VERIFICATION_KINDS",
     "EvaluationAlreadyRecorded",
     "EvaluationOutcome",
@@ -63,6 +65,7 @@ __all__ = [
     "load_pending_carry_items",
     "negotiate_contract",
     "negotiate_contract_async",
+    "next_sprint_number",
     "pick_next_pending_step",
     "record_evaluation",
     "sprint_contract_path",

@@ -602,3 +602,18 @@ def test_propose_template_restricts_criteria_to_worktree_verifiable() -> None:
     assert "verifiab" in t
     assert "documentation" in t
     assert "git history" in t or "commit history" in t
+
+
+def test_propose_template_forbids_weakening_intent_requirements() -> None:
+    """Short ACs must not drop concrete obligations named in the Intent."""
+    t = EVALUATOR_PROPOSE_INSTRUCTION_TEMPLATE.lower()
+    assert "weaken" in t or "omit" in t
+    assert "intent" in t
+
+
+def test_respond_template_counters_weakening_as_well_as_widening() -> None:
+    from dream.runner._negotiator_heads import GENERATOR_RESPOND_INSTRUCTION_TEMPLATE
+
+    t = GENERATOR_RESPOND_INSTRUCTION_TEMPLATE.lower()
+    assert "weaken" in t or "omit" in t or "narrower" in t
+    assert "widen" in t

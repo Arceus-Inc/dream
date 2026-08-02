@@ -44,6 +44,8 @@ from dream.engine._session import (
     run_session,
 )
 from dream.engine._transitions import TransitionBus, TransitionEvent
+from dream.subagents._async_delegation import AsyncDelegationManager
+from dream.subagents._projection import SubagentResult
 from tests.test_engine._fakes import FakeDispatcher, FakeStreamer, FakeTurn
 
 # --- helpers ----------------------------------------------------------------
@@ -141,6 +143,32 @@ async def test_run_session_with_no_user_messages_seals_immediately_done() -> Non
     assert ends[0].outcome == "done"
     assert ends[0].turns == 0
     assert len(streamer.calls) == 0
+
+
+async def test_background_completion_is_injected_as_a_new_user_turn() -> None:
+    manager = AsyncDelegationManager(max_active=1)
+
+    async def work() -> tuple[SubagentResult, ...]:
+        await asyncio.sleep(0)
+        return (SubagentResult(name="reviewer", output="ASYNC_RESULT_42"),)
+
+    assert manager.start("s_test", ("reviewer",), work) is not None
+    streamer = FakeStreamer(
+        turns=[
+            FakeTurn(text_chunks=["parent kept working"]),
+            FakeTurn(text_chunks=["used async result"]),
+        ]
+    )
+    config = _basic_config(streamer)
+    config.delegations = manager
+
+    await _drain(config, [_user("start")])
+
+    assert len(streamer.calls) == 2
+    injected = [message for message in streamer.calls[1] if "ASYNC_RESULT_42" in message.text]
+    assert len(injected) == 1
+    assert injected[0].role == "user"
+    await manager.close()
 
 
 async def test_run_session_forwards_inner_stream_events() -> None:

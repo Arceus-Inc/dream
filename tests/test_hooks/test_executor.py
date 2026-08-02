@@ -117,7 +117,7 @@ async def test_deadline_overrun_is_reported_not_retried() -> None:
 
 @pytest.mark.asyncio
 async def test_blocked_result_is_stripped_and_warned() -> None:
-    # Divergence #1: hooks never veto, even when they ask to.
+    # Observers without allow_block cannot veto (opt-in power model).
     blocker = _RecordingHook(
         (HookEvent.PRE_TOOL_USE,), result=HookResult(blocked=True, feedback="no!")
     )

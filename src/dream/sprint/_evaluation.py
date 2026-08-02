@@ -29,6 +29,7 @@ __all__ = [
     "EvaluationRecord",
     "evaluation_record_path",
     "load_pending_carry_items",
+    "next_sprint_number",
     "record_evaluation",
 ]
 
@@ -96,6 +97,29 @@ def evaluation_record_path(
     return (
         Path(worktree_root) / "docs" / "evals" / safe_id / f"sprint-{n}.json"
     )
+
+
+def next_sprint_number(worktree_root: str | Path, *, task_id: str) -> int:
+    """Return the next unused sprint number for ``task_id`` (1-based).
+
+    Used by :attr:`~dream.runner.PlanAdmission.RESUME` so a later ``run_task``
+    with the same task id does not collide with existing ``sprint-N.json``
+    evaluation artefacts.
+    """
+    safe_id = checked_task_id(task_id)
+    evals_dir = Path(worktree_root) / "docs" / "evals" / safe_id
+    if not evals_dir.is_dir():
+        return 1
+    highest = 0
+    for path in evals_dir.glob("sprint-*.json"):
+        stem = path.stem  # sprint-N
+        try:
+            n = int(stem.split("-", 1)[1])
+        except (IndexError, ValueError):
+            continue
+        if n > highest:
+            highest = n
+    return highest + 1
 
 
 def record_evaluation(

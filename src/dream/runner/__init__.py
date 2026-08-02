@@ -49,6 +49,7 @@ from dream.runner._negotiator_heads import (
     make_generator_respond_head,
 )
 from dream.runner._observer import RunTaskObserver, StdioObserver
+from dream.runner._plan_admission import PlanAdmission
 from dream.runner._planner_head import (
     PlannerHeadParseError,
     make_planner_head,
@@ -74,6 +75,7 @@ __all__ = [
     "EvaluatorRun",
     "GeneratorExecute",
     "GeneratorRespondHeadParseError",
+    "PlanAdmission",
     "PlannerHeadParseError",
     "RoleSessionError",
     "RunRoleResult",

@@ -21,9 +21,12 @@ from dream.planner import (
     LedgerStep,
     PlannerCallable,
     PlannerLedger,
+    planner_ledger_path,
+    planner_spec_path,
     run_planner,
 )
 from dream.runner._observer import RunTaskObserver
+from dream.runner._plan_admission import PlanAdmission
 from dream.sprint import (
     EvaluationOutcome,
     EvaluatorPropose,
@@ -36,17 +39,20 @@ from dream.sprint import (
     is_evaluator_enabled_for_sprint,
     load_pending_carry_items,
     negotiate_contract_async,
+    next_sprint_number,
     pick_next_pending_step,
     record_evaluation,
     sprint_contract_path,
     transition_step_to_in_progress,
 )
 from dream.sprint._evaluation import EvaluationRecord
+from dream.sprint._outcome import NEEDS_CHANGES_LIMIT
 from dream.swarm._handoff import HandoffArtefact, handoff_event
 
 __all__ = [
     "EvaluatorRun",
     "GeneratorExecute",
+    "PlanAdmission",
     "RunTaskResult",
     "SprintGoalProvider",
     "SprintRunResult",
@@ -334,24 +340,6 @@ async def _run_evaluator_phase(
         }
     )
 
-    # Emit a sprint.escalated event when a needs-changes evaluation pushed the
-    # step to blocked (i.e. the N-strikes limit was reached).  We read the
-    # post-apply step state from the updated ledger so apply_outcome itself
-    # stays pure (no event coupling).
-    if record.outcome == "needs-changes":
-        updated_step = next(
-            (s for s in ledger.steps if s.id == record.step_id), None
-        )
-        if updated_step is not None and updated_step.status == "blocked":
-            emit(
-                {
-                    "kind": "sprint.escalated",
-                    "task_id": task_id,
-                    "step_id": record.step_id,
-                    "needs_changes_count": updated_step.needs_changes_count,
-                }
-            )
-
     events.append(
         handoff_event(
             from_role="evaluator",
@@ -401,6 +389,7 @@ async def run_task(
     goal_for_step: SprintGoalProvider | None = None,
     observer: RunTaskObserver | None = None,
     rubric: str = "",
+    plan_admission: PlanAdmission = PlanAdmission.FRESH,
 ) -> RunTaskResult:
     """Compose a full task: planner → bounded sprint loop → done/blocked.
 
@@ -409,12 +398,27 @@ async def run_task(
     (planner start/end, sprint start/end, contract written, generator /
     evaluator start/end, negotiation cap, role-session opened/closed +
     streamed text & tool calls). See :mod:`dream.runner._observer`.
+
+    ``plan_admission`` controls whether the planner may run:
+
+    - :attr:`PlanAdmission.FRESH` — always plan (default; raises if artefacts exist).
+    - :attr:`PlanAdmission.RESUME` — skip planning when a ledger already exists so
+      a later call with the same ``task_id`` can continue needs-changes repair
+      without minting a new Dream identity (Hermes-simple same-session recovery).
+
+    Per-invocation ``needs-changes`` strikes are counted in this call only. After
+    :data:`~dream.sprint.NEEDS_CHANGES_LIMIT` consecutive rejections the loop
+    stops for *this* ``run_task`` while the step stays ``in_progress``, so a
+    later RESUME can continue. Only outcome ``fail`` durable-blocks a step.
     """
     if max_sprints < 0:
         raise ValueError(f"max_sprints must be >= 0, got {max_sprints}")
+    if not isinstance(plan_admission, PlanAdmission):
+        raise TypeError(
+            f"plan_admission must be PlanAdmission, got {type(plan_admission).__name__}"
+        )
 
     root = Path(worktree_root)
-    # Default goal provider: the step's own description (#5 inline fallback).
     goal_provider = goal_for_step or (lambda step, _sprint_number: step.description)
 
     def _emit(event: dict[str, Any]) -> None:
@@ -422,37 +426,57 @@ async def run_task(
             observer.on_event(event)
 
     _emit({"kind": "task.started", "task_id": task_id, "intent": intent})
-    _emit({"kind": "planner.started", "task_id": task_id})
 
-    # 1. Planner — runs once, writes both artefacts.
-    with _phase("plan"):
-        planner_result = await run_planner(
-            task_id=task_id,
-            intent=intent,
-            worktree_root=root,
-            planner=planner,
+    ledger_path = planner_ledger_path(root, task_id)
+    spec_path = planner_spec_path(root, task_id)
+    events: list[dict[str, Any]] = []
+    resume = plan_admission is PlanAdmission.RESUME and ledger_path.is_file()
+
+    if resume:
+        _emit(
+            {
+                "kind": "planner.skipped",
+                "task_id": task_id,
+                "reason": "resume",
+                "ledger_path": str(ledger_path),
+            }
+        )
+        ledger = PlannerLedger.load(ledger_path)
+        if not spec_path.is_file():
+            raise RunTaskError(
+                f"resume requested but planner spec missing: {spec_path}",
+                phase="plan",
+            )
+    else:
+        _emit({"kind": "planner.started", "task_id": task_id})
+        with _phase("plan"):
+            planner_result = await run_planner(
+                task_id=task_id,
+                intent=intent,
+                worktree_root=root,
+                planner=planner,
+            )
+        events.extend(planner_result.events)
+        ledger_path = planner_result.ledger_path
+        spec_path = planner_result.spec_path
+        ledger = PlannerLedger.load(ledger_path)
+        _emit(
+            {
+                "kind": "planner.completed",
+                "task_id": task_id,
+                "spec_path": str(spec_path),
+                "ledger_path": str(ledger_path),
+                "step_count": len(ledger.steps),
+            }
         )
 
-    events: list[dict[str, Any]] = list(planner_result.events)
-    ledger_path = planner_result.ledger_path
-    spec_path = planner_result.spec_path
-
-    ledger = PlannerLedger.load(ledger_path)
-    _emit(
-        {
-            "kind": "planner.completed",
-            "task_id": task_id,
-            "spec_path": str(spec_path),
-            "ledger_path": str(ledger_path),
-            "step_count": len(ledger.steps),
-        }
-    )
     sprints: list[SprintRunResult] = []
+    # Per-invocation only — durable status stays in_progress so RESUME continues.
+    nc_strikes_this_run: dict[str, int] = {}
 
-    # 2. Sprint loop — each iteration is a generator phase (2a/2b) then an
-    # evaluator phase (2c/2d). The generator phase returns ``step is None``
-    # once no pending work remains, which stops the loop.
-    for sprint_number in range(1, max_sprints + 1):
+    first_sprint = next_sprint_number(root, task_id=task_id) if resume else 1
+    for sprint_offset in range(max_sprints):
+        sprint_number = first_sprint + sprint_offset
         with _phase("sprint"):
             gen = await _run_generator_phase(
                 root=root,
@@ -508,6 +532,24 @@ async def run_task(
                 "outcome": evl.outcome,
             }
         )
+
+        if evl.outcome == "needs-changes":
+            strikes = nc_strikes_this_run.get(step.id, 0) + 1
+            nc_strikes_this_run[step.id] = strikes
+            if strikes >= NEEDS_CHANGES_LIMIT:
+                updated = next((s for s in ledger.steps if s.id == step.id), None)
+                _emit(
+                    {
+                        "kind": "sprint.escalated",
+                        "task_id": task_id,
+                        "step_id": step.id,
+                        "needs_changes_count": (
+                            updated.needs_changes_count if updated is not None else strikes
+                        ),
+                        "strikes_this_run": strikes,
+                    }
+                )
+                break
 
     _emit(
         {

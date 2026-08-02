@@ -148,13 +148,19 @@ async def test_red_oracle_carries_failures(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------
-# Evaluator head gate
+# Evaluator head — no oracle sidecar (verify-in-session)
 # --------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_model_pass_downgraded_when_oracle_red(tmp_path: Path) -> None:
-    harness, _ = _harness_with_reply(_pass_verdict())
+async def test_evaluator_head_does_not_run_oracle_or_downgrade(
+    tmp_path: Path,
+) -> None:
+    """Failing verification_steps must NOT be executed by a sidecar or force needs-changes.
+
+    The evaluator session runs them via bash; the head only asks for a verdict.
+    """
+    harness, streamer = _harness_with_reply(_pass_verdict())
     head = make_evaluator_head(harness, worktree_root=tmp_path)
     record = await head(
         "task-001",
@@ -162,52 +168,20 @@ async def test_model_pass_downgraded_when_oracle_red(tmp_path: Path) -> None:
         _contract(({"kind": "test", "command": "exit 1"},)),
         _step(),
     )
-    assert record.outcome == "needs-changes"
-    assert any("verification step" in item for item in record.items)
-    assert "oracle" in record.notes.lower()
+    assert record.outcome == "pass"  # model verdict stands; no oracle override
+    assert "ORACLE RESULTS" not in streamer.last_user_text
+    assert "oracle" not in (record.notes or "").lower()
 
 
 @pytest.mark.asyncio
-async def test_model_pass_honoured_when_oracle_green(tmp_path: Path) -> None:
+async def test_verification_steps_listed_for_evaluator_to_run(tmp_path: Path) -> None:
     harness, streamer = _harness_with_reply(_pass_verdict())
     head = make_evaluator_head(harness, worktree_root=tmp_path)
-    record = await head(
+    await head(
         "task-001",
         1,
         _contract(({"kind": "test", "command": "echo fine"},)),
         _step(),
     )
-    assert record.outcome == "pass"
-    # The prompt carried the executed evidence.
-    assert "ORACLE RESULTS" in streamer.last_user_text
-
-
-@pytest.mark.asyncio
-async def test_no_verification_steps_skips_oracle(tmp_path: Path) -> None:
-    harness, streamer = _harness_with_reply(_pass_verdict())
-    head = make_evaluator_head(harness, worktree_root=tmp_path)
-    record = await head("task-001", 1, _contract(()), _step())
-    assert record.outcome == "pass"
+    assert "echo fine" in streamer.last_user_text
     assert "ORACLE RESULTS" not in streamer.last_user_text
-
-
-@pytest.mark.asyncio
-async def test_needs_changes_keeps_oracle_failures_in_items(tmp_path: Path) -> None:
-    reply = (
-        "<verdict>"
-        + json.dumps({"outcome": "needs-changes", "items": ["fix the docs"]})
-        + "</verdict>"
-    )
-    harness, _ = _harness_with_reply(reply)
-    head = make_evaluator_head(harness, worktree_root=tmp_path)
-    record = await head(
-        "task-001",
-        1,
-        _contract(({"kind": "test", "command": "exit 1"},)),
-        _step(),
-    )
-    # The model already said needs-changes; the oracle failures ride along
-    # so the generator sees the concrete failing commands next sprint.
-    assert record.outcome == "needs-changes"
-    assert "fix the docs" in record.items
-    assert any("verification step" in item for item in record.items)

@@ -447,9 +447,9 @@ def test_needs_changes_appends_to_existing_notes() -> None:
     assert updated_step.notes.index("original guidance") < updated_step.notes.index("[evaluator")
 
 
-def test_needs_changes_second_strike_becomes_blocked() -> None:
-    """On the second needs-changes (NEEDS_CHANGES_LIMIT = 2) the step is blocked
-    so the budget is not burned with further retries."""
+def test_needs_changes_second_strike_stays_in_progress() -> None:
+    """On the second needs-changes the step stays in_progress (RESUME can
+    continue). Stopping the current run_task is the runner's job."""
     from dream.planner import LedgerStep, PlannerLedger
     from dream.sprint import EvaluationRecord, apply_outcome
 
@@ -474,7 +474,7 @@ def test_needs_changes_second_strike_becomes_blocked() -> None:
     )
     updated = apply_outcome(ledger, rec)
     updated_step = updated.steps[0]
-    assert updated_step.status == "blocked"
+    assert updated_step.status == "in_progress"
     assert updated_step.needs_changes_count == 2
 
 

@@ -1,7 +1,7 @@
-"""Depth-2 integration: run_subagent_inline actually seeds a spawn-eligible child's session.
+"""Depth-2 integration: delegated sessions seed a spawn-eligible child's session.
 
 The unit tests prove the pieces (manifest keeps spawn_subagent; build_child_spawn_metadata builds
-the scoped set + shared counter). This closes the assembled gap: that ``run_subagent_inline`` threads
+the scoped set + shared counter). This closes the assembled gap: the delegated session threads
 that metadata into the ``SessionOptions`` handed to ``harness.run_role`` — so a real child session
 WOULD carry web_research + the shared counter and could dispatch it. Deterministic (fake harness),
 so it isolates plumbing from a live model's choice to spawn or not.
@@ -14,7 +14,7 @@ import asyncio
 from dream.runner._role_session import RunRoleResult
 from dream.session import SessionCost, SessionOptions
 from dream.subagents._declaration import Subagent
-from dream.subagents._inline_executor import run_subagent_inline
+from dream.subagents._inline_executor import run_subagent_session
 from dream.tools.builtin.spawn_subagent import (
     HARNESS_KEY,
     SPAWN_COUNT_KEY,
@@ -55,7 +55,7 @@ def test_eligible_childs_session_carries_scoped_set_and_shared_counter() -> None
     shared = [2]
 
     asyncio.run(
-        run_subagent_inline(
+        run_subagent_session(
             _spawner(),
             prompt="frame it",
             harness=harness,  # type: ignore[arg-type]
@@ -80,7 +80,7 @@ def test_leaf_childs_session_gets_no_spawn_context() -> None:
     leaf = Subagent(name="reviewer", description="reviews", tools=("read_file",))
 
     asyncio.run(
-        run_subagent_inline(
+        run_subagent_session(
             leaf, prompt="review", harness=harness,  # type: ignore[arg-type]
             parent_tools=None, spawn_counter=[0], tracer=None,
         )
@@ -90,7 +90,7 @@ def test_leaf_childs_session_gets_no_spawn_context() -> None:
     assert SUBAGENT_SET_CONTEXT_KEY not in harness.captured.metadata  # leaf can't spawn — unchanged
 
 
-def test_run_subagent_inline_forwards_observer_to_child() -> None:
+def test_run_subagent_session_forwards_observer_to_child() -> None:
     """The parent observer is threaded into the child session's run_role, so the child's events
     (including a nested spawn) reach the same observer/bus."""
 
@@ -109,7 +109,7 @@ def test_run_subagent_inline_forwards_observer_to_child() -> None:
     harness = _RecordingHarness()
     obs = _Obs()
     asyncio.run(
-        run_subagent_inline(
+        run_subagent_session(
             _spawner(), prompt="frame it", harness=harness,  # type: ignore[arg-type]
             parent_tools=None, spawn_counter=[0], tracer=None, observer=obs,
         )

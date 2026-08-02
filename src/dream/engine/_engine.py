@@ -23,7 +23,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from dream.contracts.provider import ProviderCapabilities
 from dream.engine._loop import ToolDispatcher, TurnStreamer
@@ -38,6 +38,9 @@ from dream.services.compact import DEFAULT_KEEP_RECENT
 from dream.services.compact._carryover_state import CarryoverMetadata, UtilisationRatio
 from dream.services.compact._orchestrator import AutoCompactState, SummariserFn
 from dream.tools._registry import ToolRegistry
+
+if TYPE_CHECKING:
+    from dream.subagents._async_delegation import AsyncDelegationManager
 
 
 @dataclass
@@ -80,6 +83,9 @@ class QueryEngine:
     # set). chorus uses it to prepend ``AGENTS.md`` to every beat so an employee reads the cross-child
     # contract before writing. ``None`` leaves the session loop byte-for-byte unchanged (the default).
     orientation: OrientationConfig | None = None
+    # Role name from session metadata (planner/generator/evaluator) for STOP hooks.
+    role: str | None = None
+    delegations: AsyncDelegationManager | None = None
 
     def make_session_config(
         self,
@@ -111,6 +117,8 @@ class QueryEngine:
             limiter=SessionLimiter(self.limits) if self.limits is not None else None,
             hook_executor=self.hook_executor,
             orientation=self.orientation,
+            role=self.role,
+            delegations=self.delegations,
         )
 
 
@@ -137,6 +145,7 @@ def build_query_engine(
     model: str = "",
     hook_executor: HookExecutor | None = None,
     orientation: OrientationConfig | None = None,
+    delegations: AsyncDelegationManager | None = None,
 ) -> QueryEngine:
     """Wrap a ``ToolRegistry`` in the canonical dispatcher and bind a streamer.
 
@@ -154,7 +163,10 @@ def build_query_engine(
         permission_gate=permission_gate,
         role_allowed_tools=role_allowed_tools,
         hook_executor=hook_executor,
+        delegations=delegations,
     )
+    meta = context_metadata or {}
+    role_raw = meta.get("dream.role")
     return QueryEngine(
         streamer=streamer,
         dispatcher=dispatcher,
@@ -172,6 +184,8 @@ def build_query_engine(
         limits=limits,
         hook_executor=hook_executor,
         orientation=orientation,
+        role=role_raw if isinstance(role_raw, str) else None,
+        delegations=delegations,
     )
 
 

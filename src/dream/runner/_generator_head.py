@@ -50,6 +50,14 @@ def _format_contract(contract: SprintContract) -> str:
     parts += ["", "ACCEPTANCE CRITERIA  (all must hold when you're done)", "-" * 50]
     parts += [f"- {ac}" for ac in contract.acceptance_criteria]
 
+    if contract.rubric:
+        parts += [
+            "",
+            "REVIEW RUBRIC  (the evaluator judges against this; it must hold for pass)",
+            "-" * 50,
+            contract.rubric,
+        ]
+
     if contract.verification_steps:
         parts += [
             "",
@@ -72,21 +80,40 @@ def _format_contract(contract: SprintContract) -> str:
     return "\n".join(parts)
 
 
+def _format_task_intent(task_intent: str) -> str:
+    """Render the immutable task Intent block (empty when unset)."""
+    text = task_intent.strip()
+    if not text:
+        return ""
+    return (
+        "TASK INTENT  (source of truth — the sprint contract must not weaken this)\n"
+        "----------------------------------------------------------------------------\n"
+        f"{text}\n"
+        "\n"
+        "Satisfy the Intent as stated. Do not substitute a weaker or narrower\n"
+        "deliverable that is easier to mark done.\n"
+        "\n"
+    )
+
+
 def _build_intent(
     *,
     task_id: str,
     sprint_number: int,
     contract: SprintContract | None,
     step: LedgerStep,
+    task_intent: str = "",
 ) -> str:
     header = (
         f"You are executing sprint {sprint_number} of task {task_id}.\n"
     )
+    intent_block = _format_task_intent(task_intent)
 
     if contract is None:
         # Evaluator disabled — no contract on disk, no second pair of eyes.
         body = (
             f"{header}\n"
+            f"{intent_block}"
             "The evaluator is disabled for this task; there is no automated\n"
             "verifier to catch mistakes. Self-check thoroughly before stopping.\n"
             "\n"
@@ -96,21 +123,32 @@ def _build_intent(
         )
         return body
 
+    closing = (
+        "Make the smallest change that satisfies the TASK INTENT, every acceptance "
+        "criterion"
+    )
+    if contract.rubric:
+        closing += ", and the REVIEW RUBRIC"
+    closing += (
+        ".\nRun the verification steps and confirm they pass before declaring\n"
+        "the step complete. Prefer fidelity to the TASK INTENT over a weaker\n"
+        "deliverable that merely looks finished.\n"
+    )
     return (
         f"{header}\n"
+        f"{intent_block}"
         f"{_format_contract(contract)}\n"
         "\n"
         f"{_format_step(step)}\n"
         "\n"
-        "Make the smallest change that satisfies every acceptance criterion.\n"
-        "Run the verification steps and confirm they pass before declaring\n"
-        "the step complete.\n"
+        f"{closing}"
     )
 
 
 def make_generator_head(
     harness: Harness,
     *,
+    task_intent: str = "",
     harness_dir: Path | None = None,
     observer: RunTaskObserver | None = None,
 ) -> Callable[
@@ -123,6 +161,10 @@ def make_generator_head(
     and lets the model perform the work via its allowed tools. It
     returns ``None`` on completion; :class:`RoleSessionError` propagates
     on a mid-stream engine error.
+
+    ``task_intent`` is the original task Intent (source of truth). When set,
+    it is embedded in every generator prompt so negotiated acceptance
+    criteria cannot silently weaken stated requirements.
 
     ``harness_dir`` is forwarded so per-task role overlays in
     ``{harness_dir}/roles/generator.toml`` are honoured. ``observer``
@@ -140,6 +182,7 @@ def make_generator_head(
             sprint_number=sprint_number,
             contract=contract,
             step=step,
+            task_intent=task_intent,
         )
         await harness.run_role(
             "generator", prompt, harness_dir=harness_dir, observer=observer

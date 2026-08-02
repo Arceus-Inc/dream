@@ -29,12 +29,12 @@ def test_name(tool: FileEditTool) -> None:
     assert tool.name == "edit_file"
 
 
-async def test_replaces_first_occurrence(tool: FileEditTool, ctx, tmp_path: Path) -> None:
+async def test_replaces_unique_occurrence(tool: FileEditTool, ctx, tmp_path: Path) -> None:
     f = tmp_path / "code.py"
-    f.write_text("foo\nbar\nfoo\n", encoding="utf-8")
+    f.write_text("foo\nbar\nqux\n", encoding="utf-8")
     result = await tool.execute({"path": "code.py", "old_str": "foo", "new_str": "baz"}, ctx)
     assert result.is_error is False
-    assert f.read_text(encoding="utf-8") == "baz\nbar\nfoo\n"
+    assert f.read_text(encoding="utf-8") == "baz\nbar\nqux\n"
     assert result.metadata["replacements"] == 1
     assert result.metadata["lines_changed"] >= 1
 
@@ -74,11 +74,11 @@ async def test_old_str_ambiguous_without_replace_all_is_error(
     f = tmp_path / "code.py"
     f.write_text("dupe\ndupe\n", encoding="utf-8")
     result = await tool.execute({"path": "code.py", "old_str": "dupe", "new_str": "x"}, ctx)
-    # Default = replace first only is OK (matches openharness). We still want
-    # the ambiguity signalled in metadata so the engine / dispatcher can choose
-    # to refuse for safety, but the tool itself succeeds.
-    assert result.is_error is False
+    # Hermes-simple mutation honesty: refuse ambiguous single-replace.
+    assert result.is_error is True
     assert result.metadata["occurrences"] == 2
+    assert "ambiguous" in result.content.lower() or "unique" in result.metadata["safe_retry"].lower()
+    assert f.read_text(encoding="utf-8") == "dupe\ndupe\n"
 
 
 async def test_missing_file_is_error(tool: FileEditTool, ctx) -> None:

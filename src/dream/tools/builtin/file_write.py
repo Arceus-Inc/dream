@@ -55,6 +55,30 @@ class FileWriteTool(BaseTool):
                 stop_condition="do not retry on the same directory path",
             )
 
+        encoded = args.content.encode("utf-8")
+        if path.exists():
+            try:
+                if path.read_bytes() == encoded:
+                    return ToolResult(
+                        content=f"Write would not change file: {path}",
+                        is_error=True,
+                        metadata={
+                            "status": "error",
+                            "summary": "no-op write refused",
+                            "root_cause": "write would not change file bytes",
+                            "safe_retry": "provide different content or skip the write",
+                            "stop_condition": "do not retry the same no-op write",
+                            "next_actions": ("provide different content", "skip the write"),
+                        },
+                    )
+            except OSError as exc:
+                return _err(
+                    f"Could not inspect existing file: {exc}",
+                    root_cause=str(exc),
+                    safe_retry="check filesystem access, then retry",
+                    stop_condition="stop if the file cannot be read",
+                )
+
         try:
             atomic_write_text(path, args.content)
         except OSError as exc:
@@ -66,7 +90,21 @@ class FileWriteTool(BaseTool):
                 safe_retry="check directory permissions and available disk space",
                 stop_condition="do not retry until the underlying write error is resolved",
             )
-        encoded = args.content.encode("utf-8")
+        try:
+            if path.read_bytes() != encoded:
+                return _err(
+                    f"Write did not persist to disk: {path}",
+                    root_cause="post-write content mismatch",
+                    safe_retry="retry after confirming filesystem health",
+                    stop_condition="do not claim success when disk content differs",
+                )
+        except OSError as exc:
+            return _err(
+                f"Write succeeded but could not verify disk content: {exc}",
+                root_cause=str(exc),
+                safe_retry="re-read the file and retry",
+                stop_condition="stop if post-write verification keeps failing",
+            )
         return ToolResult(
             content=f"Wrote {path}",
             metadata={

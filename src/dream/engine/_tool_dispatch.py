@@ -41,18 +41,29 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from pydantic import ValidationError
 
-from dream.contracts.hook import HookEvent
+from dream.contracts.hook import (
+    HookEvent,
+    PostToolHookPayload,
+    PreToolHookPayload,
+    SubagentJoinMode,
+    SubagentStartPayload,
+    SubagentStopPayload,
+)
+from dream.contracts.tool import ToolResult
 from dream.hooks import HookExecutor
 from dream.permissions import Outcome, PermissionDecision, PermissionRequest
 from dream.services.tool_outputs import offload_tool_output
 from dream.tools._base import BaseTool
 from dream.tools._context import ToolExecutionContext
 from dream.tools._registry import ToolRegistry
+
+if TYPE_CHECKING:
+    from dream.subagents._async_delegation import AsyncDelegationManager
 
 PermissionGate = Callable[[PermissionRequest], PermissionDecision]
 """A pure decision function the dispatcher consults before executing a tool."""
@@ -77,6 +88,16 @@ class DispatchRecord:
     is_error: bool
     elapsed_seconds: float
     offloaded: bool
+
+
+@dataclass(frozen=True)
+class _DispatchOutcome:
+    content: str
+    is_error: bool
+    tool_result: ToolResult | None = None
+
+    def pair(self) -> tuple[str, bool]:
+        return self.content, self.is_error
 
 
 _DispatchObserver = Callable[[DispatchRecord], None]
@@ -109,78 +130,129 @@ class EngineToolDispatcher:
     context_metadata: dict[str, Any] = field(default_factory=dict)
     # Optional spec-13 lifecycle hook executor. When set, PRE_TOOL_USE fires
     # immediately before the dispatch atom and POST_TOOL_USE immediately after
-    # the ``(content, is_error)`` result exists -- observer-only (hooks never
-    # veto), so the call proceeds regardless. ``None`` means no firing, so
-    # existing call sites are byte-for-byte unaffected.
+    # the ``(content, is_error)`` result exists. Opt-in ``allow_block`` hooks may
+    # veto PRE (Hermes pre_tool_call). ``None`` means no firing.
     hook_executor: HookExecutor | None = None
+    delegations: AsyncDelegationManager | None = None
 
     async def dispatch(self, name: str, input: dict[str, Any]) -> tuple[str, bool]:
-        # Spec 13: PRE_TOOL_USE fires *before* the dispatch atom, then the result
-        # is produced, then POST_TOOL_USE fires *after* it exists. The hook is an
-        # observer (spec 13 divergence #1: it never vetoes) and ``fire`` never
-        # raises, so a faulty hook can't break the loop or split the tool-call
-        # atom. Wrapping the whole inner pipeline guarantees POST sees a result
-        # for *every* exit (role-refused, unknown, invalid, denied, timeout, ok).
+        # PRE_TOOL_USE → (optional veto / replace input) → execute → POST_TOOL_USE.
+        # ``fire`` never raises (crash-isolated); a blocked PRE skips execute.
         if self.hook_executor is None:
             return await self._dispatch_inner(name, input)
-        await self.hook_executor.fire(
-            HookEvent.PRE_TOOL_USE, {"tool_name": name, "tool_input": dict(input)}
+
+        tool_input = dict(input)
+        # Child sessions stamp dream.subagent_name — forge hooks skip when set.
+        from dream.subagents._inline_executor import SUBAGENT_NAME_METADATA_KEY
+        from dream.tools.builtin.spawn_subagent import SPAWN_SUBAGENT_TOOL, spawn_label_from_input
+
+        session_subagent = self.context_metadata.get(SUBAGENT_NAME_METADATA_KEY)
+
+        pre = await self.hook_executor.fire(
+            HookEvent.PRE_TOOL_USE,
+            PreToolHookPayload(
+                tool_name=name,
+                tool_input=tool_input,
+                subagent_name=session_subagent,
+            ).to_dict(),
         )
-        content, is_error = await self._dispatch_inner(name, input)
-        await self.hook_executor.fire(
+        if pre.blocked:
+            feedback = pre.feedback or "blocked by hook"
+            return (
+                f"Error: tool call blocked by hook.\n"
+                f"root_cause: hook_block\n"
+                f"safe_retry: {feedback}\n"
+                f"stop_condition: A PRE_TOOL_USE hook with allow_block vetoed this call.",
+                True,
+            )
+        if pre.replacement_input is not None:
+            tool_input = dict(pre.replacement_input)
+
+        spawn_label = spawn_label_from_input(tool_input)
+        if name == SPAWN_SUBAGENT_TOOL:
+            await self.hook_executor.fire(
+                HookEvent.SUBAGENT_START,
+                SubagentStartPayload(
+                    tool_name=SPAWN_SUBAGENT_TOOL,
+                    subagent_name=spawn_label,
+                    tool_input=tool_input,
+                ).to_dict(),
+            )
+
+        dispatch_outcome = await self._dispatch_outcome(name, tool_input)
+        content, is_error = dispatch_outcome.pair()
+        post = await self.hook_executor.fire(
             HookEvent.POST_TOOL_USE,
-            {
-                "tool_name": name,
-                "is_error": is_error,
-                "result_summary": content[:_RESULT_SUMMARY_MAX_CHARS],
-            },
+            PostToolHookPayload(
+                tool_name=name,
+                is_error=is_error,
+                result_summary=content[:_RESULT_SUMMARY_MAX_CHARS],
+            ).to_dict(),
         )
-        # Spec 13: SUBAGENT_STOP fires when a spawned subagent finishes — the
-        # per-child analog of the session STOP. ``spawn_subagent`` is dream's
-        # inline-subagent entry point, so its POST is the subagent's stop.
-        if name == "spawn_subagent":
+        if post.replacement_result is not None:
+            content = post.replacement_result
+        if name == SPAWN_SUBAGENT_TOOL:
+            result = dispatch_outcome.tool_result
+            metadata = result.metadata if result is not None else {}
+            join_raw = metadata.get("join_mode", metadata.get("mode", "sync"))
+            try:
+                join_mode = SubagentJoinMode(str(join_raw))
+            except ValueError:
+                join_mode = SubagentJoinMode.SYNC
+            delegation_raw = metadata.get("delegation_id")
             await self.hook_executor.fire(
                 HookEvent.SUBAGENT_STOP,
-                {
-                    "tool_name": name,
-                    "is_error": is_error,
-                    "result_summary": content[:_RESULT_SUMMARY_MAX_CHARS],
-                },
+                SubagentStopPayload(
+                    tool_name=SPAWN_SUBAGENT_TOOL,
+                    subagent_name=spawn_label,
+                    is_error=is_error,
+                    result_summary=content[:_RESULT_SUMMARY_MAX_CHARS],
+                    mode=join_mode,
+                    delegation_id=(
+                        delegation_raw if isinstance(delegation_raw, str) else None
+                    ),
+                    working_dir=str(self.working_dir),
+                    structured=result.structured if result is not None else None,
+                ).to_dict(),
             )
         return content, is_error
 
     async def _dispatch_inner(self, name: str, input: dict[str, Any]) -> tuple[str, bool]:
+        return (await self._dispatch_outcome(name, input)).pair()
+
+    async def _dispatch_outcome(self, name: str, input: dict[str, Any]) -> _DispatchOutcome:
         # ``input`` is the raw tool-call argument map straight off the model's
         # ToolUseBlock (e.g. {"path": "src/x.py", "content": "..."}); it is
         # validated against ``tool.input_model`` before any side-effecting work.
         if self.role_allowed_tools is not None and name not in self.role_allowed_tools:
-            return self._role_refused(name)
+            return _DispatchOutcome(*self._role_refused(name))
 
         tool = self.registry.get(name)
         if tool is None:
-            return self._unknown(name)
+            return _DispatchOutcome(*self._unknown(name))
 
         validation_error = self._validate_input(name, tool, input)
         if validation_error is not None:
-            return validation_error
+            return _DispatchOutcome(*validation_error)
 
         is_read_only = tool.is_read_only_for(input)
         if self.permission_gate is not None:
             request = self._permission_request(name, tool, input, is_read_only)
             decision = self.permission_gate(request)
             if not decision.allowed:
-                return self._denied(name, decision, is_read_only)
+                return _DispatchOutcome(*self._denied(name, decision, is_read_only))
 
         ctx = ToolExecutionContext(
             working_dir=self.working_dir,
             session_id=self.session_id,
             scratch_dir=self._resolved_scratch(),
             metadata=dict(self.context_metadata),  # copy: a tool can't leak into the next call
+            delegations=self.delegations,
         )
         result, elapsed = await self._run_with_timeout(name, tool, input, ctx, is_read_only)
         if isinstance(result, tuple):
             # A synthetic timeout result (already recorded) rather than a ToolResult.
-            return result
+            return _DispatchOutcome(*result)
         return self._offload_and_record(name, result, is_read_only=is_read_only, elapsed=elapsed)
 
     def _validate_input(
@@ -249,8 +321,8 @@ class EngineToolDispatcher:
         return self.scratch_dir or (self.working_dir / ".dream" / "scratch")
 
     def _offload_and_record(
-        self, name: str, result: Any, *, is_read_only: bool, elapsed: float
-    ) -> tuple[str, bool]:
+        self, name: str, result: ToolResult, *, is_read_only: bool, elapsed: float
+    ) -> _DispatchOutcome:
         """Offload an oversized payload, emit the dispatch record, return inline."""
         scratch = self._resolved_scratch()
         inline, pointer = offload_tool_output(
@@ -267,7 +339,7 @@ class EngineToolDispatcher:
             elapsed=elapsed,
             offloaded=offloaded,
         )
-        return inline, result.is_error
+        return _DispatchOutcome(inline, result.is_error, result)
 
     def _permission_request(
         self, name: str, tool: BaseTool, input: dict[str, Any], is_read_only: bool

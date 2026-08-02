@@ -1,21 +1,23 @@
-"""Hook executor — fire-and-forget observers of the agent loop (spec 13).
+"""Hook executor — bounded, crash-isolated lifecycle dispatch (spec 13).
 
-Two hard rules from the spec's extension surface:
+Observers by default. Opt-in powers (Hermes-aligned):
 
-12. **Hooks never veto.** A ``HookResult.blocked=True`` is stripped and
-    warned about (``hook.blocked.ignored``) — divergence #1 from
-    OpenHarness, whose ``block_on_failure`` path is removed here.
-13. **Synchronous-but-bounded:** each handler gets a wall-clock deadline
-    (default 1s). Overrun → ``hook.handler.timeout``, move on, no retry.
-    A crash → ``hook.handler.error``, move on. Real work belongs on a
-    queue — that's the handler's problem, not the loop's.
+- ``HookSpec.allow_block`` — ``HookResult.blocked`` becomes a real veto
+  (``hook.blocked``); without the flag → ``hook.blocked.ignored``.
+- ``HookSpec.allow_continue`` — ``continue_message`` on STOP is collected
+  (first-wins); without the flag → ``hook.continue.ignored``.
+- ``replacement_input`` / ``replacement_result`` / ``inject_context`` —
+  first non-empty wins; call sites must apply them.
+
+Handlers run under a wall-clock deadline (default 1s). Crash / timeout →
+emit + move on (fail-open).
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -42,9 +44,11 @@ class FireOutcome:
     errors: int = 0
     timeouts: int = 0
     feedback: tuple[str, ...] = field(default_factory=tuple)
-    # Always False — kept so call sites read naturally; spec 13 strips
-    # the veto path entirely.
     blocked: bool = False
+    replacement_input: dict[str, Any] | None = None
+    replacement_result: str | None = None
+    inject_context: str | None = None
+    continue_message: str | None = None
 
 
 class HookExecutor:
@@ -66,19 +70,24 @@ class HookExecutor:
 
     def _subscribers(self, event: HookEvent) -> list[Hook]:
         matched = [h for h in self._hooks if event in h.spec.events]
-        # Higher priority first; ties keep registration order (sort is stable).
         matched.sort(key=lambda h: -h.spec.priority)
         return matched
 
-    async def fire(self, event: HookEvent, payload: dict[str, Any]) -> FireOutcome:
-        """Run every subscriber for ``event``; never raises, never vetoes."""
+    async def fire(self, event: HookEvent, payload: Mapping[str, Any]) -> FireOutcome:
+        """Run every subscriber for ``event``; never raises. Opt-in powers honored."""
         fired = errors = timeouts = 0
         feedback: list[str] = []
+        blocked = False
+        replacement_input: dict[str, Any] | None = None
+        replacement_result: str | None = None
+        inject_context: str | None = None
+        continue_message: str | None = None
+
         for hook in self._subscribers(event):
             fired += 1
             try:
                 async with asyncio.timeout(self._deadline):
-                    result = await hook(event, payload)
+                    result = await hook(event, dict(payload))
             except asyncio.CancelledError:
                 raise
             except TimeoutError:
@@ -99,20 +108,55 @@ class HookExecutor:
                     error=repr(exc),
                 )
                 continue
+
             if result.blocked:
-                self._emit_safe(
-                    "hook.blocked.ignored",
-                    event=str(event),
-                    hook=_hook_name(hook),
-                    feedback=result.feedback,
-                )
+                if hook.spec.allow_block:
+                    blocked = True
+                    self._emit_safe(
+                        "hook.blocked",
+                        event=str(event),
+                        hook=_hook_name(hook),
+                        feedback=result.feedback,
+                    )
+                else:
+                    self._emit_safe(
+                        "hook.blocked.ignored",
+                        event=str(event),
+                        hook=_hook_name(hook),
+                        feedback=result.feedback,
+                    )
+
+            if result.continue_message:
+                if hook.spec.allow_continue:
+                    if continue_message is None:
+                        continue_message = result.continue_message
+                else:
+                    self._emit_safe(
+                        "hook.continue.ignored",
+                        event=str(event),
+                        hook=_hook_name(hook),
+                        feedback=result.continue_message,
+                    )
+
+            if result.replacement_input and replacement_input is None:
+                replacement_input = dict(result.replacement_input)
+            if result.replacement_result and replacement_result is None:
+                replacement_result = result.replacement_result
+            if result.inject_context and inject_context is None:
+                inject_context = result.inject_context
             if result.feedback:
                 feedback.append(result.feedback)
+
         return FireOutcome(
             fired=fired,
             errors=errors,
             timeouts=timeouts,
             feedback=tuple(feedback),
+            blocked=blocked,
+            replacement_input=replacement_input,
+            replacement_result=replacement_result,
+            inject_context=inject_context,
+            continue_message=continue_message,
         )
 
     def _emit_safe(self, event_type: str, **payload: Any) -> None:

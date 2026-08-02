@@ -39,6 +39,8 @@ from dream.events import (
     TurnComplete,
 )
 from dream.session import Session, SessionOptions
+from dream.subagents._async_delegation import AsyncDelegationManager
+from dream.subagents._projection import SubagentResult
 from tests.test_engine._fakes import FakeDispatcher, FakeStreamer, FakeTurn
 
 
@@ -339,6 +341,29 @@ async def test_session_cancel_without_engine_is_noop() -> None:
     """
     session = Session(id="s1")
     await session.cancel()  # must not raise
+
+
+async def test_session_cancel_interrupts_owned_background_children() -> None:
+    manager = AsyncDelegationManager(max_active=1)
+    cancelled = asyncio.Event()
+
+    async def work() -> tuple[SubagentResult, ...]:
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled.set()
+
+    assert manager.start("s1", ("reviewer",), work) is not None
+    await asyncio.sleep(0)
+    engine = _engine(FakeStreamer([]), FakeDispatcher())
+    engine.delegations = manager
+    session = Session(id="s1", _engine=engine)
+
+    await session.cancel()
+
+    assert cancelled.is_set()
+    assert manager.active("s1") == 0
+    await manager.close()
 
 
 # --- public surface ----------------------------------------------------------

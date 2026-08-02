@@ -1,10 +1,10 @@
-"""Subagent declaration — the chorus-side data model.
+"""Role-agnostic subagent declarations.
 
-A ``Subagent`` is a thin overlay declaration projected onto dream's existing
+A ``Subagent`` is a thin overlay declaration projected onto Dream's existing
 ``TeammateSpawnConfig`` at beat-build time. The declaration is durable (lives on
 the role / in the registry); the spawn config is ephemeral (minted per dispatch).
 
-Spec §03: One chorus declaration, projected onto dream's spawn handle.
+The declaring application owns role policy; Dream only executes the typed shape.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ Tier-1 specialist spawn a Tier-2 orchestrator, bounded by construction."""
 
 @dataclass(frozen=True)
 class Subagent:
-    """Chorus-side subagent declaration.
+    """Harness-side subagent declaration.
 
     Declared on the role (Tier-1) or in the shared SubagentRegistry (Tier-2).
     Projected onto dream's TeammateSpawnConfig at dispatch time.

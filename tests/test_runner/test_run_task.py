@@ -671,11 +671,11 @@ def _make_evaluator_run_with_notes(*, outcome: str, notes: str = "") -> Any:
     return evaluator_run
 
 
-async def test_two_needs_changes_blocks_step_without_burning_max_sprints(
+async def test_two_needs_changes_stops_run_without_burning_max_sprints(
     tmp_path: Path,
 ) -> None:
-    """After NEEDS_CHANGES_LIMIT (2) needs-changes on the same step the step
-    becomes blocked and the loop exits before hitting max_sprints."""
+    """After NEEDS_CHANGES_LIMIT needs-changes in one run_task the loop stops
+    while the step stays in_progress for a later RESUME."""
     from dream.planner import PlannerLedger, planner_ledger_path
     from dream.runner import run_task
 
@@ -693,17 +693,16 @@ async def test_two_needs_changes_blocks_step_without_burning_max_sprints(
         max_sprints=20,
     )
 
-    # Must not have used all 20 sprints — blocked after 2 needs-changes
     assert len(result.sprints) == 2
     final = PlannerLedger.load(planner_ledger_path(tmp_path, "t1"))
-    assert final.steps[0].status == "blocked"
+    assert final.steps[0].status == "in_progress"
+    assert final.steps[0].needs_changes_count == 2
 
 
 async def test_two_needs_changes_emits_sprint_escalated_event(
     tmp_path: Path,
 ) -> None:
-    """When the second needs-changes triggers a block, a sprint.escalated event
-    must be dispatched to the observer with needs_changes_count == 2."""
+    """When the per-invocation strike limit is hit, emit sprint.escalated."""
     from dream.runner import run_task
     from dream.runner._observer import _CapturingObserver
 
@@ -729,13 +728,13 @@ async def test_two_needs_changes_emits_sprint_escalated_event(
     assert escalated[0]["task_id"] == "t1"
     assert escalated[0]["step_id"] == "s1"
     assert escalated[0]["needs_changes_count"] == 2
+    assert escalated[0]["strikes_this_run"] == 2
 
 
 async def test_sprint_escalated_not_emitted_on_first_needs_changes(
     tmp_path: Path,
 ) -> None:
-    """The escalation event fires only when the step is blocked — the first
-    needs-changes must not emit it."""
+    """Escalation fires only at the per-invocation limit — not on first NC."""
     from dream.runner import run_task
     from dream.runner._observer import _CapturingObserver
     from dream.sprint import EvaluationRecord
@@ -767,3 +766,142 @@ async def test_sprint_escalated_not_emitted_on_first_needs_changes(
 
     escalated = [e for e in observer.events if e.get("kind") == "sprint.escalated"]
     assert escalated == []
+
+
+# --- Hermes-simple resume (PlanAdmission.RESUME) -------------------------
+
+
+async def test_resume_skips_planner_and_continues_in_progress_step(
+    tmp_path: Path,
+) -> None:
+    """Same task_id + RESUME must not re-plan; it continues needs-changes repair."""
+    from dream.planner import planner_ledger_path
+    from dream.runner import PlanAdmission, run_task
+    from dream.runner._observer import _CapturingObserver
+    from dream.sprint import EvaluationRecord
+
+    outcomes = iter(["needs-changes", "pass"])
+
+    async def evaluator_run(task_id, sprint_n, contract, step):
+        outcome = next(outcomes)
+        return EvaluationRecord(
+            task_id=task_id,
+            sprint_number=sprint_n,
+            step_id=step.id,
+            outcome=outcome,  # type: ignore[arg-type]
+            notes=f"{outcome} for {step.id}",
+            items=("fix the gap",) if outcome == "needs-changes" else (),
+        )
+
+    first = await run_task(
+        task_id="stable-t1",
+        intent="ship",
+        worktree_root=tmp_path,
+        planner=_make_planner(steps=1),
+        generator_execute=_noop_execute,
+        evaluator_propose=_accept_first_proposal_propose(["c"]),
+        generator_respond=_accept_first_proposal_respond(),
+        evaluator_run=evaluator_run,
+        max_sprints=1,
+        plan_admission=PlanAdmission.FRESH,
+    )
+    assert first.final_ledger.steps[0].status == "in_progress"
+    assert first.sprints[0].outcome == "needs-changes"
+
+    observer = _CapturingObserver()
+    second = await run_task(
+        task_id="stable-t1",
+        intent="ship",
+        worktree_root=tmp_path,
+        planner=_make_planner(steps=1),
+        generator_execute=_noop_execute,
+        evaluator_propose=_accept_first_proposal_propose(["c"]),
+        generator_respond=_accept_first_proposal_respond(),
+        evaluator_run=evaluator_run,
+        max_sprints=3,
+        plan_admission=PlanAdmission.RESUME,
+        observer=observer,
+    )
+    skipped = [e for e in observer.events if e.get("kind") == "planner.skipped"]
+    assert len(skipped) == 1
+    assert skipped[0]["reason"] == "resume"
+    assert second.final_ledger.steps[0].status == "done"
+    assert any(s.outcome == "pass" for s in second.sprints)
+    assert planner_ledger_path(tmp_path, "stable-t1").is_file()
+
+
+async def test_resume_after_strike_limit_continues_naturally(
+    tmp_path: Path,
+) -> None:
+    """After the strike limit stops a beat, RESUME continues in_progress — no reopen."""
+    from dream.planner import PlannerLedger, planner_ledger_path
+    from dream.runner import PlanAdmission, run_task
+
+    first = await run_task(
+        task_id="t-resume-after-limit",
+        intent="ship",
+        worktree_root=tmp_path,
+        planner=_make_planner(steps=1),
+        generator_execute=_noop_execute,
+        evaluator_propose=_accept_first_proposal_propose(["c"]),
+        generator_respond=_accept_first_proposal_respond(),
+        evaluator_run=_make_evaluator_run_with_notes(
+            outcome="needs-changes", notes="stdlib queue shim"
+        ),
+        max_sprints=6,
+        plan_admission=PlanAdmission.FRESH,
+    )
+    assert len(first.sprints) == 2
+    assert first.final_ledger.steps[0].status == "in_progress"
+
+    second = await run_task(
+        task_id="t-resume-after-limit",
+        intent="ship",
+        worktree_root=tmp_path,
+        planner=_make_planner(steps=1),
+        generator_execute=_noop_execute,
+        evaluator_propose=_accept_first_proposal_propose(["c"]),
+        generator_respond=_accept_first_proposal_respond(),
+        evaluator_run=_make_evaluator_run(outcome="pass"),
+        max_sprints=3,
+        plan_admission=PlanAdmission.RESUME,
+    )
+    assert len(second.sprints) >= 1
+    assert any(s.outcome == "pass" for s in second.sprints)
+    assert second.final_ledger.steps[0].status == "done"
+    final = PlannerLedger.load(planner_ledger_path(tmp_path, "t-resume-after-limit"))
+    assert "stdlib queue shim" in (final.steps[0].notes or "")
+
+
+async def test_resume_without_ledger_plans_fresh(tmp_path: Path) -> None:
+    from dream.runner import PlanAdmission, run_task
+
+    result = await run_task(
+        task_id="new-t",
+        intent="ship",
+        worktree_root=tmp_path,
+        planner=_make_planner(steps=1),
+        generator_execute=_noop_execute,
+        evaluator_propose=_accept_first_proposal_propose(["c"]),
+        generator_respond=_accept_first_proposal_respond(),
+        evaluator_run=_make_evaluator_run(outcome="pass"),
+        plan_admission=PlanAdmission.RESUME,
+    )
+    assert result.final_ledger.steps[0].status == "done"
+
+
+async def test_plan_admission_rejects_stringly_values(tmp_path: Path) -> None:
+    from dream.runner import run_task
+
+    with pytest.raises(TypeError, match="PlanAdmission"):
+        await run_task(
+            task_id="t",
+            intent="x",
+            worktree_root=tmp_path,
+            planner=_make_planner(steps=1),
+            generator_execute=_noop_execute,
+            evaluator_propose=_accept_first_proposal_propose(["c"]),
+            generator_respond=_accept_first_proposal_respond(),
+            evaluator_run=_make_evaluator_run(outcome="pass"),
+            plan_admission="resume",  # type: ignore[arg-type]
+        )

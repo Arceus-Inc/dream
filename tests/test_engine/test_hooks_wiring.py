@@ -218,7 +218,7 @@ async def test_full_lifecycle_order(tmp_path: Path) -> None:
 
     by_event = {ev: payload for ev, payload in hook.seen}
     assert by_event[HookEvent.SESSION_START] == {"session_id": "s_lifecycle"}
-    assert by_event[HookEvent.STOP] == {"session_id": "s_lifecycle"}
+    assert by_event[HookEvent.STOP]["session_id"] == "s_lifecycle"
     assert by_event[HookEvent.PRE_TOOL_USE]["tool_name"] == "echo"
     assert by_event[HookEvent.PRE_TOOL_USE]["tool_input"] == {}
     post = by_event[HookEvent.POST_TOOL_USE]
@@ -378,7 +378,14 @@ class _FakeSpawnTool(BaseTool):
     input_model = _EchoInput
 
     async def execute(self, input: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
-        return ToolResult(content="subagent-summary")
+        return ToolResult(
+            content="subagent-summary",
+            structured={"status": "dispatched"},
+            metadata={
+                "join_mode": "background",
+                "delegation_id": "d-123",
+            },
+        )
 
 
 def _spawn_streamer() -> FakeStreamer:
@@ -411,6 +418,10 @@ async def test_subagent_stop_fires_after_spawn_subagent(tmp_path: Path) -> None:
     assert stop["tool_name"] == "spawn_subagent"
     assert stop["is_error"] is False
     assert "subagent-summary" in stop["result_summary"]
+    assert stop["mode"] == "background"
+    assert stop["delegation_id"] == "d-123"
+    assert stop["working_dir"] == str(tmp_path)
+    assert stop["structured"] == {"status": "dispatched"}
 
 
 async def test_subagent_stop_not_fired_for_ordinary_tool(tmp_path: Path) -> None:

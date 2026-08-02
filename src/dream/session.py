@@ -267,6 +267,8 @@ class Session:
                     ConversationMessage(role="user", content=list(pending_tool_results))
                 )
                 pending_tool_results.clear()
+            if self._engine.delegations is not None:
+                await self._engine.delegations.cancel_session(self.id)
 
     def _translate(
         self,
@@ -405,9 +407,10 @@ class Session:
         A no-op when no ``send`` is in flight.
         """
         cancel_event = self._cancel_event
-        if cancel_event is None:
-            return
-        cancel_event.set()
+        if cancel_event is not None:
+            cancel_event.set()
+        if self._engine is not None and self._engine.delegations is not None:
+            await self._engine.delegations.cancel_session(self.id)
 
     async def close(self) -> None:
         """Release resources held by this session. Idempotent.

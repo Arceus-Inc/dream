@@ -17,8 +17,9 @@ What this slice pins:
 - The intent always carries task id + sprint number + the step's id
   and description.
 - When a contract is present, the intent includes goal, acceptance
-  criteria, verification steps, and scope guards so the model can
-  self-check before stopping.
+  criteria, the DoD REVIEW RUBRIC (when set), verification steps, and
+  scope guards so the model can self-check before stopping against the
+  same bar the evaluator will judge.
 - When the contract is ``None`` (evaluator disabled), the intent
   documents the step alone — no fake contract is fabricated.
 - ``RoleSessionError`` from the session layer propagates unchanged.
@@ -132,6 +133,7 @@ def _contract(
     scope_includes: tuple[str, ...] = ("src/widget/", "tests/widget/"),
     scope_excludes: tuple[str, ...] = ("src/legacy/",),
     evaluator_enabled: bool = True,
+    rubric: str = "",
 ) -> SprintContract:
     return SprintContract(
         task_id=task_id,
@@ -142,6 +144,7 @@ def _contract(
         scope_includes=scope_includes,
         scope_excludes=scope_excludes,
         evaluator_enabled=evaluator_enabled,
+        rubric=rubric,
     )
 
 
@@ -279,6 +282,68 @@ async def test_generator_head_intent_includes_all_acceptance_criteria() -> None:
     assert "renders under 50ms" in prompt
     assert "no axe violations" in prompt
     assert "covered by unit test" in prompt
+
+
+async def test_generator_head_embeds_task_intent_as_source_of_truth() -> None:
+    """Contract ACs can dilute; the original task Intent must stay in the
+    generator prompt as the non-negotiable work contract (first principle:
+    implement against the real Intent, not a softened rewrite).
+    """
+    harness, streamer = _harness_with_reply()
+    head = make_generator_head(
+        harness,
+        task_intent=(
+            "Publish a launch brief covering audience, offer, and one CTA; "
+            "do not invent extra channels."
+        ),
+    )
+
+    await head(
+        "task-001",
+        1,
+        _contract(
+            acceptance_criteria=(
+                "MUST write a brief",  # diluted
+            )
+        ),
+        _step(),
+    )
+
+    prompt = streamer.last_user_text
+    assert "audience, offer, and one CTA" in prompt
+    assert "TASK INTENT" in prompt or "task intent" in prompt.lower()
+    assert "source of truth" in prompt.lower() or "must not weaken" in prompt.lower()
+
+
+async def test_generator_head_intent_includes_review_rubric_when_set() -> None:
+    """DoD rubric must reach the generator — same bar the evaluator judges."""
+    harness, streamer = _harness_with_reply()
+    head = make_generator_head(harness)
+    rubric = (
+        "PASS only if token_store.py exists as its own module with "
+        "create(subject, ttl_s, scopes) -> str."
+    )
+
+    await head(
+        "task-001",
+        1,
+        _contract(rubric=rubric),
+        _step(),
+    )
+
+    prompt = streamer.last_user_text
+    assert "REVIEW RUBRIC" in prompt
+    assert "token_store.py exists as its own module" in prompt
+    assert "create(subject, ttl_s, scopes) -> str" in prompt
+
+
+async def test_generator_head_intent_omits_review_rubric_when_blank() -> None:
+    harness, streamer = _harness_with_reply()
+    head = make_generator_head(harness)
+
+    await head("task-001", 1, _contract(rubric=""), _step())
+
+    assert "REVIEW RUBRIC" not in streamer.last_user_text
 
 
 async def test_generator_head_intent_includes_verification_steps() -> None:
