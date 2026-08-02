@@ -11,7 +11,7 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from dream.subagents._inline_executor import run_subagent_inline
+from dream.subagents._inline_executor import run_subagent_session
 from dream.subagents._projection import SubagentResult
 from dream.utils.fs import atomic_write_text
 
@@ -109,7 +109,7 @@ async def run_subagent_delegate(
 ) -> SubagentResult:
     """Run a specialist in a fresh ``run_role`` session; return budgeted summary.
 
-    History starts empty (``run_role`` / ``run_subagent_inline`` always mint a new
+    History starts empty; each delegation mints a new
     session). The firewall is the prompt inlet: only ``goal`` + packed ``context``.
 
     ``spill_dir`` is the session scratch dir: an over-budget summary is written
@@ -118,7 +118,7 @@ async def run_subagent_delegate(
     """
     workspace = str(working_dir) if working_dir is not None else None
     prompt = build_child_prompt(goal, context, workspace_path=workspace)
-    result = await run_subagent_inline(
+    result = await run_subagent_session(
         agent,
         prompt=prompt,
         harness=harness,

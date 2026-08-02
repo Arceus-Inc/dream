@@ -12,7 +12,6 @@ bounded work, then dissolves. This package defines:
 from dream.subagents._declaration import (
     PermissionDelta,
     Subagent,
-    SubagentExecutionMode,
     SubagentSet,
 )
 from dream.subagents._projection import SubagentResult, project_subagent
@@ -21,7 +20,6 @@ from dream.subagents._registry import SubagentRegistry
 __all__ = [
     "PermissionDelta",
     "Subagent",
-    "SubagentExecutionMode",
     "SubagentRegistry",
     "SubagentResult",
     "SubagentSet",

@@ -10,7 +10,6 @@ The declaring application owns role policy; Dream only executes the typed shape.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import StrEnum
 from typing import Any
 
 PermissionDelta = tuple[str, ...]
@@ -21,13 +20,6 @@ MAX_SUBAGENT_DEPTH = 2
 """Hard cap on subagent nesting. A subagent at ``depth < MAX_SUBAGENT_DEPTH`` may dispatch its
 declared ``spawnable`` children; at the cap it is always a leaf. V1 was flat (1); depth-2 lets a
 Tier-1 specialist spawn a Tier-2 orchestrator, bounded by construction."""
-
-
-class SubagentExecutionMode(StrEnum):
-    """How a child shares work intent with its parent."""
-
-    DELEGATE = "delegate"
-    INLINE = "inline"
 
 
 @dataclass(frozen=True)
@@ -68,9 +60,6 @@ class Subagent:
     max_turns: int = 8
     """Maximum turn budget for the subagent before forced termination."""
 
-    execution_mode: SubagentExecutionMode = SubagentExecutionMode.DELEGATE
-    """Delegate with a context firewall, or co-write inline with the parent intent."""
-
     spawnable: tuple[Subagent, ...] = ()
     """The Tier-2 subagents THIS subagent may itself dispatch (depth-2). Empty (default) = a leaf,
     unchanged from v1. Non-empty + ``depth < MAX_SUBAGENT_DEPTH`` makes the child spawn-eligible: it
@@ -104,7 +93,6 @@ class Subagent:
             "spawned_by": list(self.spawned_by),
             "system_prompt": self.system_prompt,
             "max_turns": self.max_turns,
-            "execution_mode": self.execution_mode.value,
             "spawnable": [child.to_dict() for child in self.spawnable],
         }
 
@@ -121,9 +109,6 @@ class Subagent:
             spawned_by=tuple(data.get("spawned_by") or ()),
             system_prompt=data.get("system_prompt"),
             max_turns=data.get("max_turns", 8),
-            execution_mode=SubagentExecutionMode(
-                data.get("execution_mode", SubagentExecutionMode.DELEGATE)
-            ),
             spawnable=tuple(cls.from_dict(child) for child in (data.get("spawnable") or ())),
         )
 

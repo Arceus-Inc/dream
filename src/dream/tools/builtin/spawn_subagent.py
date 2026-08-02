@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field, model_validator
 from dream.contracts.hook import SubagentJoinMode
 from dream.contracts.tool import ToolResult
 from dream.observability._tracer import Tracer
-from dream.subagents._declaration import Subagent, SubagentExecutionMode, SubagentSet
+from dream.subagents._declaration import Subagent, SubagentSet
 from dream.subagents._projection import SubagentResult
 from dream.tools._base import BaseTool, ToolDeclaration
 from dream.tools._context import ToolExecutionContext
@@ -46,7 +46,6 @@ SPAWN_SUBAGENT_TOOL = "spawn_subagent"
 
 
 class SpawnJoinMode(StrEnum):
-    INLINE = "inline"
     DELEGATE = "delegate"
 
 
@@ -289,7 +288,6 @@ class SpawnSubagentTool(BaseTool):
 
     async def execute(self, input: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
         from dream.subagents._delegate import run_subagent_delegate
-        from dream.subagents._inline_executor import run_subagent_inline
 
         args = SpawnSubagentInput.model_validate(input)
         subagent_set: SubagentSet | None = ctx.metadata.get(SUBAGENT_SET_CONTEXT_KEY)
@@ -384,32 +382,18 @@ class SpawnSubagentTool(BaseTool):
                         "parent_session_id": ctx.session_id,
                     },
                 )
-            if agent.execution_mode is SubagentExecutionMode.INLINE:
-                prompt = (
-                    task.goal if not task.context else f"{task.goal}\n\nCONTEXT:\n{task.context}"
-                )
-                result = await run_subagent_inline(
-                    agent,
-                    prompt=prompt,
-                    harness=harness,
-                    parent_tools=parent_tools,
-                    spawn_counter=counter,
-                    tracer=tracer,
-                    observer=ctx.metadata.get(OBSERVER_KEY),
-                )
-            else:
-                result = await run_subagent_delegate(
-                    agent,
-                    goal=task.goal,
-                    context=task.context,
-                    harness=harness,
-                    parent_tools=parent_tools,
-                    spawn_counter=counter,
-                    tracer=tracer,
-                    observer=ctx.metadata.get(OBSERVER_KEY),
-                    working_dir=ctx.working_dir,
-                    spill_dir=ctx.scratch_dir,
-                )
+            result = await run_subagent_delegate(
+                agent,
+                goal=task.goal,
+                context=task.context,
+                harness=harness,
+                parent_tools=parent_tools,
+                spawn_counter=counter,
+                tracer=tracer,
+                observer=ctx.metadata.get(OBSERVER_KEY),
+                working_dir=ctx.working_dir,
+                spill_dir=ctx.scratch_dir,
+            )
             if tracer is not None:
                 tracer.event(
                     "subagent.complete",
@@ -432,9 +416,6 @@ class SpawnSubagentTool(BaseTool):
         background_supported = (
             args.background
             and ctx.delegations is not None
-            and not any(
-                task.agent.execution_mode is SubagentExecutionMode.INLINE for task in resolved
-            )
         )
         forced_sync_note = ""
         if background_supported:
@@ -462,7 +443,7 @@ class SpawnSubagentTool(BaseTool):
             forced_sync_note = (
                 "delivery unavailable"
                 if ctx.delegations is None
-                else "inline specialist requires parent join"
+                else "synchronous delegation requires parent join"
             )
 
         results = await run_all()
@@ -523,11 +504,7 @@ class SpawnSubagentTool(BaseTool):
                     "turns_used": result.turns_used,
                     "tool_calls": result.tool_calls,
                     "tool_errors": result.tool_errors,
-                    "mode": (
-                        SpawnJoinMode.INLINE.value
-                        if resolved[0].agent.execution_mode is SubagentExecutionMode.INLINE
-                        else SpawnJoinMode.DELEGATE.value
-                    ),
+                    "mode": SpawnJoinMode.DELEGATE.value,
                     "join_mode": SubagentJoinMode.SYNC.value,
                     "background_forced_sync": bool(forced_sync_note),
                 },

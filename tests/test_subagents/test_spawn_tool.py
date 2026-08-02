@@ -12,7 +12,7 @@ import pytest
 from pydantic import ValidationError
 
 from dream.subagents._async_delegation import AsyncDelegationManager
-from dream.subagents._declaration import Subagent, SubagentExecutionMode, SubagentSet
+from dream.subagents._declaration import Subagent, SubagentSet
 from dream.subagents._projection import SubagentResult
 from dream.tools._context import ToolExecutionContext
 from dream.tools.builtin.spawn_subagent import (
@@ -133,7 +133,7 @@ class TestSpawnSubagentTool:
         )
 
         with patch(
-            "dream.subagents._delegate.run_subagent_inline",
+            "dream.subagents._delegate.run_subagent_delegate",
             return_value=mock_result,
         ):
             ctx = _make_ctx(
@@ -148,33 +148,6 @@ class TestSpawnSubagentTool:
         assert result.metadata["turns_used"] == 3
         assert result.metadata["tool_calls"] == 2
 
-    async def test_inline_execution_is_declared_not_inferred_from_name(self) -> None:
-        tool = SpawnSubagentTool()
-        agent = Subagent(
-            name="arbitrary_writer",
-            description="Writes shared intent",
-            tools=("read_file",),
-            execution_mode=SubagentExecutionMode.INLINE,
-        )
-        agents = SubagentSet(agents={agent.name: agent})
-        mock_result = SubagentResult(name=agent.name, output="done")
-
-        with (
-            patch(
-                "dream.subagents._inline_executor.run_subagent_inline",
-                return_value=mock_result,
-            ) as inline,
-            patch("dream.subagents._delegate.run_subagent_delegate") as delegated,
-        ):
-            result = await tool.execute(
-                {"subagent_type": agent.name, "goal": "write it"},
-                _make_ctx(subagent_set=agents, harness=AsyncMock()),
-            )
-
-        assert not result.is_error
-        inline.assert_awaited_once()
-        delegated.assert_not_awaited()
-
     def test_tool_declaration(self) -> None:
         tool = SpawnSubagentTool()
         assert tool.name == "spawn_subagent"
@@ -186,7 +159,7 @@ class TestSpawnSubagentTool:
         mock_result = SubagentResult(name="reviewer", output="ok", success=True)
 
         with patch(
-            "dream.subagents._delegate.run_subagent_inline",
+            "dream.subagents._delegate.run_subagent_delegate",
             return_value=mock_result,
         ):
             ctx1 = _make_ctx(subagent_set=_simple_subagent_set(), harness=AsyncMock())
@@ -213,7 +186,7 @@ class TestSpawnSubagentTool:
             active -= 1
             return SubagentResult(name=agent.name, output=f"{agent.name}-done")
 
-        with patch("dream.subagents._delegate.run_subagent_inline", side_effect=run):
+        with patch("dream.subagents._delegate.run_subagent_delegate", side_effect=run):
             result = await tool.execute(
                 {
                     "tasks": [
@@ -241,7 +214,7 @@ class TestSpawnSubagentTool:
                 error=None if agent.name == "reviewer" else "critic failed",
             )
 
-        with patch("dream.subagents._delegate.run_subagent_inline", side_effect=run):
+        with patch("dream.subagents._delegate.run_subagent_delegate", side_effect=run):
             result = await SpawnSubagentTool().execute(
                 {
                     "tasks": [
@@ -272,7 +245,7 @@ class TestSpawnSubagentTool:
 
         ctx = _make_ctx(subagent_set=_simple_subagent_set(), harness=AsyncMock())
         ctx.delegations = manager
-        with patch("dream.subagents._delegate.run_subagent_inline", side_effect=run):
+        with patch("dream.subagents._delegate.run_subagent_delegate", side_effect=run):
             result = await tool.execute(
                 {"subagent_type": "reviewer", "goal": "review", "background": True},
                 ctx,
@@ -295,7 +268,7 @@ class TestSpawnSubagentTool:
 
         ctx = _make_ctx(subagent_set=_two_subagent_set(), harness=AsyncMock())
         ctx.delegations = manager
-        with patch("dream.subagents._delegate.run_subagent_inline", side_effect=run):
+        with patch("dream.subagents._delegate.run_subagent_delegate", side_effect=run):
             result = await SpawnSubagentTool().execute(
                 {
                     "background": True,
@@ -325,7 +298,7 @@ class TestSpawnSubagentTool:
         ctx = _make_ctx(subagent_set=_simple_subagent_set(), harness=AsyncMock())
         ctx.delegations = manager
         expected = SubagentResult(name="reviewer", output="reviewed")
-        with patch("dream.subagents._delegate.run_subagent_inline", return_value=expected):
+        with patch("dream.subagents._delegate.run_subagent_delegate", return_value=expected):
             result = await SpawnSubagentTool().execute(
                 {"subagent_type": "reviewer", "goal": "review", "background": True},
                 ctx,
@@ -341,7 +314,7 @@ class TestSpawnSubagentTool:
     async def test_background_forces_sync_when_delivery_is_unavailable(self) -> None:
         tool = SpawnSubagentTool()
         mock_result = SubagentResult(name="reviewer", output="ok", success=True)
-        with patch("dream.subagents._delegate.run_subagent_inline", return_value=mock_result):
+        with patch("dream.subagents._delegate.run_subagent_delegate", return_value=mock_result):
             result = await tool.execute(
                 {"subagent_type": "reviewer", "goal": "review", "background": True},
                 _make_ctx(subagent_set=_simple_subagent_set(), harness=AsyncMock()),

@@ -81,7 +81,7 @@ async def test_name_alias_still_works() -> None:
     tool = SpawnSubagentTool()
     mock_result = SubagentResult(name="reviewer", output="ok", success=True)
     with patch(
-        "dream.subagents._delegate.run_subagent_inline",
+        "dream.subagents._delegate.run_subagent_delegate",
         return_value=mock_result,
     ):
         result = await tool.execute(

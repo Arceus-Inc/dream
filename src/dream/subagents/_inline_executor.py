@@ -1,4 +1,4 @@
-"""Inline subagent executor — runs a subagent as a real bounded session.
+"""Delegated subagent session executor — runs a subagent as a real bounded session.
 
 The subagent gets its own ``Harness.run_role`` session with capability-
 minimized tools and runs to completion bounded by ``max_turns``. It is a
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 SUBAGENT_NAME_METADATA_KEY = "dream.subagent_name"
 
 
-async def run_subagent_inline(
+async def run_subagent_session(
     agent: Subagent,
     *,
     prompt: str,

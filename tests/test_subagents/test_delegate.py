@@ -61,7 +61,7 @@ async def test_over_budget_summary_spills_to_scratch_not_the_worktree(
     inline = SubagentResult(name="critic", output=full, success=True)
 
     with patch(
-        "dream.subagents._delegate.run_subagent_inline",
+        "dream.subagents._delegate.run_subagent_session",
         new_callable=AsyncMock,
         return_value=inline,
     ):
@@ -88,7 +88,7 @@ async def test_over_budget_summary_without_scratch_does_not_write(tmp_path: Path
     inline = SubagentResult(name="critic", output="A" * 5_000, success=True)
 
     with patch(
-        "dream.subagents._delegate.run_subagent_inline",
+        "dream.subagents._delegate.run_subagent_session",
         new_callable=AsyncMock,
         return_value=inline,
     ):
