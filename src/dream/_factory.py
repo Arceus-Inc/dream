@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from dream.config.paths import DreamPaths
+from dream.contracts.credentials import CredentialBrokerPort
 from dream.contracts.plugin import Plugin
 from dream.contracts.provider import ProviderCapabilities
 from dream.engine._adapter_openai import (
@@ -110,6 +111,7 @@ def build_harness(
     policy_warning_sink: PolicyWarningSink | None = None,
     env: Mapping[str, str] | None = None,
     wake_model: str | None = None,
+    credential_broker: CredentialBrokerPort | None = None,
 ) -> Harness:
     """Build a Harness whose engine factory produces a real, tool-wired engine.
 
@@ -281,6 +283,7 @@ def build_harness(
             capabilities=capabilities,
             harness=harness,
             subagents=subagents,
+            credential_broker=credential_broker,
         )
 
     config._engine_factory = _factory
@@ -460,6 +463,7 @@ def _build_session_engine(
     capabilities: ProviderCapabilities,
     harness: Harness,
     subagents: SubagentSet | None = None,
+    credential_broker: CredentialBrokerPort | None = None,
 ) -> QueryEngine:
     """Construct one session's ``QueryEngine`` from explicit, pre-resolved deps.
 
@@ -676,4 +680,5 @@ def _build_session_engine(
         model=options.model or model,
         hook_executor=hook_executor,
         delegations=harness.config.delegations,
+        credential_broker=credential_broker,
     )

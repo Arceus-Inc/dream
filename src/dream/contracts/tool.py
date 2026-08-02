@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from dream.contracts.credentials import CredentialBrokerPort
+
 
 @dataclass(frozen=True)
 class ToolResult:
@@ -42,6 +44,9 @@ class ToolContext(Protocol):
 
     @property
     def cancel_requested(self) -> bool: ...
+
+    @property
+    def credential_broker(self) -> CredentialBrokerPort | None: ...
 
     async def run_subprocess(
         self,

@@ -9,6 +9,30 @@ The Protocols here describe shapes. Concrete implementations live
 elsewhere in the SDK or in sibling repos.
 """
 
+from dream.contracts.credentials import (
+    CredentialAsk,
+    CredentialAskId,
+    CredentialBrokerPort,
+    CredentialDelivery,
+    CredentialEnvironmentTarget,
+    CredentialGrant,
+    CredentialGrantId,
+    CredentialGrantMode,
+    CredentialGrantStatus,
+    CredentialHttpMethod,
+    CredentialInjection,
+    CredentialLease,
+    CredentialName,
+    CredentialOwner,
+    CredentialProxyHeader,
+    CredentialProxyRequest,
+    CredentialProxyResponse,
+    CredentialRequest,
+    CredentialRequestResult,
+    CredentialRequestStatus,
+    CredentialSession,
+    CredentialUse,
+)
 from dream.contracts.delegation import (
     CapacityPort,
     DelegatedIntakePort,
@@ -69,10 +93,34 @@ from dream.contracts.tool import Tool, ToolContext, ToolResult
 # 0.5.0: added LandedPhase / LandedOutcome and outcome.landed fields on OutcomeEvent — additive.
 # 0.6.0: added powered hooks — HookEvent.SUBAGENT_START, HookSpec.allow_continue, HookResult
 # replacement_result / inject_context / continue_message, and the hook payload shapes — additive.
-__contract_version__ = "0.6.0"
+# 0.7.0: added the brokered credential seam — typed requests, owner grants, opaque leases, and
+# revocation/usage semantics; plaintext is deliberately absent from every contract shape — additive.
+__contract_version__ = "0.7.0"
 
 __all__ = [
     "CapacityPort",
+    "CredentialAsk",
+    "CredentialAskId",
+    "CredentialBrokerPort",
+    "CredentialDelivery",
+    "CredentialEnvironmentTarget",
+    "CredentialGrant",
+    "CredentialGrantId",
+    "CredentialGrantMode",
+    "CredentialGrantStatus",
+    "CredentialHttpMethod",
+    "CredentialInjection",
+    "CredentialLease",
+    "CredentialName",
+    "CredentialOwner",
+    "CredentialProxyHeader",
+    "CredentialProxyRequest",
+    "CredentialProxyResponse",
+    "CredentialRequest",
+    "CredentialRequestResult",
+    "CredentialRequestStatus",
+    "CredentialSession",
+    "CredentialUse",
     "DelegatedIntakePort",
     "DelegatedWorkRef",
     "DelegatedWorkRequest",
