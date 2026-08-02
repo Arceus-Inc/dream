@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from dream.contracts.credentials import CredentialBrokerPort
 from dream.contracts.provider import ProviderCapabilities
 from dream.engine._loop import ToolDispatcher, TurnStreamer
 from dream.engine._orientation import OrientationConfig
@@ -86,6 +87,7 @@ class QueryEngine:
     # Role name from session metadata (planner/generator/evaluator) for STOP hooks.
     role: str | None = None
     delegations: AsyncDelegationManager | None = None
+    credential_broker: CredentialBrokerPort | None = None
 
     def make_session_config(
         self,
@@ -146,6 +148,7 @@ def build_query_engine(
     hook_executor: HookExecutor | None = None,
     orientation: OrientationConfig | None = None,
     delegations: AsyncDelegationManager | None = None,
+    credential_broker: CredentialBrokerPort | None = None,
 ) -> QueryEngine:
     """Wrap a ``ToolRegistry`` in the canonical dispatcher and bind a streamer.
 
@@ -164,6 +167,7 @@ def build_query_engine(
         role_allowed_tools=role_allowed_tools,
         hook_executor=hook_executor,
         delegations=delegations,
+        credential_broker=credential_broker,
     )
     meta = context_metadata or {}
     role_raw = meta.get("dream.role")
@@ -186,6 +190,7 @@ def build_query_engine(
         orientation=orientation,
         role=role_raw if isinstance(role_raw, str) else None,
         delegations=delegations,
+        credential_broker=credential_broker,
     )
 
 

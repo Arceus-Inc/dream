@@ -46,6 +46,7 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
+from dream.contracts.credentials import CredentialBrokerPort
 from dream.contracts.hook import (
     HookEvent,
     PostToolHookPayload,
@@ -134,6 +135,7 @@ class EngineToolDispatcher:
     # veto PRE (Hermes pre_tool_call). ``None`` means no firing.
     hook_executor: HookExecutor | None = None
     delegations: AsyncDelegationManager | None = None
+    credential_broker: CredentialBrokerPort | None = None
 
     async def dispatch(self, name: str, input: dict[str, Any]) -> tuple[str, bool]:
         # PRE_TOOL_USE → (optional veto / replace input) → execute → POST_TOOL_USE.
@@ -248,6 +250,7 @@ class EngineToolDispatcher:
             scratch_dir=self._resolved_scratch(),
             metadata=dict(self.context_metadata),  # copy: a tool can't leak into the next call
             delegations=self.delegations,
+            credential_broker=self.credential_broker,
         )
         result, elapsed = await self._run_with_timeout(name, tool, input, ctx, is_read_only)
         if isinstance(result, tuple):
