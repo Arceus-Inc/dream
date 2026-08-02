@@ -352,7 +352,9 @@ class SpawnSubagentTool(BaseTool):
             ledger = SpawnLedger()
             ctx.metadata[SPAWN_LEDGER_KEY] = ledger
         names = tuple(task.agent.name for task in resolved)
-        duplicate = ledger.claim(names)
+        # generalPurpose is repeatable ad-hoc work; evidence specialists remain one-shot.
+        ledger_names = tuple(name for name in names if name != GENERAL_PURPOSE)
+        duplicate = ledger.claim(ledger_names)
         if duplicate is not None:
             return ToolResult(
                 content=f"Subagent {duplicate!r} already spawned in this session.",

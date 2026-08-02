@@ -18,6 +18,7 @@ from dream.tools._context import ToolExecutionContext
 from dream.tools.builtin.spawn_subagent import (
     HARNESS_KEY,
     SUBAGENT_SET_CONTEXT_KEY,
+    SpawnLedger,
     SpawnSubagentTool,
 )
 
@@ -49,6 +50,14 @@ def _simple_subagent_set() -> SubagentSet:
             ),
         }
     )
+
+
+def test_spawn_ledger_allows_repeatable_general_purpose_name() -> None:
+    ledger = SpawnLedger()
+    assert ledger.claim(()) is None
+    assert ledger.claim(()) is None
+    assert ledger.claim(("reviewer",)) is None
+    assert ledger.claim(("reviewer",)) == "reviewer"
 
 
 def _two_subagent_set() -> SubagentSet:

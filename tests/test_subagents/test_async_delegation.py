@@ -73,6 +73,24 @@ async def test_cancel_session_interrupts_children_without_orphans() -> None:
     await manager.close()
 
 
+async def test_cancelled_background_work_delivers_typed_completion() -> None:
+    manager = AsyncDelegationManager(max_active=1)
+
+    async def work() -> tuple[SubagentResult, ...]:
+        await asyncio.Future()
+
+    assert manager.start("parent", ("reviewer",), work) is not None
+    await asyncio.sleep(0)
+    waiter = asyncio.create_task(manager.wait_next("parent"))
+    await asyncio.sleep(0)
+    await manager.cancel_session("parent")
+    completion = await waiter
+
+    assert completion.status is DelegationStatus.FAILED
+    assert completion.error == "background delegation cancelled"
+    await manager.close()
+
+
 async def test_timeout_becomes_a_typed_completion() -> None:
     manager = AsyncDelegationManager(max_active=1, timeout_seconds=0.01)
 

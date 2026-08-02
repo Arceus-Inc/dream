@@ -113,8 +113,6 @@ class AsyncDelegationManager:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-        self._completed.pop(session_id, None)
-        self._ready.pop(session_id, None)
 
     async def close(self) -> None:
         tasks = [item.task for item in self._active.values()]
@@ -122,8 +120,6 @@ class AsyncDelegationManager:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-        self._completed.clear()
-        self._ready.clear()
 
     async def _run(
         self,
@@ -144,7 +140,12 @@ class AsyncDelegationManager:
                 results=results,
             )
         except asyncio.CancelledError:
-            raise
+            completion = DelegationCompletion(
+                delegation_id=delegation_id,
+                status=DelegationStatus.FAILED,
+                results=(),
+                error="background delegation cancelled",
+            )
         except TimeoutError:
             completion = DelegationCompletion(
                 delegation_id=delegation_id,
