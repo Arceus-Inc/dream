@@ -53,6 +53,15 @@ async def test_overwrites_existing_file(tool: FileWriteTool, ctx, tmp_path: Path
     assert f.read_text(encoding="utf-8") == "new\n"
 
 
+async def test_same_content_is_reported_as_a_noop_error(tool: FileWriteTool, ctx, tmp_path: Path) -> None:
+    (tmp_path / "same.txt").write_text("unchanged\n", encoding="utf-8")
+    result = await tool.execute({"path": "same.txt", "content": "unchanged\n"}, ctx)
+    assert result.is_error is True
+    assert result.metadata["status"] == "error"
+    assert result.metadata["root_cause"] == "write would not change file bytes"
+    assert "different content" in result.metadata["safe_retry"]
+
+
 async def test_uses_atomic_write(tool: FileWriteTool, ctx, tmp_path: Path) -> None:
     """Spec 01 invariant: every harness-initiated write goes through atomic_write_*.
 
