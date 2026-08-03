@@ -490,7 +490,7 @@ async def _dispatch_line(
         return RpcResponse(content="", is_error=True, error=str(exc))
     except ValidationError as exc:
         return RpcResponse(content="", is_error=True, error=f"Invalid nested tool args: {exc}")
-    except Exception as exc:  # noqa: BLE001 — structured error to child, keep session alive
+    except Exception as exc:
         return RpcResponse(
             content="",
             is_error=True,

@@ -14,12 +14,12 @@ to ``SubprocessSandbox`` (Spec 13).
 
 from __future__ import annotations
 
-import atexit
-import platform
 import asyncio
+import atexit
 import contextlib
 import logging
 import os
+import platform
 import shutil
 import signal
 import subprocess
