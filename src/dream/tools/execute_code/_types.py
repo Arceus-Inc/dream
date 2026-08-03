@@ -13,6 +13,8 @@ DEFAULT_TIMEOUT_SECONDS: Final[float] = 300.0
 DEFAULT_MAX_TOOL_CALLS: Final[int] = 50
 MAX_STDOUT_BYTES: Final[int] = 50_000
 MAX_STDERR_BYTES: Final[int] = 10_000
+#: Hard cap on a single incomplete RPC request line buffered in the parent.
+MAX_RPC_REQUEST_BYTES: Final[int] = 1_048_576
 
 
 class NestedToolName(StrEnum):
@@ -81,6 +83,7 @@ __all__ = [
     "EXECUTE_CODE_REGISTRY_KEY",
     "ExecuteCodeOutcome",
     "ExecuteCodeStatus",
+    "MAX_RPC_REQUEST_BYTES",
     "MAX_STDERR_BYTES",
     "MAX_STDOUT_BYTES",
     "NestedToolName",

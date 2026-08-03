@@ -6,12 +6,10 @@ on the RPC path and never becomes parent conversation messages.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
 
-from dream.contracts.tool import ToolResult
 from dream.tools._context import ToolExecutionContext
 from dream.tools.builtin import default_registry
 from dream.tools.builtin.execute_code import ExecuteCodeTool

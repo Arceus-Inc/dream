@@ -19,6 +19,7 @@ def test_missing_file_yields_defaults(tmp_path: Path) -> None:
     cfg = read_sandbox_config(tmp_path / "absent.toml")
     assert cfg == SandboxConfig()
     assert cfg.tier is SandboxTier.REPO_WRITE
+    assert cfg.backend == "docker"
     assert cfg.extra_allowed == ()
     assert cfg.credential_extra == ()
 
@@ -77,3 +78,40 @@ def test_read_parses_real_file(tmp_path: Path) -> None:
     f = tmp_path / "sandbox.toml"
     f.write_text('tier = "repo-write+net-allowlist"\n', encoding="utf-8")
     assert read_sandbox_config(f).tier is SandboxTier.REPO_WRITE_NET
+
+
+def test_parse_backend_defaults_to_docker() -> None:
+    cfg = parse_sandbox_config("")
+    assert cfg.backend == "docker"
+
+
+def test_parse_backend_docker() -> None:
+    cfg = parse_sandbox_config(
+        'backend = "docker"\n'
+        "[docker]\n"
+        'image = "custom:1"\n'
+        "cpu_limit = 1.5\n"
+        'memory_limit = "2g"\n'
+        'extra_mounts = ["/tmp/x:/tmp/x"]\n'
+    )
+    assert cfg.backend == "docker"
+    assert cfg.docker.image == "custom:1"
+    assert cfg.docker.cpu_limit == 1.5
+    assert cfg.docker.memory_limit == "2g"
+    assert cfg.docker.extra_mounts == ("/tmp/x:/tmp/x",)
+
+
+def test_unknown_backend_raises() -> None:
+    with pytest.raises(SandboxConfigError, match="unknown sandbox backend"):
+        parse_sandbox_config('backend = "firecracker"')
+
+
+def test_docker_section_type_errors() -> None:
+    with pytest.raises(SandboxConfigError):
+        parse_sandbox_config('backend = "docker"\n[docker]\ncpu_limit = "fast"\n')
+
+
+def test_parse_backend_subprocess_opt_in() -> None:
+    cfg = parse_sandbox_config('backend = "subprocess"\n')
+    assert cfg.backend == "subprocess"
+

@@ -9,6 +9,7 @@ import os
 import platform
 import secrets
 import shutil
+import signal
 import socket
 import sys
 import tempfile
@@ -23,6 +24,7 @@ from dream.tools.execute_code._stubs import generate_dream_tools_module
 from dream.tools.execute_code._types import (
     DEFAULT_MAX_TOOL_CALLS,
     DEFAULT_TIMEOUT_SECONDS,
+    MAX_RPC_REQUEST_BYTES,
     MAX_STDERR_BYTES,
     MAX_STDOUT_BYTES,
     ExecuteCodeOutcome,
@@ -47,7 +49,6 @@ _SAFE_ENV_PREFIXES: tuple[str, ...] = (
     "SHELL",
     "LOGNAME",
     "XDG_",
-    "PYTHONPATH",
     "VIRTUAL_ENV",
     "CONDA",
 )
@@ -89,7 +90,6 @@ _WINDOWS_ESSENTIAL: frozenset[str] = frozenset(
     }
 )
 
-
 def _scrub_child_env(source: dict[str, str]) -> dict[str, str]:
     """Strip secrets from the child environment (Hermes scrub rules)."""
     cleaned: dict[str, str] = {}
@@ -100,23 +100,45 @@ def _scrub_child_env(source: dict[str, str]) -> dict[str, str]:
         if upper in _WINDOWS_ESSENTIAL:
             cleaned[key] = value
             continue
+        # Do not inherit host PYTHONPATH — only the session tmpdir is added later.
+        if upper == "PYTHONPATH":
+            continue
         if any(upper.startswith(p) or key.startswith(p) for p in _SAFE_ENV_PREFIXES):
             cleaned[key] = value
     return cleaned
 
 
 def _truncate(text: str, max_bytes: int) -> str:
+    """Keep ``max_bytes`` of UTF-8 output, reserving space for the truncation marker."""
     raw = text.encode("utf-8", errors="replace")
     if len(raw) <= max_bytes:
         return text
-    head = int(max_bytes * 0.4)
-    tail = max_bytes - head
     omitted = len(raw) - max_bytes
+    marker = f"\n\n... [OUTPUT TRUNCATED - {omitted:,} bytes omitted] ...\n\n"
+    marker_b = marker.encode("utf-8")
+    if len(marker_b) >= max_bytes:
+        return marker_b[:max_bytes].decode("utf-8", errors="replace")
+    budget = max_bytes - len(marker_b)
+    head = budget // 2
+    tail = budget - head
     return (
         raw[:head].decode("utf-8", errors="replace")
-        + f"\n\n... [OUTPUT TRUNCATED - {omitted:,} bytes omitted] ...\n\n"
+        + marker
         + raw[-tail:].decode("utf-8", errors="replace")
     )
+
+
+async def _kill_tree(proc: asyncio.subprocess.Process) -> None:
+    """Kill the process group (POSIX) so nested shells cannot outlive a timeout."""
+    killpg = getattr(os, "killpg", None)
+    if killpg is not None and proc.pid is not None and not _IS_WINDOWS:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    else:
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+    with contextlib.suppress(Exception):
+        await proc.wait()
 
 
 async def run_execute_code_session(
@@ -186,10 +208,7 @@ async def run_execute_code_session(
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"
         child_env["PYTHONIOENCODING"] = "utf-8"
         child_env["PYTHONUTF8"] = "1"
-        existing_pp = child_env.get("PYTHONPATH", "")
-        child_env["PYTHONPATH"] = (
-            f"{tmpdir}{os.pathsep}{existing_pp}" if existing_pp else str(tmpdir)
-        )
+        child_env["PYTHONPATH"] = str(tmpdir)
 
         proc = await asyncio.create_subprocess_exec(
             sys.executable,
@@ -209,9 +228,7 @@ async def run_execute_code_session(
             )
         except TimeoutError:
             stop.set()
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-                await proc.wait()
+            await _kill_tree(proc)
             duration = time.monotonic() - started
             return ExecuteCodeOutcome(
                 status=ExecuteCodeStatus.TIMEOUT,
@@ -293,12 +310,32 @@ async def _serve_rpc(
             if not chunk:
                 break
             buf += chunk
+            if len(buf) > MAX_RPC_REQUEST_BYTES and b"\n" not in buf:
+                response = RpcResponse(
+                    content="",
+                    is_error=True,
+                    error=(
+                        f"RPC request exceeded {MAX_RPC_REQUEST_BYTES} bytes "
+                        "without a terminating newline"
+                    ),
+                )
+                payload = response.model_dump_json() + "\n"
+                with contextlib.suppress(OSError):
+                    await loop.sock_sendall(conn, payload.encode("utf-8"))
+                break
             while b"\n" in buf:
                 line, buf = buf.split(b"\n", 1)
-                line = line.strip()
-                if not line:
-                    continue
-                response = await _dispatch_line(line, invoker, rpc_token)
+                if len(line) > MAX_RPC_REQUEST_BYTES:
+                    response = RpcResponse(
+                        content="",
+                        is_error=True,
+                        error=f"RPC request line exceeded {MAX_RPC_REQUEST_BYTES} bytes",
+                    )
+                else:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    response = await _dispatch_line(line, invoker, rpc_token)
                 payload = response.model_dump_json() + "\n"
                 await loop.sock_sendall(conn, payload.encode("utf-8"))
     finally:
@@ -333,6 +370,14 @@ async def _dispatch_line(
         result = await invoker.invoke(request.tool, request.args)
     except PermissionError as exc:
         return RpcResponse(content="", is_error=True, error=str(exc))
+    except ValidationError as exc:
+        return RpcResponse(content="", is_error=True, error=f"Invalid nested tool args: {exc}")
+    except Exception as exc:  # noqa: BLE001 — structured error to child, keep session alive
+        return RpcResponse(
+            content="",
+            is_error=True,
+            error=f"Nested tool {request.tool.value!r} failed: {type(exc).__name__}: {exc}",
+        )
 
     if result.is_error:
         return RpcResponse(

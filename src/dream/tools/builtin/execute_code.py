@@ -7,11 +7,13 @@ becomes parent conversation messages.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from pydantic import BaseModel, Field
 
 from dream.contracts.tool import ToolResult
+from dream.permissions import PermissionDecision, PermissionRequest
 from dream.tools._base import BaseTool, ToolDeclaration
 from dream.tools._context import ToolExecutionContext
 from dream.tools._registry import ToolRegistry
@@ -25,8 +27,9 @@ from dream.tools.execute_code import (
 from dream.tools.execute_code import _session as session_mod
 from dream.tools.execute_code._session import run_execute_code_session
 
-# Same key as spawn_subagent.PARENT_TOOLS_KEY — avoid importing that module here.
+# Keys match spawn_subagent — avoid importing that module here.
 _PARENT_TOOLS_KEY = "dream.parent_tools"
+_PARENT_PERMISSIONS_KEY = "dream.parent_permissions"
 
 
 class ExecuteCodeInput(BaseModel):
@@ -61,9 +64,9 @@ class ExecuteCodeTool(BaseTool):
             )
 
         session_names = frozenset(tool.name for tool in registry.list_tools())
-        parent_tools = ctx.metadata.get(_PARENT_TOOLS_KEY)
-        if isinstance(parent_tools, (set, frozenset, list, tuple)):
-            session_names &= frozenset(str(name) for name in parent_tools)
+        role_allowed = _role_allowlist(ctx.metadata)
+        if role_allowed is not None:
+            session_names &= role_allowed
 
         allowed = sandbox_tools_for(session_names)
         if not allowed:
@@ -73,11 +76,14 @@ class ExecuteCodeTool(BaseTool):
                 tool_calls_made=0,
             )
 
+        permission_gate = _permission_gate(ctx.metadata)
         invoker = RegistryToolInvoker(
             registry=registry,
             context=ctx,
             allowed=allowed,
             max_calls=session_mod.DEFAULT_MAX_TOOL_CALLS,
+            role_allowed_tools=role_allowed,
+            permission_gate=permission_gate,
         )
         outcome = await run_execute_code_session(
             code=args.code,
@@ -102,6 +108,25 @@ class ExecuteCodeTool(BaseTool):
                 "allowed_tools": sorted(t.value for t in allowed),
             },
         )
+
+
+def _role_allowlist(metadata: dict[str, Any]) -> frozenset[str] | None:
+    """Effective role tool set from session metadata (always set for role sessions)."""
+    parent_tools = metadata.get(_PARENT_TOOLS_KEY)
+    if parent_tools is None:
+        return None
+    if isinstance(parent_tools, (set, frozenset, list, tuple)):
+        return frozenset(str(name) for name in parent_tools)
+    return None
+
+
+def _permission_gate(
+    metadata: dict[str, Any],
+) -> Callable[[PermissionRequest], PermissionDecision] | None:
+    gate = metadata.get(_PARENT_PERMISSIONS_KEY)
+    if callable(gate):
+        return gate  # type: ignore[return-value]
+    return None
 
 
 def _refused(message: str, *, tool_calls_made: int) -> ToolResult:

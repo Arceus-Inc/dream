@@ -50,9 +50,9 @@ _STUBS: tuple[_StubSpec, ...] = (
     ),
     _StubSpec(
         NestedToolName.BASH,
-        "command: str, timeout_seconds: float = 120.0",
-        '"""Run a shell command. Returns the tool content string."""',
-        '{"command": command, "timeout_seconds": timeout_seconds}',
+        "command: str, cwd: str | None = None, timeout_seconds: float = 120.0",
+        '"""Run a shell command (optional cwd within the working directory)."""',
+        '{"command": command, "cwd": cwd, "timeout_seconds": timeout_seconds}',
     ),
     _StubSpec(
         NestedToolName.WEB_SEARCH,
@@ -62,9 +62,15 @@ _STUBS: tuple[_StubSpec, ...] = (
     ),
     _StubSpec(
         NestedToolName.WEB_EXTRACT,
-        "urls: list[str]",
-        '"""Extract page content. Returns the tool content string."""',
-        '{"urls": urls}',
+        (
+            "urls: list[str], extract_depth: str = 'basic', "
+            "format: str = 'markdown', include_images: bool = False"
+        ),
+        '"""Extract page content (depth/format/images match direct web_extract)."""',
+        (
+            '{"urls": urls, "extract_depth": extract_depth, '
+            '"format": format, "include_images": include_images}'
+        ),
     ),
 )
 
