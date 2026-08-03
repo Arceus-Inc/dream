@@ -255,17 +255,98 @@ def test_task_manager_and_cron_registry_wired(tmp_path: Path) -> None:
     assert isinstance(harness.config.cron_registry_path, Path)
 
 
-def test_sandbox_adapter_wired_into_session_context(tmp_path: Path) -> None:
+def test_sandbox_adapter_wired_into_session_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # Spec 13B: the selected SandboxAdapter must ride the session's
     # context_metadata so the ``bash`` tool executes through the one backend.
-    # v1 is the subprocess backend (docker is the gated seam, never auto-wired).
-    from dream.sandbox import SANDBOX_CONTEXT_KEY, SandboxAdapter, SubprocessSandbox
+    # Default is docker; subprocess is opt-in via sandbox.toml ``backend``.
+    from dream.sandbox import SANDBOX_CONTEXT_KEY, DockerSandbox, SandboxAdapter
+    from dream.sandbox.docker_backend import DockerAvailability
 
+    monkeypatch.setattr(
+        "dream.sandbox.get_docker_availability",
+        lambda: DockerAvailability(available=True, command="/usr/bin/docker"),
+    )
     harness = _build(tmp_path)
     engine = harness.config._engine_factory("s_sbx", SessionOptions())  # type: ignore[misc]
     adapter = engine.dispatcher.context_metadata[SANDBOX_CONTEXT_KEY]  # type: ignore[attr-defined]
     assert isinstance(adapter, SandboxAdapter)
+    assert isinstance(adapter, DockerSandbox)
+
+
+def test_sandbox_adapter_subprocess_when_configured(tmp_path: Path) -> None:
+    from dream.sandbox import SANDBOX_CONTEXT_KEY, SubprocessSandbox
+
+    harness_dir = tmp_path / "wt" / ".harness"
+    harness_dir.mkdir(parents=True, exist_ok=True)
+    (harness_dir / "sandbox.toml").write_text(
+        'backend = "subprocess"\n',
+        encoding="utf-8",
+    )
+    harness = _build(tmp_path)
+    engine = harness.config._engine_factory("s_sbx_sp", SessionOptions())  # type: ignore[misc]
+    adapter = engine.dispatcher.context_metadata[SANDBOX_CONTEXT_KEY]  # type: ignore[attr-defined]
     assert isinstance(adapter, SubprocessSandbox)
+
+
+def test_sandbox_adapter_docker_image_from_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dream.sandbox import SANDBOX_CONTEXT_KEY, DockerSandbox
+    from dream.sandbox.docker_backend import DockerAvailability
+
+    monkeypatch.setattr(
+        "dream.sandbox.get_docker_availability",
+        lambda: DockerAvailability(available=True, command="/usr/bin/docker"),
+    )
+    harness_dir = tmp_path / "wt" / ".harness"
+    harness_dir.mkdir(parents=True, exist_ok=True)
+    (harness_dir / "sandbox.toml").write_text(
+        '[docker]\nimage = "dream-sandbox:test"\n',
+        encoding="utf-8",
+    )
+    harness = _build(tmp_path)
+    engine = harness.config._engine_factory("s_sbx_d", SessionOptions())  # type: ignore[misc]
+    adapter = engine.dispatcher.context_metadata[SANDBOX_CONTEXT_KEY]  # type: ignore[attr-defined]
+    assert isinstance(adapter, DockerSandbox)
+    assert adapter.config.image == "dream-sandbox:test"
+
+
+def test_sandbox_soft_degrades_when_docker_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dream.sandbox import SANDBOX_CONTEXT_KEY, SubprocessSandbox
+    from dream.sandbox.docker_backend import DockerAvailability
+
+    monkeypatch.setattr(
+        "dream.sandbox.get_docker_availability",
+        lambda: DockerAvailability(available=False, reason="Docker daemon is not running"),
+    )
+    harness = _build(tmp_path)
+    engine = harness.config._engine_factory("s_sbx_soft", SessionOptions())  # type: ignore[misc]
+    adapter = engine.dispatcher.context_metadata[SANDBOX_CONTEXT_KEY]  # type: ignore[attr-defined]
+    assert isinstance(adapter, SubprocessSandbox)
+
+
+def test_sandbox_raises_when_fail_if_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dream.errors import SandboxError
+    from dream.sandbox.docker_backend import DockerAvailability
+
+    monkeypatch.setattr(
+        "dream.sandbox.get_docker_availability",
+        lambda: DockerAvailability(available=False, reason="Docker daemon is not running"),
+    )
+    harness_dir = tmp_path / "wt" / ".harness"
+    harness_dir.mkdir(parents=True, exist_ok=True)
+    (harness_dir / "sandbox.toml").write_text(
+        "[docker]\nfail_if_unavailable = true\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SandboxError, match="not running"):
+        _build(tmp_path)
 
 
 def test_extra_no_longer_smuggles_runtime_fields(tmp_path: Path) -> None:

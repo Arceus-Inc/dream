@@ -396,12 +396,28 @@ def _bootstrap_task_and_cron(
 def _select_sandbox_adapter(paths: DreamPaths) -> SandboxAdapter:
     """Pick the execution backend for this harness (Spec 13B).
 
-    The tier is read from ``.harness/sandbox.toml`` so a malformed config
-    surfaces at build (and is the input a future docker upgrade keys off of),
-    but v1 always selects the subprocess backend: docker is the *gated* seam
-    and must never be auto-selected from the tier alone.
+    Reads ``.harness/sandbox.toml`` for tier and ``backend`` (default:
+    docker). Subprocess is opt-in via ``backend = "subprocess"``; the
+    backend is never inferred from the permission tier alone.
+
+    When docker is selected, preflight ``get_docker_availability()``. If the
+    daemon is unavailable and ``fail_if_unavailable`` is false, soft-degrade
+    to subprocess (Spec 13); if true, raise :class:`SandboxError`.
     """
-    _tier = read_sandbox_config(paths.sandbox_config()).tier
+    from dream.errors import SandboxError
+    from dream.sandbox import get_docker_availability
+
+    cfg = read_sandbox_config(paths.sandbox_config())
+    if cfg.backend == "subprocess":
+        return select_backend("subprocess")
+
+    availability = get_docker_availability()
+    if availability.available:
+        return select_backend("docker", docker=cfg.docker)
+
+    reason = availability.reason or "Docker sandbox is unavailable"
+    if cfg.docker.fail_if_unavailable:
+        raise SandboxError(reason)
     return select_backend("subprocess")
 
 
@@ -582,9 +598,13 @@ def _build_session_engine(
     # Dispatcher context_metadata: skill + task contexts keyed for the
     # `skill` / task tools to fetch out of the dispatcher, plus the sandbox
     # adapter the `bash` tool routes execution through (Spec 13B).
+    from dream.tools.execute_code import EXECUTE_CODE_REGISTRY_KEY
+
     context_metadata: dict[str, Any] = {
         TASK_CONTEXT_KEY: task_context,
         SANDBOX_CONTEXT_KEY: sandbox_adapter,
+        # execute_code nested RPC dispatches through the live session registry.
+        EXECUTE_CODE_REGISTRY_KEY: tool_registry,
     }
     if ROLE_NAME_METADATA_KEY in options.metadata:
         context_metadata[ROLE_NAME_METADATA_KEY] = options.metadata[ROLE_NAME_METADATA_KEY]
@@ -617,6 +637,7 @@ def _build_session_engine(
     from dream.tools.builtin.spawn_subagent import (
         HARNESS_KEY,
         OBSERVER_KEY,
+        PARENT_PERMISSIONS_KEY,
         PARENT_TOOLS_KEY,
         SPAWN_COUNT_KEY,
         SPAWN_LEDGER_KEY,
@@ -624,6 +645,12 @@ def _build_session_engine(
         TRACER_KEY,
         SpawnLedger,
     )
+
+    # Role allowlist + permission gate must be visible to execute_code even when
+    # the session has no subagent set (top-level role without spawn capability).
+    if role_allowed is not None:
+        context_metadata[PARENT_TOOLS_KEY] = role_allowed
+    context_metadata[PARENT_PERMISSIONS_KEY] = permission_gate
 
     # The run_role observer (when present) rides into the tool context, so the spawn tool can
     # forward it into a child session — nested spawns then surface on the same observer/bus.
@@ -644,10 +671,6 @@ def _build_session_engine(
         context_metadata[SPAWN_LEDGER_KEY] = options.metadata.get(
             SPAWN_LEDGER_KEY, SpawnLedger()
         )
-        # Parent's live tool allow-list, for capability minimization (§05): the
-        # subagent's tools are intersected with this. ``None`` = no role restriction
-        # (full surface), so the subagent keeps its declared tools.
-        context_metadata[PARENT_TOOLS_KEY] = role_allowed
     carryover_metadata = CarryoverMetadata.for_working_dir(str(working_dir))
     from dream.services.compact._summariser import make_llm_summariser
 

@@ -1,0 +1,37 @@
+"""Hermes-style programmatic tool calling — typed contracts.
+
+Parent LLM sees one ``execute_code`` result (stdout + metadata). Nested tool
+I/O stays on the RPC path and never becomes parent conversation messages.
+"""
+
+from __future__ import annotations
+
+from dream.tools.execute_code._allowlist import sandbox_tools_for
+from dream.tools.execute_code._guard import check_execute_code_guard
+from dream.tools.execute_code._invoker import RegistryToolInvoker
+from dream.tools.execute_code._types import (
+    DEFAULT_MAX_TOOL_CALLS,
+    DEFAULT_TIMEOUT_SECONDS,
+    EXECUTE_CODE_REGISTRY_KEY,
+    MAX_RPC_REQUEST_BYTES,
+    ExecuteCodeOutcome,
+    ExecuteCodeStatus,
+    NestedToolName,
+    RpcRequest,
+    RpcResponse,
+)
+
+__all__ = [
+    "DEFAULT_MAX_TOOL_CALLS",
+    "DEFAULT_TIMEOUT_SECONDS",
+    "EXECUTE_CODE_REGISTRY_KEY",
+    "MAX_RPC_REQUEST_BYTES",
+    "ExecuteCodeOutcome",
+    "ExecuteCodeStatus",
+    "NestedToolName",
+    "RegistryToolInvoker",
+    "RpcRequest",
+    "RpcResponse",
+    "check_execute_code_guard",
+    "sandbox_tools_for",
+]
