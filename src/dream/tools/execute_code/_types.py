@@ -42,6 +42,7 @@ class ExecuteCodeStatus(StrEnum):
     TIMEOUT = "timeout"
     CAP_EXCEEDED = "cap_exceeded"
     REFUSED = "refused"
+    CANCELLED = "cancelled"
 
 
 class RpcRequest(BaseModel):
@@ -75,6 +76,13 @@ class ExecuteCodeOutcome(BaseModel):
     tool_calls_made: int
     duration_seconds: float
     stderr: str = ""
+    summary: str = ""
+    next_actions: list[str] = Field(default_factory=list)
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
+    stdout_bytes: int = 0
+    stderr_bytes: int = 0
+    tool_call_log: list[dict[str, Any]] = Field(default_factory=list)
 
 
 __all__ = [

@@ -399,11 +399,31 @@ def _select_sandbox_adapter(paths: DreamPaths) -> SandboxAdapter:
     Reads ``.harness/sandbox.toml`` for tier and ``backend`` (default:
     docker). Subprocess is opt-in via ``backend = "subprocess"``; the
     backend is never inferred from the permission tier alone.
+
+    When docker is selected, preflight ``get_docker_availability()``. If the
+    daemon is unavailable and ``fail_if_unavailable`` is false, soft-degrade
+    to subprocess (Spec 13); if true, raise :class:`SandboxError`.
     """
+    from dream.errors import SandboxError
+    from dream.sandbox import get_docker_availability
+
     cfg = read_sandbox_config(paths.sandbox_config())
     if cfg.backend == "subprocess":
         return select_backend("subprocess")
-    return select_backend("docker", docker=cfg.docker)
+
+    availability = get_docker_availability()
+    if availability.available:
+        return select_backend("docker", docker=cfg.docker)
+
+    reason = availability.reason or "Docker sandbox is unavailable"
+    if cfg.docker.fail_if_unavailable:
+        raise SandboxError(reason)
+    import logging
+
+    logging.getLogger(__name__).warning(
+        "Docker sandbox unavailable (%s); soft-degrading to subprocess", reason
+    )
+    return select_backend("subprocess")
 
 
 def _assemble_system_prompt(

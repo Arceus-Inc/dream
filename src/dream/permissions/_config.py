@@ -130,9 +130,13 @@ def _parse_docker(data: dict[str, Any]) -> DockerSandboxConfig:
     ):
         raise SandboxConfigError("'docker.extra_env' must be a string-to-string table")
 
-    fail_if_unavailable = raw.get("fail_if_unavailable", True)
+    fail_if_unavailable = raw.get("fail_if_unavailable", False)
     if not isinstance(fail_if_unavailable, bool):
         raise SandboxConfigError("'docker.fail_if_unavailable' must be a boolean")
+
+    pids_limit = raw.get("pids_limit", 256)
+    if isinstance(pids_limit, bool) or not isinstance(pids_limit, int):
+        raise SandboxConfigError("'docker.pids_limit' must be an integer")
 
     return DockerSandboxConfig(
         image=image,
@@ -142,6 +146,7 @@ def _parse_docker(data: dict[str, Any]) -> DockerSandboxConfig:
         extra_mounts=tuple(extra_mounts),
         extra_env=dict(extra_env_raw),
         fail_if_unavailable=fail_if_unavailable,
+        pids_limit=pids_limit,
     )
 
 

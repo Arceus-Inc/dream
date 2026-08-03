@@ -25,11 +25,22 @@ from dream.tools.execute_code import (
     sandbox_tools_for,
 )
 from dream.tools.execute_code import _session as session_mod
+from dream.tools.execute_code._guard import check_execute_code_guard
+from dream.tools.execute_code._observation import next_actions_for, summary_for
 from dream.tools.execute_code._session import run_execute_code_session
+from dream.tools.execute_code._stubs import describe_allowed_tools
 
 # Keys match spawn_subagent — avoid importing that module here.
 _PARENT_TOOLS_KEY = "dream.parent_tools"
 _PARENT_PERMISSIONS_KEY = "dream.parent_permissions"
+
+_BASE_DESCRIPTION = (
+    "Run a Python script that calls allowlisted tools via `from dream_tools import ...`. "
+    "Use for mechanical multi-step sequences (read→transform→write, gather then summarize) "
+    "so intermediate tool I/O does not fill the conversation. Only script stdout returns. "
+    "Helpers: call_tool, json_parse, shell_quote, retry. "
+    "Do not use raw subprocess/os.system/socket — use dream_tools.bash / web_* instead."
+)
 
 
 class ExecuteCodeInput(BaseModel):
@@ -42,12 +53,7 @@ class ExecuteCodeTool(BaseTool):
     """Collapse multi-step tool chains into one parent observation."""
 
     name = "execute_code"
-    description = (
-        "Run a Python script that calls allowlisted tools via `from dream_tools import ...`. "
-        "Use for mechanical multi-step sequences (read→transform→write, gather then summarize) "
-        "so intermediate tool I/O does not fill the conversation. Only script stdout returns. "
-        "Available: read_file, write_file, edit_file, grep, glob, bash, web_search, web_extract."
-    )
+    description = _BASE_DESCRIPTION
     declaration = ToolDeclaration(risk="mutating", tier_required=1, timeout_seconds=300.0)
     input_model = ExecuteCodeInput
 
@@ -55,6 +61,10 @@ class ExecuteCodeTool(BaseTool):
         args = ExecuteCodeInput.model_validate(input)
         if not args.code.strip():
             return _refused("No code provided.", tool_calls_made=0)
+
+        blocked = check_execute_code_guard(args.code)
+        if blocked is not None:
+            return _refused(blocked, tool_calls_made=0)
 
         registry = ctx.metadata.get(EXECUTE_CODE_REGISTRY_KEY)
         if not isinstance(registry, ToolRegistry):
@@ -92,22 +102,36 @@ class ExecuteCodeTool(BaseTool):
             invoker=invoker,
             timeout_seconds=self.declaration.timeout_seconds,
             max_tool_calls=session_mod.DEFAULT_MAX_TOOL_CALLS,
+            cancel_requested=lambda: ctx.cancel_requested,
         )
 
         structured = outcome.model_dump(mode="json")
         is_error = outcome.status is not ExecuteCodeStatus.SUCCESS
+        content = outcome.output or outcome.summary or outcome.status.value
         return ToolResult(
-            content=outcome.output if outcome.output else outcome.status.value,
+            content=content,
             structured=structured,
             is_error=is_error,
             metadata={
                 "status": outcome.status.value,
+                "summary": outcome.summary,
+                "next_actions": outcome.next_actions,
                 "tool_calls_made": outcome.tool_calls_made,
                 "exit_code": outcome.exit_code,
                 "duration_seconds": outcome.duration_seconds,
+                "stdout_truncated": outcome.stdout_truncated,
+                "stderr_truncated": outcome.stderr_truncated,
                 "allowed_tools": sorted(t.value for t in allowed),
+                "tool_description": _dynamic_description(allowed),
             },
         )
+
+
+def _dynamic_description(allowed: frozenset[NestedToolName]) -> str:
+    sigs = describe_allowed_tools(allowed)
+    if not sigs:
+        return _BASE_DESCRIPTION
+    return f"{_BASE_DESCRIPTION}\nAvailable in this session:\n{sigs}"
 
 
 def _role_allowlist(metadata: dict[str, Any]) -> frozenset[str] | None:
@@ -130,20 +154,32 @@ def _permission_gate(
 
 
 def _refused(message: str, *, tool_calls_made: int) -> ToolResult:
+    status = ExecuteCodeStatus.REFUSED
+    summary = summary_for(status, exit_code=1, tool_calls_made=tool_calls_made, detail=message[:80])
+    next_actions = next_actions_for(status)
     structured = {
-        "status": ExecuteCodeStatus.REFUSED.value,
+        "status": status.value,
         "output": message,
         "exit_code": 1,
         "tool_calls_made": tool_calls_made,
         "duration_seconds": 0.0,
         "stderr": "",
+        "summary": summary,
+        "next_actions": next_actions,
+        "stdout_truncated": False,
+        "stderr_truncated": False,
+        "stdout_bytes": 0,
+        "stderr_bytes": 0,
+        "tool_call_log": [],
     }
     return ToolResult(
         content=message,
         structured=structured,
         is_error=True,
         metadata={
-            "status": ExecuteCodeStatus.REFUSED.value,
+            "status": status.value,
+            "summary": summary,
+            "next_actions": next_actions,
             "tool_calls_made": tool_calls_made,
             "exit_code": 1,
         },

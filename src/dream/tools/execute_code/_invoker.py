@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
@@ -26,7 +27,17 @@ class ToolInvoker(Protocol):
     @property
     def cap_exceeded(self) -> bool: ...
 
+    @property
+    def tool_call_log(self) -> list[dict[str, Any]]: ...
+
     async def invoke(self, tool: NestedToolName, args: dict[str, Any]) -> ToolResult: ...
+
+
+def _preview_args(args: dict[str, Any], *, limit: int = 160) -> str:
+    text = repr(args)
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3] + "..."
 
 
 class RegistryToolInvoker:
@@ -56,6 +67,7 @@ class RegistryToolInvoker:
         self._permission_gate = permission_gate
         self._calls_made = 0
         self._cap_exceeded = False
+        self._tool_call_log: list[dict[str, Any]] = []
 
     @property
     def calls_made(self) -> int:
@@ -64,6 +76,10 @@ class RegistryToolInvoker:
     @property
     def cap_exceeded(self) -> bool:
         return self._cap_exceeded
+
+    @property
+    def tool_call_log(self) -> list[dict[str, Any]]:
+        return list(self._tool_call_log)
 
     async def invoke(self, tool: NestedToolName, args: dict[str, Any]) -> ToolResult:
         if tool not in self._allowed:
@@ -125,7 +141,17 @@ class RegistryToolInvoker:
                 )
 
         self._calls_made += 1
-        return await registered.execute(args, self._context)
+        started = time.monotonic()
+        result = await registered.execute(args, self._context)
+        self._tool_call_log.append(
+            {
+                "tool": tool.value,
+                "args_preview": _preview_args(args),
+                "duration_ms": int((time.monotonic() - started) * 1000),
+                "is_error": bool(result.is_error),
+            }
+        )
+        return result
 
 
 __all__ = ["PermissionGate", "RegistryToolInvoker", "ToolInvoker"]

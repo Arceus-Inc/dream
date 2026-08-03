@@ -161,3 +161,75 @@ async def test_invoker_rejects_unknown_tool_name(registry, ctx: ToolExecutionCon
     )
     with pytest.raises(PermissionError):
         await invoker.invoke(NestedToolName.BASH, {"command": "echo hi"})
+
+
+def test_guard_blocks_subprocess_import() -> None:
+    from dream.tools.execute_code import check_execute_code_guard
+
+    msg = check_execute_code_guard("import subprocess\nsubprocess.run(['echo', 'x'])\n")
+    assert msg is not None
+    assert "subprocess" in msg
+
+
+def test_guard_allows_dream_tools_imports() -> None:
+    from dream.tools.execute_code import check_execute_code_guard
+
+    code = (
+        "from dream_tools import read_file, bash\n"
+        "print(read_file(path='a.txt'))\n"
+        "print(bash(command='echo hi'))\n"
+    )
+    assert check_execute_code_guard(code) is None
+
+
+def test_hygiene_strips_ansi_and_redacts_secrets() -> None:
+    from dream.tools.execute_code._hygiene import sanitize_output
+
+    raw = "\x1b[31msecret\x1b[0m API_TOKEN=supersecretvalue1234567890"
+    cleaned = sanitize_output(raw)
+    assert "\x1b" not in cleaned
+    assert "supersecretvalue1234567890" not in cleaned
+    assert "***REDACTED***" in cleaned
+
+
+def test_observation_helpers_cover_statuses() -> None:
+    from dream.tools.execute_code._observation import next_actions_for, summary_for
+    from dream.tools.execute_code._types import ExecuteCodeStatus
+
+    assert summary_for(
+        ExecuteCodeStatus.SUCCESS, exit_code=0, tool_calls_made=1
+    ).startswith("execute_code success")
+    assert next_actions_for(ExecuteCodeStatus.SUCCESS) == []
+    assert next_actions_for(ExecuteCodeStatus.TIMEOUT)
+    assert next_actions_for(ExecuteCodeStatus.REFUSED)
+    assert next_actions_for(ExecuteCodeStatus.CANCELLED)
+
+
+async def test_guard_refusal_surfaces_on_tool(
+    tool: ExecuteCodeTool, ctx: ToolExecutionContext
+) -> None:
+    result = await tool.execute(
+        {"code": "import subprocess\nprint(subprocess.getoutput('echo hi'))\n"},
+        ctx,
+    )
+    assert result.is_error is True
+    assert result.metadata["status"] == "refused"
+    assert "subprocess" in result.content
+    assert result.structured is not None
+    assert result.structured["summary"]
+    assert result.structured["next_actions"]
+
+
+async def test_outcome_includes_summary_and_log_fields(
+    tool: ExecuteCodeTool, ctx: ToolExecutionContext, tmp_path: Path
+) -> None:
+    (tmp_path / "a.txt").write_text("z", encoding="utf-8")
+    result = await tool.execute(
+        {"code": "from dream_tools import read_file\nprint(read_file(path='a.txt'))\n"},
+        ctx,
+    )
+    assert result.structured is not None
+    assert "summary" in result.structured
+    assert "next_actions" in result.structured
+    assert "tool_call_log" in result.structured
+    assert isinstance(result.structured["tool_call_log"], list)

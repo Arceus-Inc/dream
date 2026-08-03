@@ -22,6 +22,14 @@ def test_missing_file_yields_defaults(tmp_path: Path) -> None:
     assert cfg.backend == "docker"
     assert cfg.extra_allowed == ()
     assert cfg.credential_extra == ()
+    assert cfg.docker.fail_if_unavailable is False
+    assert cfg.docker.pids_limit == 256
+
+
+def test_fail_if_unavailable_defaults_false() -> None:
+    cfg = parse_sandbox_config("")
+    assert cfg.docker.fail_if_unavailable is False
+    assert parse_sandbox_config("[docker]\nfail_if_unavailable = true\n").docker.fail_if_unavailable
 
 
 def test_empty_text_defaults_to_repo_write() -> None:

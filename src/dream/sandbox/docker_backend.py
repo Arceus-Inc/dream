@@ -7,12 +7,15 @@ then each :meth:`DockerSandbox.run` is a timed ``docker exec``.
 
 Docker is the default execution backend. Opt out with
 ``backend = "subprocess"`` in ``.harness/sandbox.toml``; it is never
-inferred from the permission tier alone.
+inferred from the permission tier alone. When Docker is unavailable and
+``fail_if_unavailable`` is false (the default), the factory soft-degrades
+to ``SubprocessSandbox`` (Spec 13).
 """
 
 from __future__ import annotations
 
 import atexit
+import platform
 import asyncio
 import contextlib
 import logging
@@ -51,7 +54,8 @@ class DockerSandboxConfig:
     memory_limit: str = ""
     extra_mounts: tuple[str, ...] = ()
     extra_env: Mapping[str, str] = field(default_factory=dict)
-    fail_if_unavailable: bool = True
+    fail_if_unavailable: bool = False
+    pids_limit: int = 256
 
 
 @dataclass(frozen=True)
@@ -65,6 +69,17 @@ class DockerAvailability:
 
 def get_docker_availability() -> DockerAvailability:
     """Check whether Docker can be used as a sandbox backend."""
+    system = platform.system()
+    release = platform.release().lower()
+    on_wsl = bool(os.environ.get("WSL_DISTRO_NAME")) or "microsoft" in release
+    if system == "Windows" and not on_wsl:
+        return DockerAvailability(
+            available=False,
+            reason=(
+                "Docker sandbox is not supported on native Windows; "
+                "use WSL2 or Docker Desktop Linux engine"
+            ),
+        )
     docker = shutil.which("docker")
     if not docker:
         return DockerAvailability(
@@ -87,7 +102,7 @@ def get_docker_availability() -> DockerAvailability:
     return DockerAvailability(available=True, command=docker)
 
 
-@dataclass
+@dataclass(eq=False)
 class DockerSandbox:
     """Run shell commands inside a long-lived Docker container.
 
@@ -95,6 +110,9 @@ class DockerSandbox:
     that call's ``cwd`` at the same absolute path. Later calls reuse the
     container when ``cwd`` stays under the mounted root; a cwd outside the
     mount triggers a restart with the new root.
+
+    ``eq=False`` keeps instances identity-hashable so the weak debug registry
+    can track live adapters without requiring a frozen/hashable value type.
     """
 
     config: DockerSandboxConfig = field(default_factory=DockerSandboxConfig)
@@ -132,7 +150,14 @@ class DockerSandbox:
             self._container_name,
             "--network",
             "none",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
         ]
+
+        if cfg.pids_limit > 0:
+            argv.extend(["--pids-limit", str(cfg.pids_limit)])
 
         if cfg.cpu_limit > 0:
             argv.extend(["--cpus", str(cfg.cpu_limit)])
@@ -143,6 +168,7 @@ class DockerSandbox:
         argv.extend(["-w", cwd_str])
 
         for mount in cfg.extra_mounts:
+            _validate_extra_mount(mount)
             argv.extend(["-v", mount])
 
         for key, value in cfg.extra_env.items():
@@ -199,6 +225,9 @@ class DockerSandbox:
         if not self._atexit_registered:
             atexit.register(self.stop_sync)
             self._atexit_registered = True
+        from dream.sandbox._registry import register as _register_sandbox
+
+        _register_sandbox(self)
         logger.info("Docker sandbox started: %s", self._container_name)
 
     async def stop(self) -> None:
@@ -283,6 +312,17 @@ class DockerSandbox:
             returncode=proc.returncode,
             stdout=stdout.decode("utf-8", errors="replace"),
             stderr=stderr.decode("utf-8", errors="replace"),
+        )
+
+
+def _validate_extra_mount(mount: str) -> None:
+    """Reject relative host paths in ``extra_mounts`` (escape hatch must be absolute)."""
+    host = mount.split(":", 1)[0].strip()
+    if not host:
+        raise SandboxError(f"Invalid docker extra_mount {mount!r}: empty host path")
+    if not Path(host).is_absolute():
+        raise SandboxError(
+            f"docker.extra_mounts entry {mount!r} must use an absolute host path"
         )
 
 

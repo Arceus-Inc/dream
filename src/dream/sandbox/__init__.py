@@ -13,6 +13,7 @@ from dream.sandbox._session import (
     read_sandbox_adapter,
     select_backend,
 )
+from dream.sandbox._registry import active_sandboxes
 from dream.sandbox.docker_backend import (
     DockerAvailability,
     DockerSandbox,
@@ -24,6 +25,7 @@ from dream.sandbox.subprocess_backend import SubprocessSandbox
 __all__ = [
     "SANDBOX_CONTEXT_KEY",
     "DockerAvailability",
+    "active_sandboxes",
     "DockerSandbox",
     "DockerSandboxConfig",
     "SandboxAdapter",

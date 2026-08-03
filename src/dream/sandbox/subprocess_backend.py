@@ -1,10 +1,12 @@
-"""Subprocess sandbox backend — the v1 default (spec 13B).
+"""Subprocess sandbox backend — opt-in via ``backend = "subprocess"`` (spec 13B).
 
-The repo is the security boundary in v1: commands run as the harness
-user, in the working directory, with an explicit environment when one
-is given (no implicit inheritance surprises). Process-tree discipline
-matches ``dream.verification._runner``: each command gets its own
-session so a timeout kills the whole tree, not just the shell.
+Docker is the default execution backend; this adapter is selected when
+operators set ``backend = "subprocess"`` in ``.harness/sandbox.toml``, or
+when Docker is unavailable and ``fail_if_unavailable`` is false (soft
+degrade). Commands run as the harness user in the working directory, with
+an explicit environment when one is given. Process-tree discipline matches
+``dream.verification._runner``: each command gets its own session so a
+timeout kills the whole tree, not just the shell.
 """
 
 from __future__ import annotations

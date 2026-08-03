@@ -146,6 +146,9 @@ def test_container_start_builds_correct_docker_args(monkeypatch: pytest.MonkeyPa
     name_idx = argv.index("--name")
     assert argv[name_idx + 1] == sandbox.container_name
     assert argv[argv.index("--network") + 1] == "none"
+    assert argv[argv.index("--cap-drop") + 1] == "ALL"
+    assert argv[argv.index("--security-opt") + 1] == "no-new-privileges"
+    assert argv[argv.index("--pids-limit") + 1] == "256"
     assert argv[argv.index("--cpus") + 1] == "2.0"
     assert argv[argv.index("--memory") + 1] == "4g"
     assert "tail" in argv
@@ -159,10 +162,35 @@ def test_resource_limits_omitted_when_zero(monkeypatch: pytest.MonkeyPatch) -> N
         "dream.sandbox.docker_backend.shutil.which",
         lambda name: "/usr/bin/docker",
     )
-    sandbox = DockerSandbox()
+    sandbox = DockerSandbox(config=DockerSandboxConfig(pids_limit=0))
     argv = sandbox._build_run_argv(Path("/repo"))
     assert "--cpus" not in argv
     assert "--memory" not in argv
+    assert "--pids-limit" not in argv
+    # Hardening flags remain even when resource limits are off.
+    assert argv[argv.index("--cap-drop") + 1] == "ALL"
+    assert argv[argv.index("--security-opt") + 1] == "no-new-privileges"
+
+
+def test_relative_extra_mount_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "dream.sandbox.docker_backend.shutil.which",
+        lambda name: "/usr/bin/docker",
+    )
+    sandbox = DockerSandbox(
+        config=DockerSandboxConfig(extra_mounts=("relative/path:/mnt",))
+    )
+    with pytest.raises(SandboxError, match="absolute host path"):
+        sandbox._build_run_argv(Path("/repo"))
+
+
+def test_windows_native_platform_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("dream.sandbox.docker_backend.platform.system", lambda: "Windows")
+    monkeypatch.setattr("dream.sandbox.docker_backend.platform.release", lambda: "10")
+    monkeypatch.delenv("WSL_DISTRO_NAME", raising=False)
+    result = get_docker_availability()
+    assert result.available is False
+    assert "native Windows" in result.reason
 
 
 @pytest.mark.asyncio

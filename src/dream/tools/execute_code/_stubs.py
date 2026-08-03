@@ -76,14 +76,16 @@ _STUBS: tuple[_StubSpec, ...] = (
 
 _STUB_BY_NAME: dict[NestedToolName, _StubSpec] = {s.name: s for s in _STUBS}
 
-_UDS_HEADER = '''\
+_UDS_HEADER = r'''
 """Auto-generated Dream tools RPC stubs for execute_code."""
 from __future__ import annotations
 
 import json
 import os
+import shlex
 import socket
 import threading
+import time
 
 _sock = None
 _call_lock = threading.Lock()
@@ -105,13 +107,13 @@ def _connect():
     return _sock
 
 
-def _call(tool_name: str, args: dict) -> str:
-    """Send a nested tool call to the parent and return content (or raise)."""
+def call_tool(tool_name: str, **kwargs) -> dict:
+    """Send a nested tool call; return ``{"content", "is_error"}``."""
     request = json.dumps({
         "tool": tool_name,
-        "args": args,
+        "args": kwargs,
         "token": os.environ.get("DREAM_RPC_TOKEN", ""),
-    }) + "\\n"
+    }) + "\n"
     with _call_lock:
         conn = _connect()
         conn.sendall(request.encode("utf-8"))
@@ -121,24 +123,69 @@ def _call(tool_name: str, args: dict) -> str:
             if not chunk:
                 raise RuntimeError("Dream agent process disconnected")
             buf += chunk
-            if buf.endswith(b"\\n"):
+            if buf.endswith(b"\n"):
                 break
     payload = json.loads(buf.decode("utf-8").strip())
-    # Transport / auth failures have no content — raise. Tool-level errors
-    # (missing file, etc.) return content so scripts can branch (Hermes PTC).
     err = payload.get("error")
     content = payload.get("content") or ""
+    is_error = bool(payload.get("is_error")) or (bool(err) and not content)
     if err and not content:
         raise RuntimeError(str(err))
-    return content
+    return {"content": content, "is_error": is_error, "error": err}
 
-'''
+
+def _call(tool_name: str, args: dict) -> str:
+    """Send a nested tool call to the parent and return content (or raise)."""
+    result = call_tool(tool_name, **args)
+    return result["content"]
+
+
+def json_parse(s: str):
+    """Parse JSON text; convenience for scripts."""
+    return json.loads(s)
+
+
+def shell_quote(s: str) -> str:
+    """Shell-escape a string for safe interpolation into bash commands."""
+    return shlex.quote(s)
+
+
+def retry(fn, times: int = 3, delay: float = 0.5):
+    """Call ``fn`` up to ``times``, sleeping ``delay`` between failures."""
+    last = None
+    for attempt in range(max(1, times)):
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001 — script helper
+            last = exc
+            if attempt + 1 >= times:
+                break
+            time.sleep(delay)
+    raise last
+
+'''.lstrip("\n")
+
+
+def describe_allowed_tools(enabled: frozenset[NestedToolName]) -> str:
+    """Human-readable signature list for the tool description."""
+    lines: list[str] = []
+    for name in sorted(enabled, key=lambda n: n.value):
+        spec = _STUB_BY_NAME.get(name)
+        if spec is None:
+            continue
+        lines.append(f"- {spec.name.value}({spec.signature})")
+    return "\n".join(lines)
 
 
 def generate_dream_tools_module(enabled: frozenset[NestedToolName]) -> str:
     """Build ``dream_tools.py`` source for the given enabled sandbox tools."""
     parts: list[str] = [_UDS_HEADER]
-    export_names: list[str] = []
+    export_names: list[str] = [
+        "call_tool",
+        "json_parse",
+        "shell_quote",
+        "retry",
+    ]
     for name in sorted(enabled, key=lambda n: n.value):
         spec = _STUB_BY_NAME.get(name)
         if spec is None:
@@ -153,4 +200,4 @@ def generate_dream_tools_module(enabled: frozenset[NestedToolName]) -> str:
     return "\n".join(parts)
 
 
-__all__ = ["generate_dream_tools_module"]
+__all__ = ["describe_allowed_tools", "generate_dream_tools_module"]

@@ -15,11 +15,15 @@ import sys
 import tempfile
 import time
 import uuid
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from pydantic import ValidationError
 
+from dream.tools.execute_code._hygiene import sanitize_output
 from dream.tools.execute_code._invoker import ToolInvoker
+from dream.tools.execute_code._observation import next_actions_for, summary_for
 from dream.tools.execute_code._stubs import generate_dream_tools_module
 from dream.tools.execute_code._types import (
     DEFAULT_MAX_TOOL_CALLS,
@@ -87,8 +91,19 @@ _WINDOWS_ESSENTIAL: frozenset[str] = frozenset(
         "USERPROFILE",
         "USERDOMAIN",
         "USERNAME",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "COMPUTERNAME",
     }
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _Truncation:
+    text: str
+    truncated: bool
+    original_bytes: int
+
 
 def _scrub_child_env(source: dict[str, str]) -> dict[str, str]:
     """Strip secrets from the child environment (Hermes scrub rules)."""
@@ -100,7 +115,6 @@ def _scrub_child_env(source: dict[str, str]) -> dict[str, str]:
         if upper in _WINDOWS_ESSENTIAL:
             cleaned[key] = value
             continue
-        # Do not inherit host PYTHONPATH — only the session tmpdir is added later.
         if upper == "PYTHONPATH":
             continue
         if any(upper.startswith(p) or key.startswith(p) for p in _SAFE_ENV_PREFIXES):
@@ -108,24 +122,27 @@ def _scrub_child_env(source: dict[str, str]) -> dict[str, str]:
     return cleaned
 
 
-def _truncate(text: str, max_bytes: int) -> str:
+def _truncate(text: str, max_bytes: int) -> _Truncation:
     """Keep ``max_bytes`` of UTF-8 output, reserving space for the truncation marker."""
     raw = text.encode("utf-8", errors="replace")
-    if len(raw) <= max_bytes:
-        return text
-    omitted = len(raw) - max_bytes
+    original = len(raw)
+    if original <= max_bytes:
+        return _Truncation(text=text, truncated=False, original_bytes=original)
+    omitted = original - max_bytes
     marker = f"\n\n... [OUTPUT TRUNCATED - {omitted:,} bytes omitted] ...\n\n"
     marker_b = marker.encode("utf-8")
     if len(marker_b) >= max_bytes:
-        return marker_b[:max_bytes].decode("utf-8", errors="replace")
+        clipped = marker_b[:max_bytes].decode("utf-8", errors="replace")
+        return _Truncation(text=clipped, truncated=True, original_bytes=original)
     budget = max_bytes - len(marker_b)
     head = budget // 2
     tail = budget - head
-    return (
+    clipped = (
         raw[:head].decode("utf-8", errors="replace")
         + marker
         + raw[-tail:].decode("utf-8", errors="replace")
     )
+    return _Truncation(text=clipped, truncated=True, original_bytes=original)
 
 
 async def _kill_tree(proc: asyncio.subprocess.Process) -> None:
@@ -141,6 +158,76 @@ async def _kill_tree(proc: asyncio.subprocess.Process) -> None:
         await proc.wait()
 
 
+def _outcome(
+    *,
+    status: ExecuteCodeStatus,
+    output: str,
+    exit_code: int,
+    tool_calls_made: int,
+    duration_seconds: float,
+    stderr: str = "",
+    stdout_truncated: bool = False,
+    stderr_truncated: bool = False,
+    stdout_bytes: int = 0,
+    stderr_bytes: int = 0,
+    tool_call_log: list | None = None,
+    detail: str = "",
+) -> ExecuteCodeOutcome:
+    return ExecuteCodeOutcome(
+        status=status,
+        output=output,
+        exit_code=exit_code,
+        tool_calls_made=tool_calls_made,
+        duration_seconds=duration_seconds,
+        stderr=stderr,
+        summary=summary_for(
+            status, exit_code=exit_code, tool_calls_made=tool_calls_made, detail=detail
+        ),
+        next_actions=next_actions_for(status),
+        stdout_truncated=stdout_truncated,
+        stderr_truncated=stderr_truncated,
+        stdout_bytes=stdout_bytes,
+        stderr_bytes=stderr_bytes,
+        tool_call_log=list(tool_call_log or ()),
+    )
+
+
+async def _communicate_with_cancel(
+    proc: asyncio.subprocess.Process,
+    *,
+    timeout_seconds: float,
+    cancel_requested: Callable[[], bool] | None,
+) -> tuple[bytes, bytes] | str:
+    """Wait for process exit; return stdout/stderr bytes, or 'timeout'/'cancelled'.
+
+    Uses a single ``communicate()`` task — calling it repeatedly after a
+    timeout leaves pipes half-consumed and raises on the next attempt.
+    """
+    comm_task = asyncio.create_task(proc.communicate())
+    deadline = time.monotonic() + timeout_seconds
+    try:
+        while not comm_task.done():
+            if cancel_requested is not None and cancel_requested():
+                await _kill_tree(proc)
+                with contextlib.suppress(Exception):
+                    await comm_task
+                return "cancelled"
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                await _kill_tree(proc)
+                with contextlib.suppress(Exception):
+                    await comm_task
+                return "timeout"
+            await asyncio.wait({comm_task}, timeout=min(0.25, remaining))
+        return await comm_task
+    except BaseException:
+        if not comm_task.done():
+            await _kill_tree(proc)
+            with contextlib.suppress(Exception):
+                await comm_task
+        raise
+
+
 async def run_execute_code_session(
     *,
     code: str,
@@ -149,19 +236,22 @@ async def run_execute_code_session(
     invoker: ToolInvoker,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     max_tool_calls: int = DEFAULT_MAX_TOOL_CALLS,
+    cancel_requested: Callable[[], bool] | None = None,
 ) -> ExecuteCodeOutcome:
-    """Spawn the child script and serve nested tool RPCs until exit/timeout."""
+    """Spawn the child script and serve nested tool RPCs until exit/timeout/cancel."""
     del max_tool_calls  # enforced on the invoker; kept for API symmetry with Hermes
     if not allowed:
-        return ExecuteCodeOutcome(
+        msg = (
+            "execute_code refused: no sandbox tools available "
+            "(session ∩ allowlist is empty; fail-closed)."
+        )
+        return _outcome(
             status=ExecuteCodeStatus.REFUSED,
-            output=(
-                "execute_code refused: no sandbox tools available "
-                "(session ∩ allowlist is empty; fail-closed)."
-            ),
+            output=msg,
             exit_code=1,
             tool_calls_made=0,
             duration_seconds=0.0,
+            detail="empty allowlist",
         )
 
     started = time.monotonic()
@@ -222,24 +312,10 @@ async def run_execute_code_session(
         )
 
         try:
-            stdout_b, stderr_b = await asyncio.wait_for(
-                proc.communicate(),
-                timeout=timeout_seconds,
-            )
-        except TimeoutError:
-            stop.set()
-            await _kill_tree(proc)
-            duration = time.monotonic() - started
-            return ExecuteCodeOutcome(
-                status=ExecuteCodeStatus.TIMEOUT,
-                output=_truncate("", MAX_STDOUT_BYTES),
-                exit_code=-1,
-                tool_calls_made=invoker.calls_made,
-                duration_seconds=duration,
-                stderr=_truncate(
-                    f"execute_code timed out after {timeout_seconds}s",
-                    MAX_STDERR_BYTES,
-                ),
+            result = await _communicate_with_cancel(
+                proc,
+                timeout_seconds=timeout_seconds,
+                cancel_requested=cancel_requested,
             )
         finally:
             stop.set()
@@ -248,8 +324,38 @@ async def run_execute_code_session(
                 await rpc_task
 
         duration = time.monotonic() - started
-        stdout = _truncate(stdout_b.decode("utf-8", errors="replace"), MAX_STDOUT_BYTES)
-        stderr = _truncate(stderr_b.decode("utf-8", errors="replace"), MAX_STDERR_BYTES)
+        log = invoker.tool_call_log
+
+        if result == "timeout":
+            msg = f"execute_code timed out after {timeout_seconds}s"
+            return _outcome(
+                status=ExecuteCodeStatus.TIMEOUT,
+                output=msg,
+                exit_code=-1,
+                tool_calls_made=invoker.calls_made,
+                duration_seconds=duration,
+                stderr=msg,
+                tool_call_log=log,
+                detail=msg,
+            )
+        if result == "cancelled":
+            msg = "execute_code cancelled by caller"
+            return _outcome(
+                status=ExecuteCodeStatus.CANCELLED,
+                output=msg,
+                exit_code=-1,
+                tool_calls_made=invoker.calls_made,
+                duration_seconds=duration,
+                stderr=msg,
+                tool_call_log=log,
+                detail=msg,
+            )
+
+        stdout_b, stderr_b = result
+        stdout_raw = sanitize_output(stdout_b.decode("utf-8", errors="replace"))
+        stderr_raw = sanitize_output(stderr_b.decode("utf-8", errors="replace"))
+        stdout_t = _truncate(stdout_raw, MAX_STDOUT_BYTES)
+        stderr_t = _truncate(stderr_raw, MAX_STDERR_BYTES)
         exit_code = proc.returncode if proc.returncode is not None else 1
 
         if invoker.cap_exceeded:
@@ -259,17 +365,30 @@ async def run_execute_code_session(
         else:
             status = ExecuteCodeStatus.SUCCESS
 
-        output = stdout
-        if stderr and status is not ExecuteCodeStatus.SUCCESS:
-            output = f"{stdout}\n--- stderr ---\n{stderr}" if stdout else stderr
+        output = stdout_t.text
+        if stderr_t.text and status is not ExecuteCodeStatus.SUCCESS:
+            output = (
+                f"{stdout_t.text}\n--- stderr ---\n{stderr_t.text}"
+                if stdout_t.text
+                else stderr_t.text
+            )
+        if not output and status is not ExecuteCodeStatus.SUCCESS:
+            output = summary_for(
+                status, exit_code=exit_code, tool_calls_made=invoker.calls_made
+            )
 
-        return ExecuteCodeOutcome(
+        return _outcome(
             status=status,
             output=output,
             exit_code=exit_code,
             tool_calls_made=invoker.calls_made,
             duration_seconds=duration,
-            stderr=stderr,
+            stderr=stderr_t.text,
+            stdout_truncated=stdout_t.truncated,
+            stderr_truncated=stderr_t.truncated,
+            stdout_bytes=stdout_t.original_bytes,
+            stderr_bytes=stderr_t.original_bytes,
+            tool_call_log=log,
         )
     finally:
         if server_sock is not None:
@@ -363,7 +482,6 @@ async def _dispatch_line(
     try:
         request = RpcRequest.model_validate(raw)
     except ValidationError as exc:
-        # Unknown / non-allowlisted tool names fail validation on NestedToolName.
         return RpcResponse(content="", is_error=True, error=f"Invalid RPC request: {exc}")
 
     try:
