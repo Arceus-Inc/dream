@@ -418,11 +418,6 @@ def _select_sandbox_adapter(paths: DreamPaths) -> SandboxAdapter:
     reason = availability.reason or "Docker sandbox is unavailable"
     if cfg.docker.fail_if_unavailable:
         raise SandboxError(reason)
-    import logging
-
-    logging.getLogger(__name__).warning(
-        "Docker sandbox unavailable (%s); soft-degrading to subprocess", reason
-    )
     return select_backend("subprocess")
 
 

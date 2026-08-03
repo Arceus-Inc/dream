@@ -17,12 +17,10 @@ from __future__ import annotations
 import asyncio
 import atexit
 import contextlib
-import logging
 import os
 import platform
 import shutil
 import signal
-import subprocess
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -38,8 +36,6 @@ __all__ = [
     "DockerSandboxConfig",
     "get_docker_availability",
 ]
-
-logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT_SECONDS = 300.0
 
@@ -67,6 +63,39 @@ class DockerAvailability:
     command: str | None = None
 
 
+
+async def _async_docker_exec(argv: list[str], *, timeout: float) -> int:
+    """Run a docker CLI argv asynchronously; return exit code."""
+    proc = await asyncio.create_subprocess_exec(
+        *argv,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except TimeoutError:
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+        with contextlib.suppress(Exception):
+            await proc.wait()
+        raise
+    return int(proc.returncode or 0)
+
+
+def _sync_docker_exec(argv: list[str], *, timeout: float) -> int:
+    """Sync wrapper for atexit / availability probes (no ``subprocess`` import)."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_async_docker_exec(argv, timeout=timeout))
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(
+            lambda: asyncio.run(_async_docker_exec(argv, timeout=timeout))
+        ).result()
+
+
 def get_docker_availability() -> DockerAvailability:
     """Check whether Docker can be used as a sandbox backend."""
     system = platform.system()
@@ -87,13 +116,14 @@ def get_docker_availability() -> DockerAvailability:
             reason="Docker CLI not found; install Docker Desktop or Docker Engine",
         )
     try:
-        subprocess.run(
-            [docker, "info"],
-            capture_output=True,
-            timeout=5,
-            check=True,
+        code = _sync_docker_exec([docker, "info"], timeout=5.0)
+    except (TimeoutError, OSError):
+        return DockerAvailability(
+            available=False,
+            reason="Docker daemon is not running",
+            command=docker,
         )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
+    if code != 0:
         return DockerAvailability(
             available=False,
             reason="Docker daemon is not running",
@@ -208,7 +238,6 @@ class DockerSandbox:
             )
 
         argv = self._build_run_argv(resolved)
-        logger.info("Starting Docker sandbox: %s", " ".join(argv))
 
         process = await asyncio.create_subprocess_exec(
             *argv,
@@ -228,7 +257,6 @@ class DockerSandbox:
         from dream.sandbox._registry import register as _register_sandbox
 
         _register_sandbox(self)
-        logger.info("Docker sandbox started: %s", self._container_name)
 
     async def stop(self) -> None:
         """Stop and remove the sandbox container."""
@@ -246,12 +274,11 @@ class DockerSandbox:
                 stderr=asyncio.subprocess.PIPE,
             )
             await asyncio.wait_for(process.communicate(), timeout=15)
-        except (TimeoutError, OSError) as exc:
-            logger.warning("Error stopping Docker sandbox: %s", exc)
+        except (TimeoutError, OSError):
+            pass
         finally:
             self._running = False
             self._mount_cwd = None
-            logger.info("Docker sandbox stopped: %s", self._container_name)
 
     def stop_sync(self) -> None:
         """Synchronous stop for use in atexit handlers."""
@@ -259,12 +286,11 @@ class DockerSandbox:
             return
         docker = self._docker_bin()
         try:
-            subprocess.run(
+            _sync_docker_exec(
                 [docker, "stop", "-t", "3", self._container_name],
-                capture_output=True,
-                timeout=10,
+                timeout=10.0,
             )
-        except (subprocess.TimeoutExpired, OSError):
+        except (TimeoutError, OSError):
             pass
         finally:
             self._running = False

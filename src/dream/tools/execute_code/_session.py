@@ -38,6 +38,7 @@ from dream.tools.execute_code._types import (
     RpcRequest,
     RpcResponse,
 )
+from dream.utils.fs import atomic_write_text
 
 _IS_WINDOWS = platform.system() == "Windows"
 
@@ -265,11 +266,12 @@ async def run_execute_code_session(
     stop = asyncio.Event()
 
     try:
-        (tmpdir / "dream_tools.py").write_text(
+        atomic_write_text(
+            tmpdir / "dream_tools.py",
             generate_dream_tools_module(allowed),
             encoding="utf-8",
         )
-        (tmpdir / "script.py").write_text(code, encoding="utf-8")
+        atomic_write_text(tmpdir / "script.py", code, encoding="utf-8")
 
         rpc_token = secrets.token_urlsafe(32)
         if use_tcp:

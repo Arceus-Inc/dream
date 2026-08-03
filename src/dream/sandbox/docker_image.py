@@ -7,11 +7,8 @@ bundled Dockerfile next to this module.
 from __future__ import annotations
 
 import asyncio
-import logging
 import shutil
 from pathlib import Path
-
-logger = logging.getLogger(__name__)
 
 DEFAULT_IMAGE = "dream-sandbox:latest"
 
@@ -59,7 +56,6 @@ async def build_default_image(image: str = DEFAULT_IMAGE) -> bool:
     docker = shutil.which("docker") or "docker"
     dockerfile_path = Path(__file__).parent / "Dockerfile"
 
-    logger.info("Building Docker sandbox image %r ...", image)
 
     if dockerfile_path.exists():
         process = await asyncio.create_subprocess_exec(
@@ -73,7 +69,7 @@ async def build_default_image(image: str = DEFAULT_IMAGE) -> bool:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr_bytes = await process.communicate()
+        await process.communicate()
     else:
         process = await asyncio.create_subprocess_exec(
             docker,
@@ -85,18 +81,9 @@ async def build_default_image(image: str = DEFAULT_IMAGE) -> bool:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        _, stderr_bytes = await process.communicate(input=_DOCKERFILE_CONTENT.encode("utf-8"))
+        await process.communicate(input=_DOCKERFILE_CONTENT.encode("utf-8"))
 
-    if process.returncode == 0:
-        logger.info("Docker sandbox image %r built successfully", image)
-        return True
-
-    logger.warning(
-        "Failed to build Docker sandbox image %r: %s",
-        image,
-        stderr_bytes.decode("utf-8", errors="replace").strip(),
-    )
-    return False
+    return process.returncode == 0
 
 
 async def ensure_image_available(image: str, auto_build: bool) -> bool:
@@ -107,6 +94,5 @@ async def ensure_image_available(image: str, auto_build: bool) -> bool:
     if await _image_exists(image):
         return True
     if not auto_build:
-        logger.warning("Docker image %r not found and auto_build_image is disabled", image)
         return False
     return await build_default_image(image)

@@ -101,15 +101,13 @@ def test_docker_availability_when_not_installed(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_docker_availability_when_daemon_not_running(monkeypatch: pytest.MonkeyPatch) -> None:
-    import subprocess
-
     monkeypatch.setattr(
         "dream.sandbox.docker_backend.shutil.which",
         lambda name: "/usr/bin/docker",
     )
     monkeypatch.setattr(
-        "dream.sandbox.docker_backend.subprocess.run",
-        MagicMock(side_effect=subprocess.CalledProcessError(1, "docker info")),
+        "dream.sandbox.docker_backend._sync_docker_exec",
+        MagicMock(return_value=1),
     )
     result = get_docker_availability()
     assert result.available is False
@@ -122,8 +120,8 @@ def test_docker_availability_when_all_ok(monkeypatch: pytest.MonkeyPatch) -> Non
         lambda name: "/usr/bin/docker",
     )
     monkeypatch.setattr(
-        "dream.sandbox.docker_backend.subprocess.run",
-        MagicMock(return_value=MagicMock(returncode=0)),
+        "dream.sandbox.docker_backend._sync_docker_exec",
+        MagicMock(return_value=0),
     )
     result = get_docker_availability()
     assert result.available is True
