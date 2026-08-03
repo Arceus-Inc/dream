@@ -8,7 +8,7 @@ becomes parent conversation messages.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel, Field
 
@@ -149,7 +149,7 @@ def _permission_gate(
 ) -> Callable[[PermissionRequest], PermissionDecision] | None:
     gate = metadata.get(_PARENT_PERMISSIONS_KEY)
     if callable(gate):
-        return gate  # type: ignore[return-value]
+        return cast(Callable[[PermissionRequest], PermissionDecision], gate)
     return None
 
 

@@ -18,6 +18,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -170,7 +171,7 @@ def _outcome(
     stderr_truncated: bool = False,
     stdout_bytes: int = 0,
     stderr_bytes: int = 0,
-    tool_call_log: list | None = None,
+    tool_call_log: list[dict[str, Any]] | None = None,
     detail: str = "",
 ) -> ExecuteCodeOutcome:
     return ExecuteCodeOutcome(
@@ -351,6 +352,19 @@ async def run_execute_code_session(
                 detail=msg,
             )
 
+        if not isinstance(result, tuple):
+            msg = f"execute_code ended unexpectedly: {result!r}"
+            return _outcome(
+                status=ExecuteCodeStatus.ERROR,
+                output=msg,
+                exit_code=-1,
+                tool_calls_made=invoker.calls_made,
+                duration_seconds=duration,
+                stderr=msg,
+                tool_call_log=log,
+                detail=msg,
+            )
+
         stdout_b, stderr_b = result
         stdout_raw = sanitize_output(stdout_b.decode("utf-8", errors="replace"))
         stderr_raw = sanitize_output(stderr_b.decode("utf-8", errors="replace"))
@@ -506,4 +520,4 @@ async def _dispatch_line(
     return RpcResponse(content=result.content, is_error=False)
 
 
-__all__ = ["run_execute_code_session"]
+__all__ = ["DEFAULT_MAX_TOOL_CALLS", "DEFAULT_TIMEOUT_SECONDS", "run_execute_code_session"]
