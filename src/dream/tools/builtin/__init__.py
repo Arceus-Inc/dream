@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dream.tools._registry import ToolRegistry, ToolSource
 from dream.tools.builtin.bash import BashTool
+from dream.tools.builtin.browser_run import BrowserRunTool
 from dream.tools.builtin.cron_create import CronCreateTool
 from dream.tools.builtin.cron_delete import CronDeleteTool
 from dream.tools.builtin.cron_list import CronListTool
@@ -76,6 +77,7 @@ _DEFAULT_ORDER: tuple[str, ...] = (
     "todo_write",
     "web_search",
     "web_extract",
+    "browser_run",
     "execute_code",
 )
 
@@ -114,6 +116,7 @@ def default_registry() -> ToolRegistry:
     registry.register(TodoWriteTool(), source=ToolSource.DEFAULT)
     registry.register(WebSearchTool(), source=ToolSource.DEFAULT)
     registry.register(WebExtractTool(), source=ToolSource.DEFAULT)
+    registry.register(BrowserRunTool(), source=ToolSource.DEFAULT)
     registry.register(ExecuteCodeTool(), source=ToolSource.DEFAULT)
     return registry
 
