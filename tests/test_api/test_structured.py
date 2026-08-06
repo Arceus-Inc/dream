@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Mapping
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from dream.api._wire import resolve_structured_output
-from dream.api.structured import StructuredResult, complete_structured
+from dream.api.response_format import (
+    JsonSchema,
+    ResponseFormat,
+    ResponseFormatKind,
+    resolve_structured_output,
+)
+from dream.api.structured import ChatMessage, ChatRole, StructuredResult, complete_structured
 
-_SCHEMA: dict[str, Any] = {
+_SCHEMA: Mapping[str, object] = {
     "type": "object",
     "properties": {"answer": {"type": "string"}},
     "required": ["answer"],
@@ -19,24 +24,30 @@ _SCHEMA: dict[str, Any] = {
 
 def test_resolve_structured_output_json_schema() -> None:
     out = resolve_structured_output(schema=_SCHEMA, name="verdict", strict=True)
-    assert out == {
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "verdict",
-                "schema": _SCHEMA,
-                "strict": True,
-            },
-        }
+    assert out is not None
+    assert out.kind is ResponseFormatKind.JSON_SCHEMA
+    assert out.json_schema is not None
+    assert out.json_schema.name == "verdict"
+    assert out.json_schema.strict is True
+    assert dict(out.json_schema.schema.document) == dict(_SCHEMA)
+    assert out.to_openai() == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "verdict",
+            "schema": dict(_SCHEMA),
+            "strict": True,
+        },
     }
 
 
 def test_resolve_structured_output_json_mode() -> None:
-    assert resolve_structured_output(json_mode=True) == {"response_format": {"type": "json_object"}}
+    out = resolve_structured_output(json_mode=True)
+    assert out == ResponseFormat.json_object()
+    assert out.to_openai() == {"type": "json_object"}
 
 
 def test_resolve_structured_output_empty_when_unset() -> None:
-    assert resolve_structured_output() == {}
+    assert resolve_structured_output() is None
 
 
 def test_complete_structured_requires_schema_or_json_mode() -> None:
@@ -45,7 +56,7 @@ def test_complete_structured_requires_schema_or_json_mode() -> None:
             api_key="k",
             base_url="http://example.test/v1",
             model="gpt-4o",
-            messages=[{"role": "user", "content": "hi"}],
+            messages=[ChatMessage(role=ChatRole.USER, content="hi")],
         )
 
 
@@ -63,8 +74,8 @@ def test_complete_structured_posts_response_format() -> None:
             api_key="sk-test",
             base_url="http://example.test/v1",
             model="gpt-4o",
-            messages=[{"role": "user", "content": "hi"}],
-            schema=_SCHEMA,
+            messages=[ChatMessage(role=ChatRole.USER, content="hi")],
+            schema=JsonSchema.of(_SCHEMA),
             schema_name="answer",
         )
 

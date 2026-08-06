@@ -7,10 +7,12 @@ through a fake harness and, when it can't produce valid JSON, fails *open* with 
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any
 
 import pytest
 
+from dream.api.response_format import ResponseFormatKind
 from dream.subagents._declaration import Subagent
 from dream.subagents._output_guard import (
     MAX_OUTPUT_REPAIRS,
@@ -19,7 +21,7 @@ from dream.subagents._output_guard import (
     validate_output,
 )
 
-_SCHEMA: dict[str, Any] = {
+_SCHEMA: Mapping[str, object] = {
     "type": "object",
     "properties": {"answer": {"type": "string"}, "confidence": {"type": "number"}},
     "required": ["answer"],
@@ -153,7 +155,7 @@ async def test_repair_passes_response_format() -> None:
     )
     assert harness.last_options is not None
     assert harness.last_options.response_format is not None
-    assert harness.last_options.response_format["type"] == "json_schema"
+    assert harness.last_options.response_format.kind is ResponseFormatKind.JSON_SCHEMA
 
 
 @pytest.mark.asyncio

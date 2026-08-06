@@ -461,7 +461,7 @@ def _session_extra_params(
         extra["tools"] = tools_wire
         extra["tool_choice"] = "auto"
     if options.response_format is not None:
-        extra["response_format"] = options.response_format
+        extra["response_format"] = dict(options.response_format.to_openai())
     return extra or None
 
 

@@ -9,8 +9,11 @@ The declaring application owns role policy; Dream only executes the typed shape.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
+
+from dream.api.response_format import JsonSchema
 
 PermissionDelta = tuple[str, ...]
 """Tighten-only permission overlay — a tuple of permission tokens to *remove*
@@ -66,7 +69,7 @@ class Subagent:
     keeps ``spawn_subagent`` and is handed a scoped set of exactly these agents — never the parent's
     full roster. Each is still tool-intersected with the child, so a grandchild can only narrow."""
 
-    output_schema: dict[str, Any] | None = None
+    output_schema: JsonSchema | Mapping[str, object] | None = None
     """Optional JSON-schema the subagent's final message is validated against at runtime. ``None`` =
     no enforcement (free-text return, unchanged). When set, the inline executor coerces + validates the
     output, runs a bounded reformat loop on failure, and fails open with a warning (``_output_guard``)
@@ -99,13 +102,29 @@ class Subagent:
             "spawned_by": list(self.spawned_by),
             "system_prompt": self.system_prompt,
             "max_turns": self.max_turns,
-            "output_schema": self.output_schema,
+            "output_schema": (
+                dict(self.output_schema.document)
+                if isinstance(self.output_schema, JsonSchema)
+                else (dict(self.output_schema) if self.output_schema is not None else None)
+            ),
             "strict": self.strict,
             "spawnable": [child.to_dict() for child in self.spawnable],
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Subagent:
+        raw_schema = data.get("output_schema")
+        output_schema: JsonSchema | None
+        if raw_schema is None:
+            output_schema = None
+        elif isinstance(raw_schema, JsonSchema):
+            output_schema = raw_schema
+        elif isinstance(raw_schema, Mapping):
+            output_schema = JsonSchema.of(raw_schema)
+        else:
+            raise TypeError(
+                f"Subagent.output_schema must be a mapping or JsonSchema; got {type(raw_schema)}"
+            )
         return cls(
             name=data["name"],
             description=data["description"],
@@ -117,7 +136,7 @@ class Subagent:
             spawned_by=tuple(data.get("spawned_by") or ()),
             system_prompt=data.get("system_prompt"),
             max_turns=data.get("max_turns", 8),
-            output_schema=data.get("output_schema"),
+            output_schema=output_schema,
             strict=bool(data.get("strict", False)),
             spawnable=tuple(cls.from_dict(child) for child in (data.get("spawnable") or ())),
         )

@@ -27,6 +27,7 @@ from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from dream.api.response_format import ResponseFormat
 from dream.engine._events import (
     AssistantTextDelta,
     AssistantTurnComplete,
@@ -75,8 +76,8 @@ class SessionOptions:
     model: str | None = None
     system_prompt: str | None = None
     max_turns: int | None = None
-    # OpenAI-compat ``response_format`` value (from ``resolve_structured_output``).
-    response_format: dict[str, Any] | None = None
+    # Typed structured-output constraint; serialized at the adapter boundary.
+    response_format: ResponseFormat | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
