@@ -110,7 +110,7 @@ def _valid_reply(
     evaluator_enabled: bool | None = None,
 ) -> str:
     if steps is None:
-        steps = [PlannerStepBody(id="s1", description="do thing one")]
+        steps = [PlannerStepBody(id="s1", description="do thing one", sprint_target=None, notes="")]
     enabled = True if evaluator_enabled is None else evaluator_enabled
     return PlannerResponse(
         spec_markdown=spec,
@@ -182,7 +182,9 @@ async def test_planner_head_intent_documents_json_contract() -> None:
 
 @pytest.mark.asyncio
 async def test_planner_head_strips_json_code_fence() -> None:
-    body = _valid_reply(steps=[PlannerStepBody(id="s1", description="first")])
+    body = _valid_reply(
+        steps=[PlannerStepBody(id="s1", description="first", sprint_target=None, notes="")]
+    )
     harness, _ = _harness_with_reply(f"```json\n{body}\n```")
     head = make_planner_head(harness)
 

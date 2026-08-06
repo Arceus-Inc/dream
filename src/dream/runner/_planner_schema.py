@@ -3,6 +3,10 @@
 Pydantic models are the source of truth; :data:`PLANNER_RESPONSE_SCHEMA` is
 derived for the OpenAI wire. Domain artefacts remain
 :class:`~dream.planner.PlannerLedger` / :class:`~dream.planner.LedgerStep`.
+
+OpenAI/Azure ``strict: true`` requires every property key in ``required``.
+Fields therefore have **no defaults** — optional wire values are explicit
+nullables (``T | None``) or required strings/bools the model must emit.
 """
 
 from __future__ import annotations
@@ -26,8 +30,8 @@ class PlannerStepBody(BaseModel):
 
     id: str = Field(min_length=1)
     description: str = Field(min_length=1)
-    sprint_target: int | None = None
-    notes: str = ""
+    sprint_target: int | None
+    notes: str
 
 
 class PlannerLedgerBody(BaseModel):
@@ -36,7 +40,7 @@ class PlannerLedgerBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     steps: list[PlannerStepBody] = Field(min_length=1)
-    evaluator_enabled: bool = True
+    evaluator_enabled: bool
 
 
 class PlannerResponse(BaseModel):

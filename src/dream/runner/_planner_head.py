@@ -49,6 +49,8 @@ class PlannerHeadParseError(RuntimeError):
     """Raised when the planner's reply does not match the JSON contract."""
 
 
+# JSON example is kept as a separate constant so the prompt builder doesn't
+# have to double every ``{`` / ``}`` to escape format-string syntax.
 _LEDGER_EXAMPLE = """\
 {
   "spec_markdown": "# narrative spec markdown describing the goal, approach, and constraints",

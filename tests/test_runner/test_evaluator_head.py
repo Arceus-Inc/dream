@@ -78,21 +78,21 @@ class _ScriptedReplyStreamer:
 def _verdict(
     *,
     outcome: str = "pass",
-    score: float | None = None,
-    notes: str | None = None,
+    score: float = 0.0,
+    notes: str = "",
     items: list[str] | None = None,
     fence: bool = False,
     prose_before: str = "",
     prose_after: str = "",
     tag: str = "verdict",
 ) -> str:
-    body: dict[str, object] = {"outcome": outcome}
-    if score is not None:
-        body["score"] = score
-    if notes is not None:
-        body["notes"] = notes
-    if items is not None:
-        body["items"] = items
+    # Strict wire contract: every EvaluatorVerdict property must be present.
+    body: dict[str, object] = {
+        "outcome": outcome,
+        "score": score,
+        "notes": notes,
+        "items": list(items) if items is not None else [],
+    }
     inner = json.dumps(body)
     if fence:
         inner = f"```json\n{inner}\n```"
@@ -386,7 +386,9 @@ async def test_missing_verdict_envelope_raises_parse_error() -> None:
 
 async def test_parses_bare_json_without_verdict_wrapper() -> None:
     # the typed JSON verdict is accepted even without the <verdict>...</verdict> wrapper
-    harness, _ = _harness_with_reply('{"outcome": "pass", "score": 0.9, "notes": "looks good"}')
+    harness, _ = _harness_with_reply(
+        '{"outcome": "pass", "score": 0.9, "notes": "looks good", "items": []}'
+    )
     head = make_evaluator_head(harness)
 
     rec = await head("task-001", 1, _contract(), _step())
@@ -396,7 +398,9 @@ async def test_parses_bare_json_without_verdict_wrapper() -> None:
 
 async def test_parses_fenced_json_without_verdict_wrapper() -> None:
     harness, _ = _harness_with_reply(
-        '```json\n{"outcome": "needs-changes", "items": ["fix x"]}\n```'
+        '```json\n'
+        '{"outcome": "needs-changes", "score": 0.0, "notes": "", "items": ["fix x"]}\n'
+        "```"
     )
     head = make_evaluator_head(harness)
 
@@ -407,7 +411,9 @@ async def test_parses_fenced_json_without_verdict_wrapper() -> None:
 
 async def test_parses_json_embedded_in_prose_without_wrapper() -> None:
     harness, _ = _harness_with_reply(
-        'Here is my verdict:\n{"outcome": "fail", "notes": "broken"}\nThanks.'
+        "Here is my verdict:\n"
+        '{"outcome": "fail", "score": 0.0, "notes": "broken", "items": []}\n'
+        "Thanks."
     )
     head = make_evaluator_head(harness)
 

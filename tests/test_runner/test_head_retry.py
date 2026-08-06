@@ -113,7 +113,14 @@ def _valid_planner_reply(
     steps: list[dict[str, object]] | None = None,
 ) -> str:
     if steps is None:
-        steps = [{"id": "s1", "description": "do thing one"}]
+        steps = [
+            {
+                "id": "s1",
+                "description": "do thing one",
+                "sprint_target": None,
+                "notes": "",
+            }
+        ]
     return json.dumps(
         {
             "spec_markdown": spec,
@@ -123,7 +130,9 @@ def _valid_planner_reply(
 
 
 def _valid_verdict_reply(outcome: str = "pass") -> str:
-    body = json.dumps({"outcome": outcome})
+    body = json.dumps(
+        {"outcome": outcome, "score": 0.0, "notes": "", "items": []}
+    )
     return f"<verdict>{body}</verdict>"
 
 

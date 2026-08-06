@@ -1,4 +1,8 @@
-"""Typed evaluator verdict contract (native ``response_format`` schema)."""
+"""Typed evaluator verdict contract (native ``response_format`` schema).
+
+OpenAI/Azure ``strict: true`` requires every property key in ``required``.
+No field defaults — the model must emit every key (empty list / 0.0 / "" ok).
+"""
 
 from __future__ import annotations
 
@@ -29,9 +33,9 @@ class EvaluatorVerdict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     outcome: VerdictOutcome
-    score: float = Field(default=0.0, ge=0.0, le=1.0)
-    notes: str = ""
-    items: list[str] = Field(default_factory=list)
+    score: float = Field(ge=0.0, le=1.0)
+    notes: str
+    items: list[str]
 
 
 EVALUATOR_VERDICT_SCHEMA: JsonSchema = JsonSchema.of(EvaluatorVerdict.model_json_schema())
