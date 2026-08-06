@@ -26,7 +26,7 @@ def test_refund_restores_one_slot() -> None:
     assert budget.consume() is True
     assert budget.consume() is True
     assert budget.consume() is False
-    budget.refund()
+    assert budget.refund() is True
     assert budget.used == 1
     assert budget.remaining == 1
     assert budget.consume() is True
@@ -34,12 +34,26 @@ def test_refund_restores_one_slot() -> None:
 
 def test_refund_never_goes_negative() -> None:
     budget = IterationBudget(1)
-    budget.refund()
+    assert budget.refund() is False
     assert budget.used == 0
 
 
+def test_refund_cap_bounds_programmatic_loops() -> None:
+    """Refunds stop after max_refunds so consume eventually exhausts."""
+    budget = IterationBudget(2, max_refunds=2)
+    for _ in range(2):
+        assert budget.consume() is True
+        assert budget.refund() is True
+    assert budget.refunds == 2
+    assert budget.consume() is True
+    assert budget.refund() is False  # cap hit — slot stays spent
+    assert budget.used == 1
+    assert budget.consume() is True
+    assert budget.consume() is False
+
+
 def test_thread_safe_consume_refund_race() -> None:
-    budget = IterationBudget(1000)
+    budget = IterationBudget(1000, max_refunds=50_000)
     errors: list[str] = []
 
     def worker() -> None:

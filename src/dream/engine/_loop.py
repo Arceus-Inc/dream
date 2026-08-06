@@ -18,8 +18,8 @@ Two collaborators are abstracted as narrow internal Protocols:
 Lifecycle decisions in this loop are made *only* from event types and
 ``ContentBlock`` shapes — never from parsing assistant prose (acceptance #7).
 The loop is bounded by ``max_turns`` (acceptance #6). Programmatic turns
-(``execute_code`` / ``spawn_subagent`` only) refund one iteration so they do
-not burn the parent cap the same way a reasoning turn does.
+(``execute_code`` / ``spawn_subagent`` only) refund one iteration (capped) so
+they do not burn the parent cap the same way a reasoning turn does.
 """
 
 from __future__ import annotations
@@ -123,8 +123,8 @@ async def run_query(
     The loop is bounded by ``ctx.max_turns`` (via :class:`IterationBudget`) and
     terminates cleanly when the bound is reached — never infinite. Turns whose
     tool set is exclusively programmatic (``execute_code`` / ``spawn_subagent``)
-    refund one iteration so nested RPC / spawn work does not burn the parent
-    cap the same way a reasoning turn does.
+    refund one iteration (up to a refund ceiling) so nested RPC / spawn work
+    does not burn the parent cap the same way a reasoning turn does.
     """
     budget = ctx.iteration_budget or IterationBudget(ctx.max_turns)
     while budget.consume():

@@ -363,6 +363,24 @@ async def test_run_query_refunds_programmatic_only_turns() -> None:
     assert [c[0] for c in tools.calls] == ["execute_code", "spawn_subagent", "read_file"]
 
 
+async def test_run_query_programmatic_refunds_are_bounded() -> None:
+    """An execute_code-only model cannot loop forever via refunds."""
+    turns = [
+        FakeTurn(tool_uses=[ToolUseBlock(id=f"e{i}", name="execute_code", input={})])
+        for i in range(20)
+    ]
+    client = FakeStreamer(turns=turns)
+    tools = FakeDispatcher()
+    # Soft cap 2 + default max_refunds 2 → at most 4 API calls.
+    ctx = QueryContext(client=client, tools=tools, max_turns=2)
+    messages: list[ConversationMessage] = [
+        ConversationMessage(role="user", content=[TextBlock(text="loop")])
+    ]
+    await _drain(ctx, messages)
+    assert len(client.calls) == 4
+    assert len(tools.calls) == 4
+
+
 async def test_run_query_does_not_refund_mixed_tool_turns() -> None:
     turns = [
         FakeTurn(
