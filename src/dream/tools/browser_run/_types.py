@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any, Final
+from typing import Any, Final, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -20,11 +20,13 @@ DEFAULT_TIMEOUT_SECONDS: Final[float] = 120.0
 MAX_TIMEOUT_SECONDS: Final[float] = 600.0
 OUTPUT_CAP: Final[int] = 12_000
 
-# Cloud admin helpers — refused; we use self-hosted Chromium CDP only.
-_CLOUD_ADMIN_MARKERS: Final[tuple[str, ...]] = (
-    "start_remote_daemon",
-    "stop_remote_daemon",
-)
+# The self-hosted-only policy lives once, here (DRY): the code markers refused before spawn and the
+# env keys stripped at spawn. Browser Use Cloud is never reached for.
+CLOUD_ADMIN_MARKERS: Final[tuple[str, ...]] = ("start_remote_daemon", "stop_remote_daemon")
+CLOUD_ENV_KEYS: Final[tuple[str, ...]] = ("BROWSER_USE_API_KEY", "BU_AUTOSPAWN", "BU_BROWSER_ID")
+
+# The session/operator metadata block threaded through tool callbacks.
+Metadata: TypeAlias = dict[str, Any]
 
 
 class BrowserRunStatus(StrEnum):
@@ -86,7 +88,7 @@ class BrowserRunInput(BaseModel):
 
 def code_requests_cloud(code: str) -> bool:
     """True when ``code`` tries to start/stop Browser Use cloud daemons."""
-    return any(marker in code for marker in _CLOUD_ADMIN_MARKERS)
+    return any(marker in code for marker in CLOUD_ADMIN_MARKERS)
 
 
 __all__ = [
@@ -97,6 +99,8 @@ __all__ = [
     "BROWSER_RUN_DISABLED_KEY",
     "CDP_URL_ENV",
     "CDP_WS_ENV",
+    "CLOUD_ADMIN_MARKERS",
+    "CLOUD_ENV_KEYS",
     "DEFAULT_TIMEOUT_SECONDS",
     "MAX_TIMEOUT_SECONDS",
     "OUTPUT_CAP",
@@ -104,5 +108,6 @@ __all__ = [
     "BrowserRunInput",
     "BrowserRunOutcome",
     "BrowserRunStatus",
+    "Metadata",
     "code_requests_cloud",
 ]

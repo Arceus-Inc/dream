@@ -9,11 +9,12 @@ from typing import Any
 
 _BH_JSON_PREFIX = "__BH_JSON__"
 _URL_RE = re.compile(r"https?://[^\s\"'<>]+")
+# Pre-lowercased: the probe blob is lowercased before matching.
 _SETUP_MARKERS: tuple[str, ...] = (
     "remote debugging",
     "chrome-not-running",
-    "DevToolsActivePort",
-    "BU_CDP_URL=",
+    "devtoolsactiveport",
+    "bu_cdp_url=",
     "permission-blocked",
     "browser-harness:",
 )
@@ -22,7 +23,7 @@ _SETUP_MARKERS: tuple[str, ...] = (
 def looks_like_setup_error(stderr: str, stdout: str = "") -> bool:
     """Heuristic: daemon could not attach to Chromium CDP."""
     blob = f"{stderr}\n{stdout}".lower()
-    return any(m.lower() in blob for m in _SETUP_MARKERS) and (
+    return any(marker in blob for marker in _SETUP_MARKERS) and (
         "unreachable" in blob
         or "not found" in blob
         or "not running" in blob
@@ -40,9 +41,7 @@ def parse_structured(stdout: str) -> dict[str, Any]:
     2. Last non-empty line that parses as a JSON/Python dict
     3. URL guess from any https?:// match
     """
-    lines = [ln.strip() for ln in stdout.splitlines() if ln.strip()]
-    out: dict[str, Any] = {}
-
+    lines = [line.strip() for line in stdout.splitlines() if line.strip()]
     for line in reversed(lines):
         if line.startswith(_BH_JSON_PREFIX):
             payload = _loads(line[len(_BH_JSON_PREFIX) :])
@@ -56,8 +55,8 @@ def parse_structured(stdout: str) -> dict[str, Any]:
 
     match = _URL_RE.search(stdout)
     if match:
-        out["url"] = match.group(0).rstrip(".,);]")
-    return out
+        return {"url": match.group(0).rstrip(".,);]")}
+    return {}
 
 
 def _loads(text: str) -> Any:
@@ -73,14 +72,11 @@ def _loads(text: str) -> Any:
 
 
 def _normalize(payload: dict[str, Any]) -> dict[str, Any]:
-    """Flatten common shapes: ``{"page": {...}}`` or bare page_info dict."""
+    """Wrap a bare ``page_info()`` shape as ``{"page": ...}``; pass everything else through."""
     if "page" in payload or "dialog" in payload:
         return payload
-    # page_info() shape
     if "url" in payload and ("title" in payload or "w" in payload):
         return {"page": payload}
-    if "dialog" in payload:
-        return payload
     return payload
 
 

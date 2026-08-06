@@ -51,6 +51,7 @@ def test_default_registry_holds_all_default_tools() -> None:
         "todo_write",
         "web_search",
         "web_extract",
+        "browser_run",
         "execute_code",
     }
 
@@ -91,6 +92,7 @@ def test_default_registry_order_is_canonical() -> None:
         "todo_write",
         "web_search",
         "web_extract",
+        "browser_run",
         "execute_code",
     ]
 

@@ -11,9 +11,9 @@ from typing import Any
 from dream.contracts.tool import ToolResult
 from dream.tools._base import BaseTool, ToolDeclaration, ToolEffects
 from dream.tools._context import ToolExecutionContext
-from dream.tools.browser_run._observation import next_actions_for, summary_for
+from dream.tools.browser_run._observation import recovery_advice_for, summary_for
 from dream.tools.browser_run._parse import looks_like_setup_error, parse_structured
-from dream.tools.browser_run._spawn import build_spawn_config, run_browser_harness
+from dream.tools.browser_run._spawn import SpawnResult, build_spawn_config, run_browser_harness
 from dream.tools.browser_run._types import (
     OUTPUT_CAP,
     BrowserKind,
@@ -85,61 +85,76 @@ class BrowserRunTool(BaseTool):
             timeout_seconds=args.timeout_seconds,
             cancel_requested=lambda: ctx.cancel_requested,
         )
-
         if spawned.cancelled:
             return _status_result(
-                BrowserRunOutcome(
-                    status=BrowserRunStatus.CANCELLED,
-                    bu_name=args.name,
-                    browser_kind=BrowserKind.CDP,
-                    duration_seconds=spawned.duration_seconds,
-                ),
+                _outcome(spawned, status=BrowserRunStatus.CANCELLED, name=args.name),
                 content=spawned.stderr or "browser_run cancelled",
             )
-
         if spawned.timed_out:
             return _status_result(
-                BrowserRunOutcome(
-                    status=BrowserRunStatus.TIMEOUT,
-                    bu_name=args.name,
-                    browser_kind=BrowserKind.CDP,
-                    duration_seconds=spawned.duration_seconds,
-                ),
+                _outcome(spawned, status=BrowserRunStatus.TIMEOUT, name=args.name),
                 content=spawned.stderr or f"browser_run timed out after {args.timeout_seconds}s",
             )
 
         stdout = sanitize_output(spawned.stdout)
         stderr = sanitize_output(spawned.stderr)
-        parsed = parse_structured(stdout)
-        page = parsed.get("page") if isinstance(parsed.get("page"), dict) else None
-        dialog = parsed.get("dialog") if isinstance(parsed.get("dialog"), dict) else None
-        url = None
-        if isinstance(page, dict) and isinstance(page.get("url"), str):
-            url = page["url"]
-        elif isinstance(parsed.get("url"), str):
-            url = parsed["url"]
-
-        content = _compose_content(stdout, stderr)
-        if looks_like_setup_error(stderr, stdout) and spawned.returncode not in (0, None):
-            status = BrowserRunStatus.SETUP_REQUIRED
-        elif spawned.returncode == 0:
-            status = BrowserRunStatus.SUCCESS
-        else:
-            status = BrowserRunStatus.SCRIPT_ERROR
-
-        outcome = BrowserRunOutcome(
+        page, dialog, url = _page_facts(parse_structured(stdout))
+        status = _classify(spawned, stdout, stderr)
+        outcome = _outcome(
+            spawned,
             status=status,
-            exit_code=spawned.returncode,
+            name=args.name,
             page=page,
             dialog=dialog,
-            browser_kind=BrowserKind.CDP,
-            bu_name=args.name,
-            duration_seconds=spawned.duration_seconds,
             url=url,
         )
         return _status_result(
-            outcome, content=content, is_error=status is not BrowserRunStatus.SUCCESS
+            outcome,
+            content=_compose_content(stdout, stderr),
+            is_error=status is not BrowserRunStatus.SUCCESS,
         )
+
+
+def _page_facts(
+    parsed: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, str | None]:
+    """Split a parsed payload into ``(page, dialog, url)`` — the page url wins over a bare one."""
+    page = parsed["page"] if isinstance(parsed.get("page"), dict) else None
+    dialog = parsed["dialog"] if isinstance(parsed.get("dialog"), dict) else None
+    url = page.get("url") if isinstance(page, dict) and isinstance(page.get("url"), str) else None
+    if url is None and isinstance(parsed.get("url"), str):
+        url = parsed["url"]
+    return page, dialog, url
+
+
+def _classify(spawned: SpawnResult, stdout: str, stderr: str) -> BrowserRunStatus:
+    """The terminal status from the raw spawn: setup / success / script error."""
+    if looks_like_setup_error(stderr, stdout) and spawned.returncode not in (0, None):
+        return BrowserRunStatus.SETUP_REQUIRED
+    if spawned.returncode == 0:
+        return BrowserRunStatus.SUCCESS
+    return BrowserRunStatus.SCRIPT_ERROR
+
+
+def _outcome(
+    spawned: SpawnResult,
+    *,
+    status: BrowserRunStatus,
+    name: str,
+    page: dict[str, Any] | None = None,
+    dialog: dict[str, Any] | None = None,
+    url: str | None = None,
+) -> BrowserRunOutcome:
+    return BrowserRunOutcome(
+        status=status,
+        exit_code=spawned.returncode,
+        page=page,
+        dialog=dialog,
+        browser_kind=BrowserKind.CDP,
+        bu_name=name,
+        duration_seconds=spawned.duration_seconds,
+        url=url,
+    )
 
 
 def _compose_content(stdout: str, stderr: str) -> str:
@@ -168,7 +183,7 @@ def _status_result(
     is_error: bool | None = None,
 ) -> ToolResult:
     err = outcome.status is not BrowserRunStatus.SUCCESS if is_error is None else is_error
-    root, retry, stop = next_actions_for(outcome.status)
+    advice = recovery_advice_for(outcome.status)
     metadata: dict[str, Any] = {
         "summary": summary_for(outcome),
         "returncode": outcome.exit_code,
@@ -182,9 +197,9 @@ def _status_result(
     if err:
         metadata.update(
             {
-                "root_cause": root,
-                "safe_retry": retry,
-                "stop_condition": stop,
+                "root_cause": advice.root_cause,
+                "safe_retry": advice.safe_retry,
+                "stop_condition": advice.stop_condition,
             }
         )
     return ToolResult(
