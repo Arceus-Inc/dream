@@ -17,6 +17,14 @@ from dream.state.shadow._types import (
     ShadowCheckpointConfig,
 )
 
+# Safety snap outcomes that still allow restore to proceed.
+_SAFETY_OK = frozenset(
+    {
+        CheckpointOutcome.TAKEN,
+        CheckpointOutcome.NO_CHANGES,
+    }
+)
+
 
 class ShadowCheckpointManager:
     """Automatic pre-mutate filesystem snapshots via a shared shadow store."""
@@ -60,12 +68,17 @@ class ShadowCheckpointManager:
 
         if abs_dir in self._checkpointed_dirs:
             return EnsureResult(outcome=CheckpointOutcome.ALREADY_THIS_TURN)
-        self._checkpointed_dirs.add(abs_dir)
 
         try:
-            return self._take(abs_dir, reason)
+            result = self._take(abs_dir, reason)
         except Exception as exc:
             return EnsureResult(outcome=CheckpointOutcome.FAILED, detail=str(exc))
+
+        # Only suppress retries after a conclusive snap (or no-op). Transient
+        # FAILED must leave the turn open so a later mutate can try again.
+        if result.outcome is not CheckpointOutcome.FAILED:
+            self._checkpointed_dirs.add(abs_dir)
+        return result
 
     def list_for(self, working_dir: Path) -> list[CheckpointSnapshot]:
         """List retained checkpoints for ``working_dir`` (newest first)."""
@@ -122,19 +135,27 @@ class ShadowCheckpointManager:
                 detail=err or f"unknown commit {commit_sha}",
             )
 
-        # safety snap before rollback
+        # Safety snap before rollback — refuse to overwrite current state without it.
         self.begin_turn()
-        self.ensure(abs_dir, reason=CheckpointReason.PRE_ROLLBACK)
+        safety = self.ensure(abs_dir, reason=CheckpointReason.PRE_ROLLBACK)
+        if safety.outcome not in _SAFETY_OK:
+            return RestoreResult(
+                outcome=RestoreOutcome.FAILED,
+                detail=(safety.detail or f"pre-rollback snapshot failed ({safety.outcome.value})"),
+            )
 
         self._store.index_path(abs_dir).parent.mkdir(parents=True, exist_ok=True)
+        timeout = self._config.timeout_seconds * 2
+        # Reset index + worktree to the checkpoint tree (drops post-snap paths).
         rc, _out, err = self._store.git(
-            ["checkout", commit_sha, "--", "."],
+            ["read-tree", "-u", "--reset", commit_sha],
             working_dir=abs_dir,
             index=True,
-            timeout=self._config.timeout_seconds * 2,
+            timeout=timeout,
         )
         if rc != 0:
             return RestoreResult(outcome=RestoreOutcome.FAILED, detail=err)
+
         return RestoreResult(outcome=RestoreOutcome.RESTORED, restored_to=commit_sha[:8])
 
     def _take(self, working_dir: Path, reason: CheckpointReason) -> EnsureResult:
@@ -233,13 +254,114 @@ class ShadowCheckpointManager:
         if rc_up != 0:
             return EnsureResult(outcome=CheckpointOutcome.FAILED, detail=err_up)
 
+        self._prune(working_dir, ref)
+
+        # Tip SHA may change when prune rewrites history — always read the live ref.
+        rc_tip, tip_sha, _ = self._store.git(
+            ["rev-parse", "--verify", f"{ref}^{{commit}}"],
+            working_dir=working_dir,
+            index=False,
+            timeout=timeout,
+        )
+        live = tip_sha if rc_tip == 0 and tip_sha else new_sha
         snap = CheckpointSnapshot(
-            commit_sha=new_sha,
-            short_sha=new_sha[:8],
+            commit_sha=live,
+            short_sha=live[:8],
             reason=reason,
             working_dir=working_dir,
         )
         return EnsureResult(outcome=CheckpointOutcome.TAKEN, snapshot=snap)
+
+    def _prune(self, working_dir: Path, ref: str) -> None:
+        """Rewrite ``ref`` to retain at most ``max_snapshots`` commits (Hermes v2)."""
+        max_n = self._config.max_snapshots
+        if max_n < 1:
+            return
+        timeout = self._config.timeout_seconds
+        rc_count, count_out, _ = self._store.git(
+            ["rev-list", "--count", ref],
+            working_dir=working_dir,
+            index=False,
+            timeout=timeout,
+        )
+        if rc_count != 0:
+            return
+        try:
+            count = int(count_out)
+        except ValueError:
+            return
+        if count <= max_n:
+            return
+
+        rc_list, list_out, _ = self._store.git(
+            ["rev-list", "--reverse", ref],
+            working_dir=working_dir,
+            index=False,
+            timeout=timeout,
+        )
+        if rc_list != 0 or not list_out:
+            return
+        keep = list_out.splitlines()[-max_n:]
+
+        new_parent: str | None = None
+        for sha in keep:
+            rc_tree, tree_sha, _ = self._store.git(
+                ["rev-parse", f"{sha}^{{tree}}"],
+                working_dir=working_dir,
+                index=False,
+                timeout=timeout,
+            )
+            if rc_tree != 0 or not tree_sha:
+                return
+            rc_msg, msg, _ = self._store.git(
+                ["log", "--format=%s", "-1", sha],
+                working_dir=working_dir,
+                index=False,
+                timeout=timeout,
+            )
+            commit_msg = msg if rc_msg == 0 and msg else "checkpoint"
+            if new_parent is None:
+                args = ["commit-tree", tree_sha, "-m", commit_msg, "--no-gpg-sign"]
+            else:
+                args = [
+                    "commit-tree",
+                    tree_sha,
+                    "-p",
+                    new_parent,
+                    "-m",
+                    commit_msg,
+                    "--no-gpg-sign",
+                ]
+            rc_commit, new_sha, _ = self._store.git(
+                args,
+                working_dir=working_dir,
+                index=False,
+                timeout=timeout,
+            )
+            if rc_commit != 0 or not new_sha:
+                return
+            new_parent = new_sha
+
+        if new_parent is None:
+            return
+        self._store.git(
+            ["update-ref", ref, new_parent],
+            working_dir=working_dir,
+            index=False,
+            timeout=timeout,
+        )
+        self._store.git(
+            ["reflog", "expire", "--expire=now", "--all"],
+            working_dir=working_dir,
+            index=False,
+            timeout=timeout,
+        )
+        self._store.git(
+            ["gc", "--prune=now", "--quiet"],
+            working_dir=working_dir,
+            index=False,
+            timeout=timeout * 3,
+        )
 
 
 __all__ = ["ShadowCheckpointManager"]
