@@ -66,22 +66,28 @@ class _FakeHarness:
     def __init__(self, replies: list[str]) -> None:
         self._replies = replies
         self.calls = 0
+        self.last_options: Any = None
 
     async def run_role(self, manifest: Any, intent: str, *, options: Any = None) -> _FakeResult:
+        self.last_options = options
         reply = self._replies[min(self.calls, len(self._replies) - 1)]
         self.calls += 1
         return _FakeResult(reply)
 
 
 def _agent() -> Subagent:
-    return Subagent(name="web_research", description="d", tools=("web_search",), output_schema=_SCHEMA)
+    return Subagent(
+        name="web_research", description="d", tools=("web_search",), output_schema=_SCHEMA
+    )
 
 
 @pytest.mark.asyncio
 async def test_valid_output_passes_untouched_no_harness_call() -> None:
     harness = _FakeHarness(replies=["unused"])
     out, warning = await enforce_output_schema(
-        '{"answer": "grounded", "confidence": 0.8}', agent=_agent(), harness=harness  # type: ignore[arg-type]
+        '{"answer": "grounded", "confidence": 0.8}',
+        agent=_agent(),
+        harness=harness,  # type: ignore[arg-type]
     )
     assert warning is None
     assert json.loads(out) == {"answer": "grounded", "confidence": 0.8}
@@ -93,7 +99,9 @@ async def test_invalid_output_is_repaired_then_passes() -> None:
     # First output is missing 'answer'; the (fake) reformat returns a valid object.
     harness = _FakeHarness(replies=['{"answer": "fixed", "confidence": 0.4}'])
     out, warning = await enforce_output_schema(
-        '{"confidence": 0.4}', agent=_agent(), harness=harness  # type: ignore[arg-type]
+        '{"confidence": 0.4}',
+        agent=_agent(),
+        harness=harness,  # type: ignore[arg-type]
     )
     assert warning is None
     assert json.loads(out)["answer"] == "fixed"
@@ -105,7 +113,9 @@ async def test_exhausted_repairs_fail_open_with_warning() -> None:
     # The child never produces valid JSON; guardrail fails open with best-effort + warning.
     harness = _FakeHarness(replies=['{"confidence": 0.4}'])  # always missing 'answer'
     out, warning = await enforce_output_schema(
-        '{"confidence": 0.4}', agent=_agent(), harness=harness  # type: ignore[arg-type]
+        '{"confidence": 0.4}',
+        agent=_agent(),
+        harness=harness,  # type: ignore[arg-type]
     )
     assert warning is not None and "best-effort" in warning
     assert json.loads(out) == {"confidence": 0.4}  # best-effort: the last parseable object
@@ -113,10 +123,46 @@ async def test_exhausted_repairs_fail_open_with_warning() -> None:
 
 
 @pytest.mark.asyncio
+async def test_strict_exhausted_repairs_raise() -> None:
+    from dream.subagents._output_guard import OutputSchemaError
+
+    agent = Subagent(
+        name="api_verifier",
+        description="d",
+        tools=("bash",),
+        output_schema=_SCHEMA,
+        strict=True,
+    )
+    harness = _FakeHarness(replies=['{"confidence": 0.4}'])
+    with pytest.raises(OutputSchemaError, match="schema"):
+        await enforce_output_schema(
+            '{"confidence": 0.4}',
+            agent=agent,
+            harness=harness,  # type: ignore[arg-type]
+        )
+    assert harness.calls == MAX_OUTPUT_REPAIRS
+
+
+@pytest.mark.asyncio
+async def test_repair_passes_response_format() -> None:
+    harness = _FakeHarness(replies=['{"answer": "fixed"}'])
+    await enforce_output_schema(
+        '{"confidence": 0.4}',
+        agent=_agent(),
+        harness=harness,  # type: ignore[arg-type]
+    )
+    assert harness.last_options is not None
+    assert harness.last_options.response_format is not None
+    assert harness.last_options.response_format["type"] == "json_schema"
+
+
+@pytest.mark.asyncio
 async def test_unparseable_output_fails_open_with_original_text() -> None:
     harness = _FakeHarness(replies=["still not json"])
     out, warning = await enforce_output_schema(
-        "not json at all", agent=_agent(), harness=harness  # type: ignore[arg-type]
+        "not json at all",
+        agent=_agent(),
+        harness=harness,  # type: ignore[arg-type]
     )
     assert warning is not None
     assert out == "not json at all"  # best-effort falls back to the original text

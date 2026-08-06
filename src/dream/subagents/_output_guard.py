@@ -1,14 +1,9 @@
 """Runtime output-schema guardrail for subagents.
 
-A subagent that declares an ``output_schema`` (a JSON-schema dict) has its final message validated
-against it after the beat. dream has no typed-output seam, so the contract is enforced here: coerce the
-final text to JSON, validate it against the schema, and on failure run a bounded, tool-less **reformat**
-loop that only fixes the JSON structure (it never re-runs the research). If the output still cannot be
-made valid, fail *open* — return the best-effort result with a warning, so the parent keeps working but
-knows the contract was not fully met.
-
-The pure pieces (:func:`coerce_json`, :func:`validate_output`) are model-free and unit-tested; the
-:func:`enforce_output_schema` orchestrator drives the repair loop through the harness.
+A subagent that declares an ``output_schema`` has its final message validated
+against it after the beat: coerce → jsonschema → bounded repair with native
+``response_format`` on the reformatter session. Default is fail-open (best-effort
++ warning); ``Subagent.strict`` fail-closes for DoD graders.
 """
 
 from __future__ import annotations
@@ -18,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 import jsonschema
 
+from dream.api._wire import resolve_structured_output
 from dream.roles._manifest import RoleManifest
 from dream.session import SessionOptions
 
@@ -25,8 +21,11 @@ if TYPE_CHECKING:
     from dream.harness import Harness
     from dream.subagents._declaration import Subagent
 
-# The child gets this many tool-less reformat passes to fix its JSON before we fail open.
 MAX_OUTPUT_REPAIRS = 2
+
+
+class OutputSchemaError(Exception):
+    """Raised when a strict subagent cannot produce schema-valid output."""
 
 
 def coerce_json(text: str) -> Any | None:
@@ -97,42 +96,63 @@ async def enforce_output_schema(
     agent: Subagent,
     harness: Harness,
 ) -> tuple[str, str | None]:
-    """Validate ``final_text`` against ``agent.output_schema``; repair-loop, then fail open.
+    """Validate ``final_text`` against ``agent.output_schema``; repair, then open or closed.
 
-    Returns ``(output, warning)``: on success ``output`` is canonical JSON and ``warning`` is ``None``;
-    on exhausted repairs ``output`` is the best-effort result (canonical JSON if it at least parsed,
-    else the original text) and ``warning`` is a note the parent surfaces.
+    Returns ``(output, warning)`` on success / fail-open. Raises
+    :class:`OutputSchemaError` when ``agent.strict`` and repairs are exhausted.
     """
     schema = agent.output_schema
-    if schema is None:  # defensive — caller only invokes when a schema is declared
+    if schema is None:
         return final_text, None
 
     text = final_text
     obj = coerce_json(text)
-    errors = validate_output(obj, schema) if obj is not None else ["<root>: output was not valid JSON"]
+    errors = (
+        validate_output(obj, schema) if obj is not None else ["<root>: output was not valid JSON"]
+    )
     if not errors:
         return json.dumps(obj), None
 
+    rf = resolve_structured_output(
+        schema=schema,
+        name=f"{agent.name}_repair",
+        strict=agent.strict,
+    ).get("response_format")
     manifest = _reformat_manifest()
     for _ in range(MAX_OUTPUT_REPAIRS):
         result = await harness.run_role(
-            manifest, _repair_prompt(text, schema=schema, errors=errors),
-            options=SessionOptions(max_turns=1),
+            manifest,
+            _repair_prompt(text, schema=schema, errors=errors),
+            options=SessionOptions(max_turns=1, response_format=rf),
         )
         text = result.final_text
         obj = coerce_json(text)
         errors = (
-            validate_output(obj, schema) if obj is not None else ["<root>: output was not valid JSON"]
+            validate_output(obj, schema)
+            if obj is not None
+            else ["<root>: output was not valid JSON"]
         )
         if not errors:
             return json.dumps(obj), None
 
+    detail = "; ".join(errors[:3])
+    if agent.strict:
+        raise OutputSchemaError(
+            f"output did not match schema after {MAX_OUTPUT_REPAIRS} repairs ({detail})"
+        )
+
     best_effort = json.dumps(obj) if obj is not None else final_text
     warning = (
         f"⚠ output did not match the required schema after {MAX_OUTPUT_REPAIRS} repair attempts "
-        f"({'; '.join(errors[:3])}); using best-effort result."
+        f"({detail}); using best-effort result."
     )
     return best_effort, warning
 
 
-__all__ = ["MAX_OUTPUT_REPAIRS", "coerce_json", "enforce_output_schema", "validate_output"]
+__all__ = [
+    "MAX_OUTPUT_REPAIRS",
+    "OutputSchemaError",
+    "coerce_json",
+    "enforce_output_schema",
+    "validate_output",
+]

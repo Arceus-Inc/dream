@@ -69,7 +69,13 @@ class Subagent:
     output_schema: dict[str, Any] | None = None
     """Optional JSON-schema the subagent's final message is validated against at runtime. ``None`` =
     no enforcement (free-text return, unchanged). When set, the inline executor coerces + validates the
-    output, runs a bounded reformat loop on failure, and fails open with a warning (``_output_guard``)."""
+    output, runs a bounded reformat loop on failure, and fails open with a warning (``_output_guard``)
+    unless ``strict`` is True."""
+
+    strict: bool = False
+    """When True with ``output_schema``, exhausted repairs raise
+    :class:`~dream.subagents._output_guard.OutputSchemaError` instead of fail-open.
+    Use for DoD graders (api_verifier, test_author)."""
 
     def __post_init__(self) -> None:
         if not self.name:
@@ -93,6 +99,8 @@ class Subagent:
             "spawned_by": list(self.spawned_by),
             "system_prompt": self.system_prompt,
             "max_turns": self.max_turns,
+            "output_schema": self.output_schema,
+            "strict": self.strict,
             "spawnable": [child.to_dict() for child in self.spawnable],
         }
 
@@ -109,6 +117,8 @@ class Subagent:
             spawned_by=tuple(data.get("spawned_by") or ()),
             system_prompt=data.get("system_prompt"),
             max_turns=data.get("max_turns", 8),
+            output_schema=data.get("output_schema"),
+            strict=bool(data.get("strict", False)),
             spawnable=tuple(cls.from_dict(child) for child in (data.get("spawnable") or ())),
         )
 

@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>dream — why structured output</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0e1418;
+      --bg-2: #152028;
+      --ink: #e8eee9;
+      --muted: #8a9a92;
+      --line: #2a3a34;
+      --accent: #3dcf9a;
+      --accent-dim: #1a4a38;
+      --warn: #e8b84a;
+      --warn-dim: #3a3218;
+      --bad: #e07a5f;
+      --bad-dim: #3a221c;
+      --ok: #3dcf9a;
+      --card: #121a1f;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font-family: "Outfit", system-ui, sans-serif;
+      background:
+        radial-gradient(1200px 600px at 10% -10%, #1a3a30 0%, transparent 55%),
+        radial-gradient(900px 500px at 100% 0%, #1c2830 0%, transparent 50%),
+        var(--bg);
+      color: var(--ink);
+      line-height: 1.55;
+      min-height: 100vh;
+    }
+
+    .wrap {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 3.25rem 1.5rem 5rem;
+    }
+
+    header.hero {
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 2rem;
+      margin-bottom: 2.5rem;
+    }
+
+    .brand {
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.78rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin: 0 0 1rem;
+    }
+
+    h1 {
+      font-size: clamp(2rem, 4.2vw, 3.1rem);
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      margin: 0 0 0.85rem;
+      max-width: 18ch;
+      line-height: 1.08;
+    }
+
+    .lede {
+      font-size: 1.15rem;
+      color: var(--muted);
+      max-width: 40rem;
+      margin: 0;
+      font-weight: 400;
+    }
+
+    section { margin: 3rem 0; }
+
+    h2 {
+      font-size: 1.4rem;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      margin: 0 0 0.4rem;
+    }
+
+    .sec-sub {
+      color: var(--muted);
+      font-size: 0.95rem;
+      margin: 0 0 1.35rem;
+      max-width: 44rem;
+    }
+
+    p.body {
+      color: var(--muted);
+      max-width: 44rem;
+      margin: 0 0 1rem;
+      font-size: 1rem;
+    }
+
+    /* principle cards */
+    .principles {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.85rem;
+    }
+    @media (max-width: 780px) {
+      .principles { grid-template-columns: 1fr; }
+    }
+
+    .principle {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 3px;
+      padding: 1.15rem 1.2rem 1.25rem;
+      position: relative;
+    }
+    .principle::before {
+      content: "";
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      width: 3px;
+      background: var(--accent);
+    }
+    .principle .num {
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.72rem;
+      letter-spacing: 0.1em;
+      color: var(--accent);
+      margin-bottom: 0.45rem;
+    }
+    .principle h3 {
+      margin: 0 0 0.45rem;
+      font-size: 1.05rem;
+      font-weight: 600;
+      letter-spacing: -0.015em;
+    }
+    .principle p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    /* two-column today vs need */
+    .split {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+    }
+    @media (max-width: 820px) {
+      .split { grid-template-columns: 1fr; }
+    }
+
+    .panel {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 3px;
+      padding: 1.15rem 1.2rem 1.35rem;
+      position: relative;
+      overflow: hidden;
+    }
+    .panel::before {
+      content: "";
+      position: absolute;
+      inset: 0 0 auto 0;
+      height: 3px;
+    }
+    .panel.today::before { background: var(--warn); }
+    .panel.gap::before { background: var(--bad); }
+
+    .panel h3 {
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.72rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      margin: 0 0 1rem;
+    }
+    .panel.today h3 { color: var(--warn); }
+    .panel.gap h3 { color: var(--bad); }
+
+    .inventory {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.7rem;
+    }
+    .inventory li {
+      border: 1px solid var(--line);
+      background: var(--bg-2);
+      padding: 0.7rem 0.8rem;
+      border-radius: 3px;
+    }
+    .inventory strong {
+      display: block;
+      font-size: 0.9rem;
+      margin-bottom: 0.2rem;
+    }
+    .inventory span {
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+    .inventory .mono {
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.72rem;
+      color: var(--accent);
+      display: block;
+      margin-top: 0.35rem;
+    }
+
+    .tag {
+      display: inline-block;
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.65rem;
+      letter-spacing: 0.06em;
+      padding: 0.12rem 0.38rem;
+      border-radius: 2px;
+      vertical-align: middle;
+    }
+    .tag.have { background: var(--accent-dim); color: var(--accent); }
+    .tag.miss { background: var(--bad-dim); color: var(--bad); }
+    .tag.soft { background: var(--warn-dim); color: var(--warn); }
+
+    /* agentic loop diagram */
+    .loop {
+      display: grid;
+      grid-template-columns: 1.1fr auto 1fr;
+      gap: 0.75rem;
+      align-items: stretch;
+      margin-top: 0.5rem;
+    }
+    @media (max-width: 800px) {
+      .loop { grid-template-columns: 1fr; }
+    }
+
+    .loop-box {
+      border: 1px solid var(--line);
+      background: linear-gradient(160deg, var(--bg-2), var(--card));
+      border-radius: 3px;
+      padding: 1.2rem;
+    }
+    .loop-box h4 {
+      margin: 0 0 0.5rem;
+      font-size: 1.05rem;
+    }
+    .loop-box p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.88rem;
+    }
+    .loop-box ul {
+      margin: 0.75rem 0 0;
+      padding-left: 1.1rem;
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+    .loop-box.act { border-color: #2f4a40; }
+    .loop-box.typed { border-color: #3a4a2a; }
+
+    .loop-vs {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.7rem;
+      letter-spacing: 0.12em;
+      color: var(--muted);
+      text-transform: uppercase;
+    }
+
+    /* cost strip */
+    .costs {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 0.75rem;
+      margin-top: 1rem;
+    }
+    @media (max-width: 720px) {
+      .costs { grid-template-columns: 1fr; }
+    }
+    .cost {
+      background: var(--card);
+      border: 1px solid var(--line);
+      padding: 1rem;
+      border-radius: 3px;
+    }
+    .cost .label {
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.68rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 0.4rem;
+    }
+    .cost strong {
+      display: block;
+      font-size: 1rem;
+      margin-bottom: 0.3rem;
+    }
+    .cost p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.84rem;
+    }
+
+    /* compare flows (kept compact) */
+    .compare {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+    }
+    @media (max-width: 820px) {
+      .compare { grid-template-columns: 1fr; }
+    }
+    .panel.now::before { background: var(--bad); }
+    .panel.next::before { background: var(--ok); }
+    .panel.now h3 { color: var(--bad); }
+    .panel.next h3 { color: var(--ok); }
+
+    .flow {
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+    .node {
+      border: 1px solid var(--line);
+      background: var(--bg-2);
+      padding: 0.6rem 0.75rem;
+      border-radius: 3px;
+      font-size: 0.88rem;
+    }
+    .node strong { display: block; font-size: 0.82rem; margin-bottom: 0.12rem; }
+    .node span {
+      color: var(--muted);
+      font-size: 0.78rem;
+      font-family: "IBM Plex Mono", monospace;
+    }
+    .arrow {
+      text-align: center;
+      color: var(--muted);
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.72rem;
+      padding: 0.05rem 0;
+    }
+
+    .phases {
+      display: grid;
+      gap: 0.7rem;
+    }
+    .phase {
+      display: grid;
+      grid-template-columns: 4.5rem 1fr;
+      gap: 1rem;
+      padding: 1rem 1.1rem;
+      border: 1px solid var(--line);
+      background: var(--card);
+      border-radius: 3px;
+    }
+    .phase .badge {
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.7rem;
+      letter-spacing: 0.08em;
+      color: var(--bg);
+      background: var(--accent);
+      align-self: start;
+      padding: 0.35rem 0.45rem;
+      text-align: center;
+      border-radius: 2px;
+    }
+    .phase h4 { margin: 0 0 0.3rem; font-size: 1rem; }
+    .phase ul {
+      margin: 0.35rem 0 0;
+      padding-left: 1.1rem;
+      color: var(--muted);
+      font-size: 0.88rem;
+    }
+    .phase li { margin: 0.18rem 0; }
+
+    footer {
+      margin-top: 3.25rem;
+      padding-top: 1.2rem;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 0.8rem;
+      font-family: "IBM Plex Mono", monospace;
+    }
+
+    code.inline {
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.82em;
+      color: var(--accent);
+      background: var(--accent-dim);
+      padding: 0.08rem 0.32rem;
+      border-radius: 2px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="hero">
+      <p class="brand">dream · agentic principles</p>
+      <h1>Why structured output</h1>
+      <p class="lede">
+        Agents don’t just chat — they hand typed contracts across boundaries.
+        Today dream enforces those contracts <em>after</em> the model speaks.
+        Native <code class="inline">response_format</code> enforces them
+        <em>while</em> it speaks.
+      </p>
+    </header>
+
+    <!-- WHY / PRINCIPLES -->
+    <section>
+      <h2>Agentic principles this touches</h2>
+      <p class="sec-sub">
+        Modern harnesses separate “do work with tools” from “emit a machine-checkable
+        artifact.” Structured output is the second half of that contract.
+      </p>
+
+      <div class="principles">
+        <article class="principle">
+          <div class="num">01 · contracts at boundaries</div>
+          <h3>Handoffs must be typed</h3>
+          <p>
+            Planner → generator, evaluator → sprint ledger, subagent → parent:
+            each seam is a protocol. If the artifact is free-form prose, the next
+            stage guesses. If it’s JSON Schema, the next stage can branch, score,
+            or fail deterministically.
+          </p>
+        </article>
+
+        <article class="principle">
+          <div class="num">02 · constrain at decode</div>
+          <h3>Don’t rely on manners</h3>
+          <p>
+            Prompting “return only JSON” is soft. Provider
+            <code class="inline">response_format: json_schema</code>
+            is hard — the sampler is biased (or constrained) toward valid
+            structure. Post-hoc repair is a safety net, not the primary control.
+          </p>
+        </article>
+
+        <article class="principle">
+          <div class="num">03 · act-loop ≠ typed complete</div>
+          <h3>Two different jobs</h3>
+          <p>
+            The act-loop (tools, multi-turn, refunds, spawn) is for
+            <em>exploration and side effects</em>. A structured complete is for
+            <em>producing one schema’d object</em>. Using a full agent session to
+            emit a verdict is overkill and less reliable than a one-shot constrained decode.
+          </p>
+        </article>
+
+        <article class="principle">
+          <div class="num">04 · DoD must fail closed</div>
+          <h3>Graders aren’t advisors</h3>
+          <p>
+            Research handoffs can fail-open (parent keeps working with a warning).
+            Definition-of-done graders (<code class="inline">api_verifier</code>,
+            <code class="inline">test_author</code>) must not. A best-effort malformed
+            verdict that looks like a pass is worse than a loud error.
+          </p>
+        </article>
+
+        <article class="principle">
+          <div class="num">05 · cost &amp; turn budget</div>
+          <h3>Repair burns real turns</h3>
+          <p>
+            Every free-form repair session is another model call, another chance
+            to drift, another hit to <code class="inline">max_turns</code> /
+            latency. Constraining the first decode cuts repair rate and keeps
+            IterationBudget for real work.
+          </p>
+        </article>
+
+        <article class="principle">
+          <div class="num">06 · eval-first</div>
+          <h3>Outcomes you can score</h3>
+          <p>
+            Agentic engineering wants measurable completion criteria. Structured
+            ledgers and verdicts are evaluable (schema valid? fields present?
+            score ≥ threshold?). Prose envelopes are brittle evals dressed as JSON.
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <!-- TWO KINDS OF WORK -->
+    <section>
+      <h2>Two kinds of agent work</h2>
+      <p class="sec-sub">
+        Confusing them is why “just prompt harder” keeps failing on planner/evaluator heads.
+      </p>
+      <div class="loop">
+        <div class="loop-box act">
+          <h4>Act-loop work</h4>
+          <p>Open-ended. Tools. State changes. Bounded by turns / IterationBudget.</p>
+          <ul>
+            <li>generator implementing a sprint</li>
+            <li><code class="inline">execute_code</code> / <code class="inline">spawn_subagent</code></li>
+            <li>browser research, file edits, tests</li>
+          </ul>
+        </div>
+        <div class="loop-vs">vs</div>
+        <div class="loop-box typed">
+          <h4>Typed-complete work</h4>
+          <p>Closed form. One object. Bounded by schema validity.</p>
+          <ul>
+            <li>planner ledger / evaluator verdict</li>
+            <li>subagent return contracts</li>
+            <li>repair / reformat passes</li>
+          </ul>
+        </div>
+      </div>
+      <div class="costs">
+        <div class="cost">
+          <div class="label">Reliability</div>
+          <strong>Schema ≫ hope</strong>
+          <p>Constrained decode fails less often than “please emit JSON” + regex scrape.</p>
+        </div>
+        <div class="cost">
+          <div class="label">Cost</div>
+          <strong>Fewer repair turns</strong>
+          <p>First attempt valid → skip 1–2 reformatter sessions per handoff.</p>
+        </div>
+        <div class="cost">
+          <div class="label">Safety</div>
+          <strong>Fail posture matters</strong>
+          <p>Open for scouts; closed for DoD. Same schema machinery, different exit.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- WHAT WE HAVE TODAY -->
+    <section>
+      <h2>What we have today</h2>
+      <p class="sec-sub">
+        Dream is strong on <em>tool inputs</em> and <em>post-hoc output checks</em>.
+        It does not yet ask the provider to constrain decode.
+      </p>
+      <div class="split">
+        <article class="panel today">
+          <h3>In place · soft / post-hoc</h3>
+          <ul class="inventory">
+            <li>
+              <strong>Tool input schemas</strong>
+              <span>Pydantic → JSON Schema on the way <em>into</em> tools. Model must call tools with valid args.</span>
+              <span class="mono">BaseTool.input_schema · tag have</span>
+              <span class="tag have">have</span>
+            </li>
+            <li>
+              <strong>Subagent <code class="inline">output_schema</code></strong>
+              <span>After the child finishes: coerce JSON → jsonschema → ≤2 free-form repair sessions → fail-open.</span>
+              <span class="mono">enforce_output_schema · chorus specialists</span>
+              <span class="tag soft">post-hoc</span>
+            </li>
+            <li>
+              <strong>Role heads + <code class="inline">ask_until_parsed</code></strong>
+              <span>Planner/evaluator prompted for XML/JSON envelopes; re-prompt on parse failure. Still unconstrained decode.</span>
+              <span class="mono">_planner_head · _evaluator_head · _head_retry</span>
+              <span class="tag soft">prompt + parse</span>
+            </li>
+            <li>
+              <strong>ToolResult.structured</strong>
+              <span>Tools can return machine-readable payloads to the loop — not model final answers.</span>
+              <span class="tag have">have</span>
+            </li>
+          </ul>
+        </article>
+
+        <article class="panel gap">
+          <h3>Missing · native constrain</h3>
+          <ul class="inventory">
+            <li>
+              <strong><code class="inline">response_format</code> on the wire</strong>
+              <span>No <code class="inline">json_schema</code> / <code class="inline">json_object</code> in request bodies. Azure/OpenAI-compat already supports it for many models.</span>
+              <span class="tag miss">gap</span>
+            </li>
+            <li>
+              <strong>Thin <code class="inline">complete_structured</code></strong>
+              <span>No one-shot helper for “messages + schema → {text, parsed}”. Everything goes through agent sessions.</span>
+              <span class="tag miss">gap</span>
+            </li>
+            <li>
+              <strong>Heads on constrained decode</strong>
+              <span>Ledger/verdict still depend on prose manners + retry. Highest leverage for <code class="inline">run_task</code>.</span>
+              <span class="tag miss">gap</span>
+            </li>
+            <li>
+              <strong>Fail-closed for verifiers</strong>
+              <span>DoD graders inherit fail-open. A bad JSON verdict can soft-land as best-effort.</span>
+              <span class="tag miss">gap</span>
+            </li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <!-- WHY IT HURTS -->
+    <section>
+      <h2>Why this gap hurts in practice</h2>
+      <p class="body">
+        Chorus employees already declare schemas on specialists (researcher, strategist,
+        api_verifier, …). The contract exists — enforcement is late and polite.
+        That violates the agentic rule: <strong>machine-checkable done conditions at the
+        earliest boundary</strong>, not after two repair turns.
+      </p>
+      <p class="body">
+        Hermes’s bar isn’t “more JSON.” It’s <em>constrain at decode for typed completes,
+        validate, then repair</em>. OpenHarness isn’t ahead here either. Dream’s catch-up
+        is specifically that decode seam plus fail posture for DoD.
+      </p>
+    </section>
+
+    <!-- TARGET FLOW -->
+    <section>
+      <h2>Target control loop</h2>
+      <p class="sec-sub">Same principles, earlier enforcement.</p>
+      <div class="compare">
+        <article class="panel now">
+          <h3>Today</h3>
+          <div class="flow">
+            <div class="node">
+              <strong>Full role / subagent session</strong>
+              <span>tools + free-form final text</span>
+            </div>
+            <div class="arrow">↓</div>
+            <div class="node">
+              <strong>Hope it’s JSON</strong>
+              <span>no response_format</span>
+            </div>
+            <div class="arrow">↓</div>
+            <div class="node">
+              <strong>coerce + jsonschema</strong>
+              <span>post-hoc</span>
+            </div>
+            <div class="arrow">↓</div>
+            <div class="node">
+              <strong>Free-form repair ×2</strong>
+              <span>fail-open always</span>
+            </div>
+          </div>
+        </article>
+        <article class="panel next">
+          <h3>Needed</h3>
+          <div class="flow">
+            <div class="node">
+              <strong>Typed complete (or schema’d turn)</strong>
+              <span>complete_structured</span>
+            </div>
+            <div class="arrow">↓</div>
+            <div class="node">
+              <strong>Constrained decode</strong>
+              <span>response_format json_schema</span>
+            </div>
+            <div class="arrow">↓</div>
+            <div class="node">
+              <strong>Validate parsed</strong>
+              <span>same jsonschema core</span>
+            </div>
+            <div class="arrow">↓</div>
+            <div class="node">
+              <strong>Schema’d repair if needed</strong>
+              <span>fail-closed for DoD</span>
+            </div>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <!-- PLAN -->
+    <section>
+      <h2>Catch-up plan (unchanged intent)</h2>
+      <p class="sec-sub">Wire first, then consumers. Don’t port Hermes PluginLlm wholesale.</p>
+      <div class="phases">
+        <div class="phase">
+          <div class="badge">P0</div>
+          <div>
+            <h4>Wire + thin helper</h4>
+            <ul>
+              <li><code class="inline">resolve_structured_output</code> in API wire layer</li>
+              <li><code class="inline">complete_structured(messages, schema) → {text, parsed}</code></li>
+            </ul>
+          </div>
+        </div>
+        <div class="phase">
+          <div class="badge">P1</div>
+          <div>
+            <h4>Subagent guard + fail posture</h4>
+            <ul>
+              <li>First attempt / repair use constrained decode</li>
+              <li><code class="inline">strict=True</code> for verifier-class schemas (chorus)</li>
+            </ul>
+          </div>
+        </div>
+        <div class="phase">
+          <div class="badge">P2</div>
+          <div>
+            <h4>Role heads</h4>
+            <ul>
+              <li>Planner ledger + evaluator verdict as native schemas</li>
+              <li>Keep <code class="inline">ask_until_parsed</code> as outer retry only</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      constrain at decode · contracts at boundaries · act-loop ≠ typed complete · fail-closed for DoD
+    </footer>
+  </div>
+</body>
+</html>

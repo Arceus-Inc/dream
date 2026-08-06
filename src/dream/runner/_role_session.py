@@ -163,6 +163,7 @@ async def run_role(
         model=base.model,
         system_prompt=_combine_system_prompts(manifest, base.system_prompt),
         max_turns=base.max_turns,
+        response_format=base.response_format,
         metadata=metadata,
     )
 

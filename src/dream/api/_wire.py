@@ -9,6 +9,9 @@ OpenAI-compatible adapters:
 
 Keeping it here means there is exactly one place to update when a new
 reasoning-model family lands, instead of two adapters drifting apart.
+
+``resolve_structured_output`` is the same seam for native JSON /
+``json_schema`` response formats (Hermes ``complete_structured`` shape).
 """
 
 from __future__ import annotations
@@ -56,8 +59,38 @@ def apply_token_limit(body: dict[str, Any], model: str) -> dict[str, Any]:
     return out
 
 
+def resolve_structured_output(
+    *,
+    schema: dict[str, Any] | None = None,
+    json_mode: bool = False,
+    name: str = "structured_output",
+    strict: bool = False,
+) -> dict[str, Any]:
+    """Map a schema / json_mode flag to OpenAI-compat ``response_format`` params.
+
+    Hermes shape: prefer ``json_schema`` when a schema is given; fall back to
+    ``json_object`` for json_mode-only; return ``{}`` when neither is set so
+    callers can ``body.update(...)`` unconditionally.
+    """
+    if schema is not None:
+        return {
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": name,
+                    "schema": schema,
+                    "strict": strict,
+                },
+            }
+        }
+    if json_mode:
+        return {"response_format": {"type": "json_object"}}
+    return {}
+
+
 __all__ = [
     "apply_token_limit",
     "is_reasoning_model",
+    "resolve_structured_output",
     "token_limit_param",
 ]

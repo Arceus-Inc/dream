@@ -452,6 +452,19 @@ def _assemble_system_prompt(
     return "\n\n".join(parts)
 
 
+def _session_extra_params(
+    tools_wire: list[dict[str, Any]], options: SessionOptions
+) -> dict[str, Any] | None:
+    """Build OpenAI request extras: tools + optional structured ``response_format``."""
+    extra: dict[str, Any] = {}
+    if tools_wire:
+        extra["tools"] = tools_wire
+        extra["tool_choice"] = "auto"
+    if options.response_format is not None:
+        extra["response_format"] = options.response_format
+    return extra or None
+
+
 def _build_session_engine(
     session_id: str,
     options: SessionOptions,
@@ -551,9 +564,7 @@ def _build_session_engine(
                     stream_chat_completion=httpx_chat_completion_stream(
                         api_key=api_key,
                         base_url=base_url,
-                        extra_params=(
-                            {"tools": tools_wire, "tool_choice": "auto"} if tools_wire else None
-                        ),
+                        extra_params=_session_extra_params(tools_wire, options),
                     ),
                     model=options.model or model,
                     system_prompt=system_prompt,
@@ -668,9 +679,7 @@ def _build_session_engine(
         # cap spans the whole tree), else seed fresh (per-beat, never accumulating on the shared tool
         # instance — the cross-session DoS).
         context_metadata[SPAWN_COUNT_KEY] = options.metadata.get(SPAWN_COUNT_KEY, [0])
-        context_metadata[SPAWN_LEDGER_KEY] = options.metadata.get(
-            SPAWN_LEDGER_KEY, SpawnLedger()
-        )
+        context_metadata[SPAWN_LEDGER_KEY] = options.metadata.get(SPAWN_LEDGER_KEY, SpawnLedger())
     carryover_metadata = CarryoverMetadata.for_working_dir(str(working_dir))
     from dream.services.compact._summariser import make_llm_summariser
 
