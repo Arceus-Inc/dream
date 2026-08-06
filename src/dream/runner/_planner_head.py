@@ -1,43 +1,42 @@
-"""Production planner head: spec 10 slice G3.
+"""Production planner head: spec 10 slice G3 + structured-output P2.
 
 ``make_planner_head`` builds a :data:`PlannerCallable` that drives one
-planner-bound session through :meth:`Harness.run_role` and parses the
-model's reply into a ``(spec_markdown, ledger)`` pair
-:func:`dream.planner.run_planner` can commit to the worktree.
+planner-bound session through :meth:`Harness.run_role` with a native
+``response_format`` JSON schema, then parses the reply into a
+``(spec_markdown, ledger)`` pair :func:`dream.planner.run_planner` can commit.
 
-The model is asked for a strict envelope::
+The model emits one JSON object matching :class:`PlannerResponse`::
 
-    <spec>
-    # narrative spec markdown
-    </spec>
-    <ledger>
-    {"steps": [{"id": "...", "description": "..."}], ...}
-    </ledger>
+    {
+      "spec_markdown": "# narrative ...",
+      "ledger": {
+        "steps": [{"id": "...", "description": "..."}],
+        "evaluator_enabled": true
+      }
+    }
 
-The parser is tolerant of an inner ```json fence inside ``<ledger>``
-(models love to add one) and of prose around the two tags.
-
-Failures parse into :class:`PlannerHeadParseError` — callers (the runner
-or a future retry wrapper) decide whether to escalate or re-prompt;
-engine-layer failures surface as :class:`dream.runner.RoleSessionError`
-unchanged.
+:func:`ask_until_parsed` remains the outer retry when local validation fails.
 """
 
 from __future__ import annotations
 
-import json
-import re
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
+from pydantic import ValidationError
+
+from dream.api.response_format import ResponseFormat
 from dream.planner import LedgerStep, PlannerLedger, PlannerOutput
 from dream.runner._head_retry import ask_until_parsed
+from dream.runner._planner_schema import PLANNER_RESPONSE_SCHEMA, PlannerResponse
+from dream.session import SessionOptions
 
 if TYPE_CHECKING:
     from dream.harness import Harness
     from dream.runner._observer import RunTaskObserver
+    from dream.runner._role_session import RunRoleResult
 
 __all__ = [
     "PLANNER_INSTRUCTION_TEMPLATE",
@@ -47,23 +46,22 @@ __all__ = [
 
 
 class PlannerHeadParseError(RuntimeError):
-    """Raised when the planner's reply does not match the spec/ledger envelope."""
+    """Raised when the planner's reply does not match the JSON contract."""
 
 
-# JSON example is kept as a separate constant so the prompt builder doesn't
-# have to double every ``{`` / ``}`` to escape format-string syntax.
 _LEDGER_EXAMPLE = """\
 {
-  "steps": [
-    {"id": "<unique-slug>", "description": "<one sentence>",
-     "sprint_target": <int|null>, "notes": "<optional>"}
-  ],
-  "evaluator_enabled": true
+  "spec_markdown": "# narrative spec markdown describing the goal, approach, and constraints",
+  "ledger": {
+    "steps": [
+      {"id": "<unique-slug>", "description": "<one sentence>",
+       "sprint_target": null, "notes": ""}
+    ],
+    "evaluator_enabled": true
+  }
 }"""
 
 
-# Exposed so a future test / operator can introspect the contract without
-# poking at the formatter.
 PLANNER_INSTRUCTION_TEMPLATE = (
     "You are drafting the sprint plan for task {task_id}.\n"
     "\n"
@@ -73,21 +71,15 @@ PLANNER_INSTRUCTION_TEMPLATE = (
     "\n"
     "OUTPUT FORMAT\n"
     "-------------\n"
-    "Reply with exactly two XML-style sections in this order:\n"
+    "Reply with ONE JSON object matching this schema (no XML, no prose, no fences):\n"
     "\n"
-    "<spec>\n"
-    "# narrative spec markdown describing the goal, approach, and any\n"
-    "# constraints the generator must respect.\n"
-    "</spec>\n"
-    "<ledger>\n"
     "{example}\n"
-    "</ledger>\n"
     "\n"
     "Requirements:\n"
-    '- The <spec> body must be non-empty markdown.\n'
-    '- The <ledger> body must be valid JSON with at least one step.\n'
+    '- "spec_markdown" must be non-empty markdown.\n'
+    '- "ledger.steps" must contain at least one step.\n'
     '- Each step needs "id" (string) and "description" (string).\n'
-    '- "sprint_target" (int) and "notes" (string) are optional.\n'
+    '- "sprint_target" (int|null) and "notes" (string) are optional.\n'
     '- Set "evaluator_enabled": false only when verifier signal is\n'
     "  unavailable or actively misleading; default true.\n"
     "\n"
@@ -105,111 +97,55 @@ PLANNER_INSTRUCTION_TEMPLATE = (
 )
 
 
-_SPEC_RE = re.compile(r"<spec>\s*(.*?)\s*</spec>", re.DOTALL | re.IGNORECASE)
-_LEDGER_RE = re.compile(
-    r"<ledger>\s*(.*?)\s*</ledger>", re.DOTALL | re.IGNORECASE
-)
-_FENCE_RE = re.compile(
-    r"^```(?:[A-Za-z0-9_+\-]+)?\s*\n(.*?)\n```\s*$", re.DOTALL
-)
-
-
 def _build_intent(task_id: str, intent: str) -> str:
     return PLANNER_INSTRUCTION_TEMPLATE.format(
         task_id=task_id, intent=intent, example=_LEDGER_EXAMPLE
     )
 
 
-def _extract_spec(reply: str) -> str:
-    match = _SPEC_RE.search(reply)
-    if match is None:
-        raise PlannerHeadParseError(
-            "planner reply missing <spec>...</spec> section"
-        )
-    body = match.group(1).strip()
-    if not body:
-        raise PlannerHeadParseError("planner <spec> section is empty")
-    return body
+def parse_planner_response(reply: str, *, task_id: str, intent: str) -> PlannerOutput:
+    """Parse planner final text into :class:`PlannerOutput`.
 
-
-def _extract_ledger_json(reply: str) -> dict[str, Any]:
-    match = _LEDGER_RE.search(reply)
-    if match is None:
-        raise PlannerHeadParseError(
-            "planner reply missing <ledger>...</ledger> section"
-        )
-    raw = match.group(1).strip()
-    fence = _FENCE_RE.match(raw)
-    if fence is not None:
-        raw = fence.group(1).strip()
+    Accepts bare JSON or a single fenced JSON block. Raises
+    :class:`PlannerHeadParseError` on schema/validation failure.
+    """
+    text = _strip_optional_fence(reply.strip())
     try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise PlannerHeadParseError(
-            f"planner <ledger> is not valid JSON: {exc.msg}"
-        ) from exc
-    if not isinstance(data, dict):
-        raise PlannerHeadParseError(
-            f"planner <ledger> must be a JSON object, got {type(data).__name__}"
-        )
-    return data
+        payload = PlannerResponse.model_validate_json(text)
+    except ValidationError as exc:
+        raise PlannerHeadParseError(f"planner reply failed schema validation: {exc}") from exc
+    except ValueError as exc:
+        raise PlannerHeadParseError(f"planner reply is not valid JSON: {exc}") from exc
 
-
-def _build_steps(raw_steps: Any) -> tuple[LedgerStep, ...]:
-    if not isinstance(raw_steps, list) or not raw_steps:
-        raise PlannerHeadParseError(
-            "planner ledger must contain at least one step"
+    steps = tuple(
+        LedgerStep(
+            id=step.id,
+            description=step.description,
+            sprint_target=step.sprint_target,
+            notes=step.notes,
         )
-    out: list[LedgerStep] = []
-    for i, raw in enumerate(raw_steps):
-        if not isinstance(raw, dict):
-            raise PlannerHeadParseError(f"step {i} is not a JSON object")
-        step_id = raw.get("id")
-        if not isinstance(step_id, str) or not step_id:
-            raise PlannerHeadParseError(f"step {i} missing 'id' string")
-        description = raw.get("description")
-        if not isinstance(description, str) or not description:
-            raise PlannerHeadParseError(
-                f"step {step_id!r} missing 'description' string"
-            )
-        sprint_target = raw.get("sprint_target")
-        if sprint_target is not None and not isinstance(sprint_target, int):
-            raise PlannerHeadParseError(
-                f"step {step_id!r} 'sprint_target' must be int or null"
-            )
-        notes = raw.get("notes", "")
-        if not isinstance(notes, str):
-            raise PlannerHeadParseError(
-                f"step {step_id!r} 'notes' must be a string"
-            )
-        out.append(
-            LedgerStep(
-                id=step_id,
-                description=description,
-                sprint_target=sprint_target,
-                notes=notes,
-            )
-        )
-    return tuple(out)
-
-
-def _build_ledger(
-    *, task_id: str, intent: str, data: dict[str, Any]
-) -> PlannerLedger:
-    steps = _build_steps(data.get("steps"))
-    evaluator_enabled = data.get("evaluator_enabled", True)
-    if not isinstance(evaluator_enabled, bool):
-        raise PlannerHeadParseError(
-            "ledger 'evaluator_enabled' must be a bool, got "
-            f"{type(evaluator_enabled).__name__}"
-        )
-    return PlannerLedger(
+        for step in payload.ledger.steps
+    )
+    ledger = PlannerLedger(
         task_id=task_id,
         intent=intent,
         created_at=time.time(),
         steps=steps,
-        evaluator_enabled=evaluator_enabled,
+        evaluator_enabled=payload.ledger.evaluator_enabled,
     )
+    return PlannerOutput(spec_markdown=payload.spec_markdown, ledger=ledger)
+
+
+def _strip_optional_fence(text: str) -> str:
+    if not text.startswith("```"):
+        return text
+    lines = text.split("\n")
+    if len(lines) < 2:
+        return text
+    body = lines[1:]
+    if body and body[-1].strip() == "```":
+        body = body[:-1]
+    return "\n".join(body).strip()
 
 
 def make_planner_head(
@@ -220,23 +156,26 @@ def make_planner_head(
 ) -> Callable[[str, str], Awaitable[PlannerOutput]]:
     """Build a :data:`PlannerCallable` driven by :meth:`Harness.run_role`.
 
-    The returned coroutine asks the planner LLM for a strict
-    ``<spec>...</spec><ledger>...</ledger>`` envelope, parses the reply,
-    and yields a :class:`PlannerOutput` ready for
+    The returned coroutine asks the planner LLM for a schema-constrained JSON
+    object, parses the reply, and yields a :class:`PlannerOutput` ready for
     :func:`dream.planner.run_planner` to commit to the worktree.
-
-    ``harness_dir`` is forwarded to ``run_role`` so per-task role overlays
-    in ``{harness_dir}/roles/planner.toml`` are honoured. ``observer``
-    is forwarded so :func:`dream.runner.run_task` can stream the
-    planner's text and tool calls in real time.
     """
+    response_format = ResponseFormat.for_schema(
+        PLANNER_RESPONSE_SCHEMA,
+        name="planner_response",
+        strict=True,
+    )
 
     async def planner(task_id: str, intent: str) -> PlannerOutput:
         prompt = _build_intent(task_id, intent)
 
-        async def _ask(p: str) -> Any:
+        async def _ask(p: str) -> RunRoleResult:
             return await harness.run_role(
-                "planner", p, harness_dir=harness_dir, observer=observer
+                "planner",
+                p,
+                harness_dir=harness_dir,
+                observer=observer,
+                options=SessionOptions(response_format=response_format),
             )
 
         def _on_retry(attempt: int, err: Exception) -> None:
@@ -251,12 +190,7 @@ def make_planner_head(
                 )
 
         def _parse_for_task(final_text: str) -> PlannerOutput:
-            spec = _extract_spec(final_text)
-            ledger_data = _extract_ledger_json(final_text)
-            ledger = _build_ledger(
-                task_id=task_id, intent=intent, data=ledger_data
-            )
-            return PlannerOutput(spec_markdown=spec, ledger=ledger)
+            return parse_planner_response(final_text, task_id=task_id, intent=intent)
 
         return await ask_until_parsed(
             _ask,

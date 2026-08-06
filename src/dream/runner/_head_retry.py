@@ -23,7 +23,7 @@ Design decisions:
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Any, Protocol, TypeVar, runtime_checkable
+from typing import Protocol, TypeVar, runtime_checkable
 
 __all__ = [
     "DEFAULT_RETRIES",
@@ -45,7 +45,7 @@ class _HasFinalText(Protocol):
 
 
 async def ask_until_parsed(
-    ask: Callable[[str], Awaitable[Any]],
+    ask: Callable[[str], Awaitable[_HasFinalText]],
     parse: Callable[[str], T],
     *,
     prompt: str,

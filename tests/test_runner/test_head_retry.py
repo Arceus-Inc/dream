@@ -114,9 +114,12 @@ def _valid_planner_reply(
 ) -> str:
     if steps is None:
         steps = [{"id": "s1", "description": "do thing one"}]
-    ledger: dict[str, object] = {"steps": steps}
-    body = json.dumps(ledger)
-    return f"<spec>\n{spec}\n</spec>\n<ledger>\n{body}\n</ledger>"
+    return json.dumps(
+        {
+            "spec_markdown": spec,
+            "ledger": {"steps": steps, "evaluator_enabled": True},
+        }
+    )
 
 
 def _valid_verdict_reply(outcome: str = "pass") -> str:
@@ -514,10 +517,11 @@ async def test_planner_head_exhaustion_raises_planner_head_parse_error() -> None
 
 async def test_planner_head_bad_ledger_schema_also_retries() -> None:
     """A structurally valid JSON but invalid ledger schema triggers retry too."""
-    # Valid JSON but empty steps list — PlannerHeadParseError from _build_steps
-    bad_schema_reply = (
-        '<spec>\n# Plan\n</spec>\n'
-        '<ledger>\n{"steps": []}\n</ledger>'
+    bad_schema_reply = json.dumps(
+        {
+            "spec_markdown": "# Plan",
+            "ledger": {"steps": [], "evaluator_enabled": True},
+        }
     )
     harness, streamer = _harness_with_multi_replies(
         [bad_schema_reply, _valid_planner_reply()]

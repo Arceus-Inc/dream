@@ -25,15 +25,19 @@ from dream.tools.builtin.spawn_subagent import (
 class _CapturingHarness:
     """A fake Harness that records the SessionOptions run_role was called with."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, final_text: str = "done") -> None:
         self.captured: SessionOptions | None = None
+        self.captured_options: list[SessionOptions] = []
+        self._final_text = final_text
 
     async def run_role(self, manifest, intent, *, options=None, **_kw):  # type: ignore[no-untyped-def]
         self.captured = options
+        if options is not None:
+            self.captured_options.append(options)
         return RunRoleResult(
             role="subagent",
             session_id="child-sid",
-            final_text="done",
+            final_text=self._final_text,
             cost=SessionCost(),
             events=(),
         )
@@ -81,13 +85,56 @@ def test_leaf_childs_session_gets_no_spawn_context() -> None:
 
     asyncio.run(
         run_subagent_session(
-            leaf, prompt="review", harness=harness,  # type: ignore[arg-type]
-            parent_tools=None, spawn_counter=[0], tracer=None,
+            leaf,
+            prompt="review",
+            harness=harness,  # type: ignore[arg-type]
+            parent_tools=None,
+            spawn_counter=[0],
+            tracer=None,
         )
     )
 
     assert harness.captured is not None
     assert SUBAGENT_SET_CONTEXT_KEY not in harness.captured.metadata  # leaf can't spawn — unchanged
+    assert harness.captured.response_format is None
+
+
+def test_output_schema_attaches_response_format_on_first_session() -> None:
+    """P1: constrained decode on the child's first session, not only repair."""
+    from dream.api.response_format import ResponseFormatKind
+
+    schema = {
+        "type": "object",
+        "properties": {"answer": {"type": "string"}},
+        "required": ["answer"],
+    }
+    agent = Subagent(
+        name="web_research",
+        description="answers with JSON",
+        tools=("web_search",),
+        output_schema=schema,
+        strict=True,
+    )
+    harness = _CapturingHarness(final_text='{"answer": "ok"}')
+
+    asyncio.run(
+        run_subagent_session(
+            agent,
+            prompt="research",
+            harness=harness,  # type: ignore[arg-type]
+            parent_tools=None,
+            spawn_counter=[0],
+            tracer=None,
+        )
+    )
+
+    assert harness.captured_options
+    first = harness.captured_options[0]
+    assert first.response_format is not None
+    assert first.response_format.kind is ResponseFormatKind.JSON_SCHEMA
+    assert first.response_format.json_schema is not None
+    assert first.response_format.json_schema.name == "web_research_output"
+    assert first.response_format.json_schema.strict is True
 
 
 def test_run_subagent_session_forwards_observer_to_child() -> None:
@@ -110,8 +157,13 @@ def test_run_subagent_session_forwards_observer_to_child() -> None:
     obs = _Obs()
     asyncio.run(
         run_subagent_session(
-            _spawner(), prompt="frame it", harness=harness,  # type: ignore[arg-type]
-            parent_tools=None, spawn_counter=[0], tracer=None, observer=obs,
+            _spawner(),
+            prompt="frame it",
+            harness=harness,  # type: ignore[arg-type]
+            parent_tools=None,
+            spawn_counter=[0],
+            tracer=None,
+            observer=obs,
         )
     )
     assert harness.observer is obs
