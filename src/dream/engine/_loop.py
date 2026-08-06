@@ -4,7 +4,7 @@
 dispatches every tool the assistant requested, appends the matching
 ``ToolResultBlock``s as a single user message (the tool-call atom), and
 re-enters the model until the assistant returns no tool calls or
-``max_turns`` is reached.
+``max_turns`` / :class:`IterationBudget` is exhausted.
 
 Two collaborators are abstracted as narrow internal Protocols:
 
@@ -17,7 +17,9 @@ Two collaborators are abstracted as narrow internal Protocols:
 
 Lifecycle decisions in this loop are made *only* from event types and
 ``ContentBlock`` shapes — never from parsing assistant prose (acceptance #7).
-The loop is bounded by ``max_turns`` (acceptance #6).
+The loop is bounded by ``max_turns`` (acceptance #6). Programmatic turns
+(``execute_code`` / ``spawn_subagent`` only) refund one iteration (capped) so
+they do not burn the parent cap the same way a reasoning turn does.
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ from dream.engine._events import (
     ToolExecutionCompleted,
     ToolExecutionStarted,
 )
+from dream.engine._iteration_budget import IterationBudget, is_programmatic_only
 from dream.engine._messages import (
     ContentBlock,
     ConversationMessage,
@@ -67,9 +70,7 @@ class ToolDispatcher(Protocol):
     richer return to this shape before calling the loop.
     """
 
-    async def dispatch(
-        self, name: str, input: dict[str, Any]
-    ) -> tuple[str, bool]: ...
+    async def dispatch(self, name: str, input: dict[str, Any]) -> tuple[str, bool]: ...
 
 
 @contextlib.asynccontextmanager
@@ -77,9 +78,7 @@ async def _managed_turn_stream(
     stream: AsyncIterator[StreamEvent],
 ) -> AsyncIterator[AsyncIterator[StreamEvent]]:
     if hasattr(stream, "aclose"):
-        async with contextlib.aclosing(
-            cast(AsyncGenerator[StreamEvent, None], stream)
-        ):
+        async with contextlib.aclosing(cast(AsyncGenerator[StreamEvent, None], stream)):
             yield stream
     else:
         yield stream
@@ -103,6 +102,9 @@ class QueryContext:
     # turn that has not yet yielded events triggers one ``react_to_ptl`` shrink
     # + retry. ``None`` disables (default; session enables when compactor set).
     ptl_preserve_recent: int | None = None
+    # Optional pre-built budget. When unset, ``run_query`` mints one from
+    # ``max_turns``. Callers that share a budget across retries can pass one.
+    iteration_budget: IterationBudget | None = None
 
 
 async def run_query(
@@ -118,10 +120,14 @@ async def run_query(
          collect the matching ``ToolResultBlock``s into one user message,
          append it, and re-enter the model.
 
-    The loop is bounded by ``ctx.max_turns`` and terminates cleanly when the
-    bound is reached — never infinite.
+    The loop is bounded by ``ctx.max_turns`` (via :class:`IterationBudget`) and
+    terminates cleanly when the bound is reached — never infinite. Turns whose
+    tool set is exclusively programmatic (``execute_code`` / ``spawn_subagent``)
+    refund one iteration (up to a refund ceiling) so nested RPC / spawn work
+    does not burn the parent cap the same way a reasoning turn does.
     """
-    for _ in range(ctx.max_turns):
+    budget = ctx.iteration_budget or IterationBudget(ctx.max_turns)
+    while budget.consume():
         # The llm.call span stays open across this turn's tool dispatch, so the
         # tool.call / tool.result events nest under it (Spec 12a, AC #17).
         # Seed the span at open with model + zero usage, so a turn cancelled
@@ -169,9 +175,7 @@ async def run_query(
                         raise
                     messages[:] = shrunk
                     ptl_attempted = True
-                    yield StatusEvent(
-                        message="context overflow: shrunk transcript, retrying once"
-                    )
+                    yield StatusEvent(message="context overflow: shrunk transcript, retrying once")
                     continue
                 break
 
@@ -187,9 +191,7 @@ async def run_query(
                     cache_read_tokens=complete.usage.cache_read_tokens,
                 )
             )
-            messages.append(
-                ConversationMessage(role="assistant", content=list(complete.blocks))
-            )
+            messages.append(ConversationMessage(role="assistant", content=list(complete.blocks)))
 
             tool_uses: list[ToolUseBlock] = [
                 b for b in complete.blocks if isinstance(b, ToolUseBlock)
@@ -240,6 +242,8 @@ async def run_query(
                 )
 
             messages.append(ConversationMessage(role="user", content=results))
+            if is_programmatic_only(tu.name for tu in tool_uses):
+                budget.refund()
 
 
 __all__ = ["QueryContext", "ToolDispatcher", "TurnStreamer", "run_query"]

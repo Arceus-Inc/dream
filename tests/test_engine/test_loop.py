@@ -74,9 +74,7 @@ class FakeStreamer:
     ) -> AsyncIterator[StreamEvent]:
         self.calls.append([m for m in messages])
         if not self._remaining:
-            raise AssertionError(
-                "FakeStreamer ran out of scripted turns — loop kept re-entering"
-            )
+            raise AssertionError("FakeStreamer ran out of scripted turns — loop kept re-entering")
         turn = self._remaining.pop(0)
         for chunk in turn.text_chunks:
             yield AssistantTextDelta(text=chunk)
@@ -108,9 +106,7 @@ class FakeDispatcher:
         return self.results.get(name, (f"ok:{name}", False))
 
 
-async def _drain(
-    ctx: QueryContext, messages: list[ConversationMessage]
-) -> list[StreamEvent]:
+async def _drain(ctx: QueryContext, messages: list[ConversationMessage]) -> list[StreamEvent]:
     out: list[StreamEvent] = []
     async for ev in run_query(ctx, messages):
         out.append(ev)
@@ -136,7 +132,9 @@ def test_query_context_construction_takes_client_tools_and_max_turns() -> None:
 
 async def test_run_query_text_only_turn_ends_loop() -> None:
     client = FakeStreamer(
-        turns=[FakeTurn(text_chunks=["hello "], usage=UsageSnapshot(input_tokens=3, output_tokens=1))]
+        turns=[
+            FakeTurn(text_chunks=["hello "], usage=UsageSnapshot(input_tokens=3, output_tokens=1))
+        ]
     )
     ctx = QueryContext(client=client, tools=FakeDispatcher(), max_turns=8)
     messages: list[ConversationMessage] = [
@@ -205,7 +203,10 @@ async def test_run_query_dispatches_tool_appends_result_and_reenters() -> None:
     client = FakeStreamer(
         turns=[
             FakeTurn(tool_uses=[tool_use], usage=UsageSnapshot(input_tokens=10, output_tokens=4)),
-            FakeTurn(text_chunks=["here's the file"], usage=UsageSnapshot(input_tokens=15, output_tokens=5)),
+            FakeTurn(
+                text_chunks=["here's the file"],
+                usage=UsageSnapshot(input_tokens=15, output_tokens=5),
+            ),
         ]
     )
     tools = FakeDispatcher(results={"read": ("FILE CONTENTS", False)})
@@ -218,10 +219,10 @@ async def test_run_query_dispatches_tool_appends_result_and_reenters() -> None:
     # Event order: tool turn complete → started → completed → text delta → final complete
     type_seq = [type(e).__name__ for e in events]
     assert type_seq == [
-        "AssistantTurnComplete",         # first turn (tool_use only, no text deltas)
+        "AssistantTurnComplete",  # first turn (tool_use only, no text deltas)
         "ToolExecutionStarted",
         "ToolExecutionCompleted",
-        "AssistantTextDelta",            # second turn
+        "AssistantTextDelta",  # second turn
         "AssistantTurnComplete",
     ]
 
@@ -250,9 +251,7 @@ async def test_run_query_parallel_tools_dispatched_in_order_in_one_user_message(
             FakeTurn(text_chunks=["ok"]),
         ]
     )
-    tools = FakeDispatcher(
-        results={"read": ("R", False)}
-    )
+    tools = FakeDispatcher(results={"read": ("R", False)})
     ctx = QueryContext(client=client, tools=tools, max_turns=8)
     messages: list[ConversationMessage] = [
         ConversationMessage(role="user", content=[TextBlock(text="read both")])
@@ -327,7 +326,9 @@ async def test_run_query_tool_exception_becomes_is_error_event_and_does_not_cras
 async def test_run_query_bounded_by_max_turns_when_model_keeps_calling_tools() -> None:
     """Model that keeps requesting tools → loop stops at ``max_turns`` entries."""
     # Script enough turns to exceed max_turns; each requests one tool.
-    turns = [FakeTurn(tool_uses=[ToolUseBlock(id=f"t{i}", name="loop", input={})]) for i in range(20)]
+    turns = [
+        FakeTurn(tool_uses=[ToolUseBlock(id=f"t{i}", name="loop", input={})]) for i in range(20)
+    ]
     client = FakeStreamer(turns=turns)
     tools = FakeDispatcher()
     ctx = QueryContext(client=client, tools=tools, max_turns=3)
@@ -340,6 +341,66 @@ async def test_run_query_bounded_by_max_turns_when_model_keeps_calling_tools() -
     assert len(client.calls) == 3
     # Tools were dispatched once per turn — three times.
     assert len(tools.calls) == 3
+
+
+async def test_run_query_refunds_programmatic_only_turns() -> None:
+    """``execute_code`` / ``spawn_subagent``-only turns refund so the cap stretches."""
+    turns = [
+        FakeTurn(tool_uses=[ToolUseBlock(id="e1", name="execute_code", input={})]),
+        FakeTurn(tool_uses=[ToolUseBlock(id="s1", name="spawn_subagent", input={})]),
+        FakeTurn(tool_uses=[ToolUseBlock(id="r1", name="read_file", input={})]),
+        FakeTurn(text_chunks=["done"]),
+    ]
+    client = FakeStreamer(turns=turns)
+    tools = FakeDispatcher()
+    # Cap of 2 would stop before "done" without refunds; with two refunds we get 4 calls.
+    ctx = QueryContext(client=client, tools=tools, max_turns=2)
+    messages: list[ConversationMessage] = [
+        ConversationMessage(role="user", content=[TextBlock(text="go")])
+    ]
+    await _drain(ctx, messages)
+    assert len(client.calls) == 4
+    assert [c[0] for c in tools.calls] == ["execute_code", "spawn_subagent", "read_file"]
+
+
+async def test_run_query_programmatic_refunds_are_bounded() -> None:
+    """An execute_code-only model cannot loop forever via refunds."""
+    turns = [
+        FakeTurn(tool_uses=[ToolUseBlock(id=f"e{i}", name="execute_code", input={})])
+        for i in range(20)
+    ]
+    client = FakeStreamer(turns=turns)
+    tools = FakeDispatcher()
+    # Soft cap 2 + default max_refunds 2 → at most 4 API calls.
+    ctx = QueryContext(client=client, tools=tools, max_turns=2)
+    messages: list[ConversationMessage] = [
+        ConversationMessage(role="user", content=[TextBlock(text="loop")])
+    ]
+    await _drain(ctx, messages)
+    assert len(client.calls) == 4
+    assert len(tools.calls) == 4
+
+
+async def test_run_query_does_not_refund_mixed_tool_turns() -> None:
+    turns = [
+        FakeTurn(
+            tool_uses=[
+                ToolUseBlock(id="e1", name="execute_code", input={}),
+                ToolUseBlock(id="r1", name="read_file", input={}),
+            ]
+        ),
+        FakeTurn(tool_uses=[ToolUseBlock(id="e2", name="execute_code", input={})]),
+        FakeTurn(text_chunks=["done"]),
+    ]
+    client = FakeStreamer(turns=turns)
+    tools = FakeDispatcher()
+    ctx = QueryContext(client=client, tools=tools, max_turns=2)
+    messages: list[ConversationMessage] = [
+        ConversationMessage(role="user", content=[TextBlock(text="go")])
+    ]
+    await _drain(ctx, messages)
+    # First turn mixed → no refund; second execute_code-only → refund → third text turn fits.
+    assert len(client.calls) == 3
 
 
 async def test_run_query_max_turns_one_runs_single_turn() -> None:
@@ -375,9 +436,7 @@ async def test_run_query_prose_saying_done_does_not_end_a_turn_with_tool_uses() 
 
 async def test_run_query_text_with_no_tool_uses_ends_loop_regardless_of_prose() -> None:
     """No tool_uses → loop ends, even when prose says 'one more tool please'."""
-    client = FakeStreamer(
-        turns=[FakeTurn(text_chunks=["one more tool please"])]
-    )
+    client = FakeStreamer(turns=[FakeTurn(text_chunks=["one more tool please"])])
     ctx = QueryContext(client=client, tools=FakeDispatcher(), max_turns=8)
     messages: list[ConversationMessage] = [
         ConversationMessage(role="user", content=[TextBlock(text="go")])
@@ -432,9 +491,7 @@ async def test_run_query_tool_exception_keeps_internals_out_of_transcript() -> N
     but the ``ToolResultBlock`` the model re-reads carries only a generic marker.
     """
     tu = ToolUseBlock(id="t1", name="explode", input={})
-    client = FakeStreamer(
-        turns=[FakeTurn(tool_uses=[tu]), FakeTurn(text_chunks=["done"])]
-    )
+    client = FakeStreamer(turns=[FakeTurn(tool_uses=[tu]), FakeTurn(text_chunks=["done"])])
     tools = FakeDispatcher(raise_for={"explode": RuntimeError("secret /etc/passwd path")})
     ctx = QueryContext(client=client, tools=tools, max_turns=8)
     messages: list[ConversationMessage] = [
