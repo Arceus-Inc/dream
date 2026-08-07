@@ -30,6 +30,7 @@ from dream.engine._cost import UsageSnapshot
 from dream.engine._events import (
     AssistantTextDelta,
     AssistantTurnComplete,
+    StatusEvent,
     StreamEvent,
 )
 from dream.engine._heartbeat import HeartbeatConfig
@@ -101,9 +102,7 @@ async def _drain(
     resume_messages: list[ConversationMessage] | None = None,
 ) -> list[SessionEvent]:
     events: list[SessionEvent] = []
-    async for ev in run_session(
-        config, user_messages, resume_messages=resume_messages
-    ):
+    async for ev in run_session(config, user_messages, resume_messages=resume_messages):
         events.append(ev)
     return events
 
@@ -149,14 +148,10 @@ async def test_orientation_runs_exactly_once_per_session() -> None:
     async def gather() -> OrientationBrief:
         nonlocal calls
         calls += 1
-        return OrientationBrief(
-            repo_summary="r", progress_tail="p", active_exec_plan="x"
-        )
+        return OrientationBrief(repo_summary="r", progress_tail="p", active_exec_plan="x")
 
     config = _config(streamer, orientation=OrientationConfig(gather=gather))
-    await _drain(
-        config, [_user("m1"), _user("m2"), _user("m3")]
-    )
+    await _drain(config, [_user("m1"), _user("m2"), _user("m3")])
 
     assert calls == 1
     # Brief appears in transcript only once; later turns should still see
@@ -171,9 +166,7 @@ async def test_orientation_summariser_runs_when_configured() -> None:
     seen: list[str] = []
 
     async def gather() -> OrientationBrief:
-        return OrientationBrief(
-            repo_summary="repo", progress_tail="p", active_exec_plan="x"
-        )
+        return OrientationBrief(repo_summary="repo", progress_tail="p", active_exec_plan="x")
 
     async def summarise(b: OrientationBrief) -> str:
         seen.append(b.repo_summary)
@@ -198,9 +191,7 @@ async def test_blocking_validator_finding_aborts_before_first_turn() -> None:
             repo_summary="r",
             progress_tail="p",
             active_exec_plan="x",
-            validator_findings=(
-                ValidatorFinding("blocking", "V-100", "config invalid"),
-            ),
+            validator_findings=(ValidatorFinding("blocking", "V-100", "config invalid"),),
         )
 
     config = _config(streamer, orientation=OrientationConfig(gather=gather))
@@ -237,16 +228,12 @@ async def test_orientation_skipped_on_resume() -> None:
     async def gather() -> OrientationBrief:
         nonlocal calls
         calls += 1
-        return OrientationBrief(
-            repo_summary="r", progress_tail="p", active_exec_plan="x"
-        )
+        return OrientationBrief(repo_summary="r", progress_tail="p", active_exec_plan="x")
 
     config = _config(streamer, orientation=OrientationConfig(gather=gather))
     resume = [
         _user("prior msg"),
-        ConversationMessage(
-            role="assistant", content=[TextBlock(text="prior reply")]
-        ),
+        ConversationMessage(role="assistant", content=[TextBlock(text="prior reply")]),
     ]
     await _drain(config, [_user("new")], resume_messages=resume)
 
@@ -264,9 +251,7 @@ async def test_heartbeat_healthy_does_not_disturb_session() -> None:
 
     config = _config(
         streamer,
-        heartbeat=HeartbeatConfig(
-            health=health, interval_seconds=0.01, failure_threshold=3
-        ),
+        heartbeat=HeartbeatConfig(health=health, interval_seconds=0.01, failure_threshold=3),
     )
     events = await _drain(config, [_user("m1")])
 
@@ -277,18 +262,14 @@ async def test_heartbeat_healthy_does_not_disturb_session() -> None:
 async def test_heartbeat_coma_during_turn_aborts_session() -> None:
     # A slow turn (50ms) gives the heartbeat (interval 5ms, threshold 3)
     # plenty of time to trip while the LLM is "in flight".
-    streamer = FakeStreamer(
-        turns=[FakeTurn(text_chunks=["slow"], delay=0.2)]
-    )
+    streamer = FakeStreamer(turns=[FakeTurn(text_chunks=["slow"], delay=0.2)])
 
     async def health() -> bool:
         return False
 
     config = _config(
         streamer,
-        heartbeat=HeartbeatConfig(
-            health=health, interval_seconds=0.005, failure_threshold=3
-        ),
+        heartbeat=HeartbeatConfig(health=health, interval_seconds=0.005, failure_threshold=3),
     )
     events = await _drain(config, [_user("m1")])
 
@@ -299,6 +280,28 @@ async def test_heartbeat_coma_during_turn_aborts_session() -> None:
     assert len(ends) == 1
     assert ends[0].outcome == "aborted"
     assert ends[0].reason == "coma"
+
+
+async def test_heartbeat_coma_failovers_when_backup_substrate_exists() -> None:
+    from dream.engine._failover_streamer import FailoverStreamer
+
+    primary = FakeStreamer(turns=[FakeTurn(text_chunks=["slow"], delay=0.25)])
+    backup = FakeStreamer(turns=[FakeTurn(text_chunks=["recovered"])])
+    streamer = FailoverStreamer.from_named_streamers([("primary", primary), ("backup", backup)])
+
+    async def health() -> bool:
+        return False
+
+    config = _config(
+        streamer,
+        heartbeat=HeartbeatConfig(health=health, interval_seconds=0.005, failure_threshold=3),
+    )
+    events = await _drain(config, [_user("m1")])
+    statuses = [e for e in events if isinstance(e, StatusEvent)]
+    ends = [e for e in events if isinstance(e, SessionEnd)]
+    assert any("coma" in e.message for e in statuses)
+    assert ends[0].outcome == "done"
+    assert backup.calls  # backup served the retried turn
 
 
 async def test_no_heartbeat_config_behaves_like_stage_3a() -> None:
@@ -319,9 +322,7 @@ class _ScriptedReviewer:
         self._verdicts = list(verdicts)
         self.calls: list[list[ConversationMessage]] = []
 
-    async def review(
-        self, transcript: list[ConversationMessage]
-    ) -> ReviewerOutcome:
+    async def review(self, transcript: list[ConversationMessage]) -> ReviewerOutcome:
         self.calls.append(list(transcript))
         if not self._verdicts:
             raise AssertionError(
@@ -334,9 +335,7 @@ class _ScriptedReviewer:
 async def test_reviewer_accept_on_first_review_seals_as_done() -> None:
     streamer = FakeStreamer(turns=[FakeTurn(text_chunks=["work"])])
     reviewer = _ScriptedReviewer([ReviewerOutcome(verdict="accept")])
-    config = _config(
-        streamer, reviewer=ReviewerConfig(reviewer=reviewer, max_rounds=3)
-    )
+    config = _config(streamer, reviewer=ReviewerConfig(reviewer=reviewer, max_rounds=3))
     events = await _drain(config, [_user("m1")])
 
     assert len(reviewer.calls) == 1
@@ -357,15 +356,11 @@ async def test_reviewer_request_changes_injects_items_and_drives_another_turn() 
     )
     reviewer = _ScriptedReviewer(
         [
-            ReviewerOutcome(
-                verdict="request_changes", items=("please tighten test names",)
-            ),
+            ReviewerOutcome(verdict="request_changes", items=("please tighten test names",)),
             ReviewerOutcome(verdict="accept"),
         ]
     )
-    config = _config(
-        streamer, reviewer=ReviewerConfig(reviewer=reviewer, max_rounds=3)
-    )
+    config = _config(streamer, reviewer=ReviewerConfig(reviewer=reviewer, max_rounds=3))
     events = await _drain(config, [_user("m1")])
 
     # Two work turns: the user-driven one and one driven by the reviewer.
@@ -397,9 +392,7 @@ async def test_reviewer_max_rounds_request_changes_force_closes_with_warnings() 
             ReviewerOutcome(verdict="request_changes", items=("C",)),
         ]
     )
-    config = _config(
-        streamer, reviewer=ReviewerConfig(reviewer=reviewer, max_rounds=3)
-    )
+    config = _config(streamer, reviewer=ReviewerConfig(reviewer=reviewer, max_rounds=3))
     events = await _drain(config, [_user("m1")])
 
     # 3 reviewer calls, on the 3rd we force-close.
@@ -432,9 +425,7 @@ async def test_reviewer_skipped_when_no_turns_ran() -> None:
     """
     streamer = FakeStreamer(turns=[])
     reviewer = _ScriptedReviewer([ReviewerOutcome(verdict="accept")])
-    config = _config(
-        streamer, reviewer=ReviewerConfig(reviewer=reviewer, max_rounds=3)
-    )
+    config = _config(streamer, reviewer=ReviewerConfig(reviewer=reviewer, max_rounds=3))
     events = await _drain(config, [])
 
     assert reviewer.calls == []

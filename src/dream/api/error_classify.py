@@ -25,11 +25,13 @@ class FailureKind(Enum):
     """Closed set of transport-layer failure classes."""
 
     RATE_LIMIT = "rate_limit"
+    BILLING = "billing"
     SERVER_TRANSIENT = "server_transient"
     TRANSPORT = "transport"
     AUTH = "auth"
     CONTEXT_OVERFLOW = "context_overflow"
     PAYLOAD_TOO_LARGE = "payload_too_large"
+    MODEL_NOT_FOUND = "model_not_found"
     HARD = "hard"
     UNKNOWN = "unknown"
 
@@ -99,6 +101,25 @@ def _classify_http(exc: httpx.HTTPStatusError) -> ClassifiedFailure:
             should_compress=False,
         )
 
+    if status == 402:
+        # Billing/quota — rotate credential immediately (Hermes billing).
+        return ClassifiedFailure(
+            kind=FailureKind.BILLING,
+            outcome=AttemptOutcome.AUTH,
+            retryable=False,
+            should_failover=True,
+            should_compress=False,
+        )
+
+    if status == 404 and _looks_like_model_missing(exc.response):
+        return ClassifiedFailure(
+            kind=FailureKind.MODEL_NOT_FOUND,
+            outcome=AttemptOutcome.HARD_REFUSAL,
+            retryable=False,
+            should_failover=True,
+            should_compress=False,
+        )
+
     if status == 429:
         return ClassifiedFailure(
             kind=FailureKind.RATE_LIMIT,
@@ -138,6 +159,13 @@ def _retry_after_seconds(response: httpx.Response) -> float | None:
     if seconds < 0:
         return None
     return min(seconds, MAX_RETRY_AFTER_SECONDS)
+
+
+def _looks_like_model_missing(response: httpx.Response) -> bool:
+    text = response.text.lower()
+    return "model" in text and (
+        "not found" in text or "does not exist" in text or "unknown model" in text
+    )
 
 
 __all__ = [

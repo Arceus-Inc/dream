@@ -34,6 +34,22 @@ def _status(
             AttemptOutcome.TRANSIENT_EXHAUSTED,
         ),
         (
+            _status(402),
+            FailureKind.BILLING,
+            False,
+            True,
+            False,
+            AttemptOutcome.AUTH,
+        ),
+        (
+            _status(404, body=b'{"error":{"message":"The model `foo` does not exist"}}'),
+            FailureKind.MODEL_NOT_FOUND,
+            False,
+            True,
+            False,
+            AttemptOutcome.HARD_REFUSAL,
+        ),
+        (
             _status(429),
             FailureKind.RATE_LIMIT,
             True,

@@ -17,6 +17,9 @@ class FailoverReason(Enum):
     POOL_EXHAUSTED = "pool_exhausted"
     AUTH = "auth"
     TRANSIENT_EXHAUSTED = "transient_exhausted"
+    COMA = "coma"
+    BILLING = "billing"
+    MODEL_NOT_FOUND = "model_not_found"
 
 
 @dataclass(frozen=True)
@@ -36,8 +39,21 @@ class SubstrateHealthDegradedEvent:
     substrate: str
 
 
+@dataclass(frozen=True)
+class RecoveryAttemptEvent:
+    """Audit: one classified recovery decision on the live streamer path."""
+
+    substrate: str
+    credential_label: str
+    kind: str
+    action: str
+
+
 FailoverEvent = (
-    SubstrateFailoverEvent | SubstrateHealthRecoveredEvent | SubstrateHealthDegradedEvent
+    SubstrateFailoverEvent
+    | SubstrateHealthRecoveredEvent
+    | SubstrateHealthDegradedEvent
+    | RecoveryAttemptEvent
 )
 
 EventCallback = Callable[[FailoverEvent], None]
@@ -47,6 +63,7 @@ __all__ = [
     "EventCallback",
     "FailoverEvent",
     "FailoverReason",
+    "RecoveryAttemptEvent",
     "SubstrateFailoverEvent",
     "SubstrateHealthDegradedEvent",
     "SubstrateHealthRecoveredEvent",

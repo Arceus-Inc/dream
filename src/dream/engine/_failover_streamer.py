@@ -16,12 +16,13 @@ import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 
 from dream.api.credentials import AttemptOutcome, Credential, CredentialPool, NoLiveCredential
-from dream.api.error_classify import ClassifiedFailure, classify_failure
+from dream.api.error_classify import ClassifiedFailure, FailureKind, classify_failure
 from dream.api.failover import FailoverPolicy, FailoverReason, NoLiveSubstrate
-from dream.api.failover_events import EventCallback
+from dream.api.failover_events import EventCallback, RecoveryAttemptEvent
 from dream.engine._events import StreamEvent
 from dream.engine._loop import TurnStreamer
 from dream.engine._messages import ConversationMessage
+from dream.engine._retry_errors import CompressRequired
 from dream.engine._substrate_slot import SubstrateSlot
 
 
@@ -44,9 +45,11 @@ class FailoverStreamer:
             raise ValueError(f"duplicate substrate names in slots: {names}")
         self._slots = {slot.name: slot for slot in slots}
         self._policy = FailoverPolicy(order=list(names), on_event=on_event)
+        self._on_event = on_event
         self._retries = retries_per_credential
         self._backoff = tuple(backoff_seconds)
         self._sleep = sleep
+        self._coma_failovers = 0
 
     @classmethod
     def from_named_streamers(
@@ -74,6 +77,32 @@ class FailoverStreamer:
             sleep=sleep,
         )
 
+    def has_failover_target(self) -> bool:
+        """True when the policy can advance past the active substrate."""
+        active = self._policy.active()
+        order = self._policy.order
+        try:
+            idx = order.index(active)
+        except ValueError:
+            return False
+        return idx + 1 < len(order)
+
+    def advance_after_coma(self) -> bool:
+        """Spec 02 §14: on heartbeat coma, rotate once if a backup is live.
+
+        Returns True when the active substrate advanced. Caps at one coma
+        failover per streamer lifetime so flapping health cannot ping-pong.
+        """
+        if self._coma_failovers >= 1 or not self.has_failover_target():
+            return False
+        active = self._policy.active()
+        try:
+            self._policy.next_substrate(after=active, reason=FailoverReason.COMA)
+        except NoLiveSubstrate:
+            return False
+        self._coma_failovers += 1
+        return True
+
     async def stream_turn(
         self, messages: Sequence[ConversationMessage]
     ) -> AsyncIterator[StreamEvent]:
@@ -85,6 +114,8 @@ class FailoverStreamer:
                 async for event in self._stream_with_pool(slot, messages):
                     yield event
                 return
+            except CompressRequired:
+                raise
             except _PoolExhausted as exc:
                 last_error = exc.cause
                 reason = exc.reason
@@ -127,19 +158,34 @@ class FailoverStreamer:
                     last_error = exc
                     classified = classify_failure(exc)
                     last_reason = _reason_for(classified)
+                    self._emit_recovery(slot.name, cred.label, classified)
                     if classified.should_compress:
-                        raise
+                        raise CompressRequired(cause=exc, kind=classified.kind) from exc
                     if not classified.retryable:
                         slot.pool.record_attempt(cred.label, outcome=classified.outcome)
-                        # Hard refusals are request bugs — do not burn the pool.
-                        if classified.outcome == AttemptOutcome.HARD_REFUSAL:
-                            raise
-                        break
+                        if classified.should_failover:
+                            break
+                        raise
                     if attempt + 1 >= attempts:
                         slot.pool.record_attempt(cred.label, outcome=classified.outcome)
                         break
                     if classified.backoff_seconds is not None:
                         await self._sleep(classified.backoff_seconds)
+
+    def _emit_recovery(
+        self, substrate: str, credential_label: str, classified: ClassifiedFailure
+    ) -> None:
+        if self._on_event is None:
+            return
+        action = _action_label(classified)
+        self._on_event(
+            RecoveryAttemptEvent(
+                substrate=substrate,
+                credential_label=credential_label,
+                kind=classified.kind.value,
+                action=action,
+            )
+        )
 
 
 class _PoolExhausted(Exception):
@@ -152,11 +198,25 @@ class _PoolExhausted(Exception):
 
 
 def _reason_for(classified: ClassifiedFailure) -> FailoverReason:
+    if classified.kind is FailureKind.BILLING:
+        return FailoverReason.BILLING
+    if classified.kind is FailureKind.MODEL_NOT_FOUND:
+        return FailoverReason.MODEL_NOT_FOUND
     if classified.outcome == AttemptOutcome.AUTH:
         return FailoverReason.AUTH
     if classified.outcome == AttemptOutcome.TRANSIENT_EXHAUSTED:
         return FailoverReason.TRANSIENT_EXHAUSTED
     return FailoverReason.POOL_EXHAUSTED
+
+
+def _action_label(classified: ClassifiedFailure) -> str:
+    if classified.should_compress:
+        return "compress"
+    if classified.retryable:
+        return "retry"
+    if classified.should_failover:
+        return "failover"
+    return "raise"
 
 
 __all__ = ["FailoverStreamer"]

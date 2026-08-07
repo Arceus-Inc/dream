@@ -55,6 +55,7 @@ from dream.contracts.hook import (
     SubagentStopPayload,
 )
 from dream.contracts.tool import ToolResult
+from dream.engine._tool_guardrails import GuardrailVerdict, ToolGuardrails, fingerprint_args
 from dream.hooks import HookExecutor
 from dream.permissions import Outcome, PermissionDecision, PermissionRequest
 from dream.services.tool_outputs import offload_tool_output
@@ -134,6 +135,9 @@ class EngineToolDispatcher:
     # veto PRE (Hermes pre_tool_call). ``None`` means no firing.
     hook_executor: HookExecutor | None = None
     delegations: AsyncDelegationManager | None = None
+    # Exact-failure circuit breaker (Hermes tool_guardrails). Default-on with
+    # warn@2 / block@5; sessions can pass a custom instance.
+    tool_guardrails: ToolGuardrails = field(default_factory=ToolGuardrails)
 
     async def dispatch(self, name: str, input: dict[str, Any]) -> tuple[str, bool]:
         # PRE_TOOL_USE → (optional veto / replace input) → execute → POST_TOOL_USE.
@@ -208,9 +212,7 @@ class EngineToolDispatcher:
                     is_error=is_error,
                     result_summary=content[:_RESULT_SUMMARY_MAX_CHARS],
                     mode=join_mode,
-                    delegation_id=(
-                        delegation_raw if isinstance(delegation_raw, str) else None
-                    ),
+                    delegation_id=(delegation_raw if isinstance(delegation_raw, str) else None),
                     working_dir=str(self.working_dir),
                     structured=result.structured if result is not None else None,
                 ).to_dict(),
@@ -252,8 +254,41 @@ class EngineToolDispatcher:
         result, elapsed = await self._run_with_timeout(name, tool, input, ctx, is_read_only)
         if isinstance(result, tuple):
             # A synthetic timeout result (already recorded) rather than a ToolResult.
-            return _DispatchOutcome(*result)
-        return self._offload_and_record(name, result, is_read_only=is_read_only, elapsed=elapsed)
+            return self._apply_guardrails(name, input, _DispatchOutcome(*result))
+        return self._apply_guardrails(
+            name,
+            input,
+            self._offload_and_record(name, result, is_read_only=is_read_only, elapsed=elapsed),
+        )
+
+    def _apply_guardrails(
+        self,
+        name: str,
+        tool_input: dict[str, Any],
+        outcome: _DispatchOutcome,
+    ) -> _DispatchOutcome:
+        """Enforce exact-failure streaks; clear streaks on success."""
+        args_fp = fingerprint_args(tool_input)
+        content, is_error = outcome.pair()
+        if not is_error:
+            self.tool_guardrails.observe_success(tool=name, args_fingerprint=args_fp)
+            return outcome
+        error_key = content.split("\n", 1)[0][:200]
+        verdict = self.tool_guardrails.observe_error(
+            tool=name, args_fingerprint=args_fp, error_key=error_key
+        )
+        if verdict is not GuardrailVerdict.BLOCK:
+            return outcome
+        return _DispatchOutcome(
+            (
+                "Error: tool call blocked by circuit breaker.\n"
+                "root_cause: exact_failure_streak\n"
+                "safe_retry: change arguments or pick a different tool\n"
+                f"stop_condition: identical tool+args+error repeated "
+                f"{self.tool_guardrails.block_after} times"
+            ),
+            True,
+        )
 
     def _validate_input(
         self, name: str, tool: BaseTool, input: dict[str, Any]

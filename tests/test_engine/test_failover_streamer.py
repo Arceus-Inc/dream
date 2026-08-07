@@ -216,6 +216,40 @@ async def test_retry_after_header_is_capped_not_hours() -> None:
     assert max(sleeps) <= 60.0
 
 
+async def test_compress_required_raised_for_overflow_not_failover() -> None:
+    from dream.engine._retry_errors import CompressRequired
+
+    request = httpx.Request("POST", "https://x/v1/chat/completions")
+    overflow = httpx.HTTPStatusError(
+        "400",
+        request=request,
+        response=httpx.Response(
+            400,
+            request=request,
+            content=b'{"error":{"code":"context_length_exceeded","message":"too long"}}',
+        ),
+    )
+    primary = _ScriptedStreamer([overflow])
+    backup = _ScriptedStreamer([[_turn_complete()]])
+    failover = FailoverStreamer.from_named_streamers(
+        [("azure", primary), ("backup", backup)], sleep=_no_sleep
+    )
+    with pytest.raises(CompressRequired):
+        await _collect(failover)
+    assert backup.calls == 0
+
+
+async def test_advance_after_coma_rotates_once() -> None:
+    primary = _ScriptedStreamer([[_turn_complete()]])
+    backup = _ScriptedStreamer([[_turn_complete()]])
+    failover = FailoverStreamer.from_named_streamers(
+        [("azure", primary), ("backup", backup)], sleep=_no_sleep
+    )
+    assert failover.has_failover_target() is True
+    assert failover.advance_after_coma() is True
+    assert failover.advance_after_coma() is False  # capped at one
+
+
 async def test_record_attempt_success_resets_rung() -> None:
     pool = CredentialPool("azure", (Credential(label="sole", key="k", substrate="azure"),))
     pool.record_attempt("sole", outcome=AttemptOutcome.TRANSIENT_EXHAUSTED)
