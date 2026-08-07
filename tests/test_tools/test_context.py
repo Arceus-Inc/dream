@@ -8,7 +8,9 @@ that types against the Protocol can accept it without coupling to the impl.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
+from dream.contracts.credentials import CredentialBrokerPort
 from dream.contracts.tool import ToolContext
 from dream.tools._context import ToolExecutionContext
 
@@ -28,6 +30,16 @@ def test_context_cancel_can_be_flipped(tmp_path: Path) -> None:
     ctx = ToolExecutionContext(working_dir=tmp_path, session_id="s_abc")
     ctx.request_cancel()
     assert ctx.cancel_requested is True
+
+
+def test_context_carries_typed_credential_broker(tmp_path: Path) -> None:
+    broker = cast(CredentialBrokerPort, object())
+    ctx = ToolExecutionContext(
+        working_dir=tmp_path,
+        session_id="session",
+        credential_broker=broker,
+    )
+    assert ctx.credential_broker is broker
 
 
 def test_context_metadata_defaults_to_empty_dict(tmp_path: Path) -> None:

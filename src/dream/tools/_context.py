@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+from dream.contracts.credentials import CredentialBrokerPort
 from dream.contracts.tool import ToolResult
 from dream.services.tool_outputs import offload_tool_output
 
@@ -43,6 +44,7 @@ class ToolExecutionContext:
     metadata: dict[str, Any] = field(default_factory=dict)
     scratch_dir: Path | None = None
     delegations: AsyncDelegationManager | None = None
+    credential_broker: CredentialBrokerPort | None = None
     cancel_requested: bool = False
 
     def request_cancel(self) -> None:
