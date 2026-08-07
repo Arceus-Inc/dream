@@ -183,6 +183,7 @@ def make_generator_head(
         contract: SprintContract | None,
         step: LedgerStep,
     ) -> None:
+        nonlocal prior_messages
         prompt = _build_intent(
             task_id=task_id,
             sprint_number=sprint_number,
@@ -197,6 +198,6 @@ def make_generator_head(
             observer=observer,
             resume_messages=prior_messages,
         )
-        prior_messages[:] = result.messages
+        prior_messages = list(result.messages)
 
     return generator
