@@ -39,7 +39,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -73,6 +73,18 @@ PermissionGate = Callable[[PermissionRequest], PermissionDecision]
 # Spec 13: POST_TOOL_USE carries a bounded ``result_summary`` so an observer
 # never gets the full (possibly offloaded) payload through the hook channel.
 _RESULT_SUMMARY_MAX_CHARS = 500
+
+
+def _redact_structured(value: Any, secret_proxy: SecretProxy) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return secret_proxy.redact_text(value)
+    if isinstance(value, list):
+        return [_redact_structured(item, secret_proxy) for item in value]
+    if isinstance(value, dict):
+        return {key: _redact_structured(item, secret_proxy) for key, item in value.items()}
+    return value
 
 
 @dataclass(frozen=True)
@@ -241,9 +253,12 @@ class EngineToolDispatcher:
         if validation_error is not None:
             return _DispatchOutcome(*validation_error)
 
-        is_read_only = tool.is_read_only_for(input)
+        execute_input = input
+        if self.secret_proxy is not None:
+            execute_input = dict(self.secret_proxy.resolve_tool_input(input))
+        is_read_only = tool.is_read_only_for(execute_input)
         if self.permission_gate is not None:
-            request = self._permission_request(name, tool, input, is_read_only)
+            request = self._permission_request(name, tool, execute_input, is_read_only)
             decision = self.permission_gate(request)
             if not decision.allowed:
                 return _DispatchOutcome(*self._denied(name, decision, is_read_only))
@@ -255,9 +270,6 @@ class EngineToolDispatcher:
             metadata=dict(self.context_metadata),  # copy: a tool can't leak into the next call
             delegations=self.delegations,
         )
-        execute_input = input
-        if self.secret_proxy is not None:
-            execute_input = dict(self.secret_proxy.resolve_tool_input(input))
         result, elapsed = await self._run_with_timeout(
             name, tool, execute_input, ctx, is_read_only
         )
@@ -371,6 +383,10 @@ class EngineToolDispatcher:
         content = result.content
         if self.secret_proxy is not None:
             content = self.secret_proxy.redact_text(content)
+            structured = _redact_structured(result.structured, self.secret_proxy)
+            safe_result = replace(result, content=content, structured=structured)
+        else:
+            safe_result = result
         scratch = self._resolved_scratch()
         inline, pointer = offload_tool_output(
             content,
@@ -386,7 +402,7 @@ class EngineToolDispatcher:
             elapsed=elapsed,
             offloaded=offloaded,
         )
-        return _DispatchOutcome(inline, result.is_error, result)
+        return _DispatchOutcome(inline, result.is_error, safe_result)
 
     def _permission_request(
         self, name: str, tool: BaseTool, input: dict[str, Any], is_read_only: bool
