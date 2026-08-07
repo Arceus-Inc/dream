@@ -26,9 +26,8 @@ class ToolDenyListHook:
         try:
             self._config.feedback_template.format(tool_name="tool")
         except (IndexError, KeyError, ValueError):
-            self._feedback_template = _DEFAULT_FEEDBACK_TEMPLATE
-        else:
-            self._feedback_template = self._config.feedback_template
+            raise ValueError("feedback_template must format with tool_name") from None
+        self._feedback_template = self._config.feedback_template
         self.spec = HookSpec(
             events=(HookEvent.PRE_TOOL_USE,),
             priority=100,

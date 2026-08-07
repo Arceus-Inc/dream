@@ -12,7 +12,10 @@ from dream.hooks._verify_on_stop import VerifyOnStopConfig, VerifyOnStopHook
 @pytest.mark.asyncio
 async def test_nudge_when_mutated_without_evidence() -> None:
     hook = VerifyOnStopHook()
-    await hook(HookEvent.POST_TOOL_USE, {"tool_name": "write_file", "is_error": False})
+    await hook(
+        HookEvent.POST_TOOL_USE,
+        {"session_id": "s1", "tool_name": "write_file", "is_error": False},
+    )
     result = await hook(
         HookEvent.STOP,
         {"session_id": "s1", "phase": "pre_seal", "verify_nudges": 0},
@@ -47,7 +50,10 @@ async def test_no_nudge_when_nothing_mutated() -> None:
 @pytest.mark.asyncio
 async def test_terminal_stop_does_not_nudge() -> None:
     hook = VerifyOnStopHook()
-    await hook(HookEvent.POST_TOOL_USE, {"tool_name": "write_file", "is_error": False})
+    await hook(
+        HookEvent.POST_TOOL_USE,
+        {"session_id": "s1", "tool_name": "write_file", "is_error": False},
+    )
     result = await hook(HookEvent.STOP, {"session_id": "s1", "phase": "terminal"})
     assert result.continue_message is None
 
@@ -55,7 +61,10 @@ async def test_terminal_stop_does_not_nudge() -> None:
 @pytest.mark.asyncio
 async def test_session_start_resets_tracking() -> None:
     hook = VerifyOnStopHook()
-    await hook(HookEvent.POST_TOOL_USE, {"tool_name": "write_file", "is_error": False})
+    await hook(
+        HookEvent.POST_TOOL_USE,
+        {"session_id": "s1", "tool_name": "write_file", "is_error": False},
+    )
     await hook(HookEvent.SESSION_START, {"session_id": "s1"})
     result = await hook(
         HookEvent.STOP,
@@ -71,7 +80,10 @@ async def test_executor_honors_allow_continue() -> None:
             nudge_template="Run pytest before finishing.",
         )
     )
-    await hook(HookEvent.POST_TOOL_USE, {"tool_name": "write_file", "is_error": False})
+    await hook(
+        HookEvent.POST_TOOL_USE,
+        {"session_id": "s1", "tool_name": "write_file", "is_error": False},
+    )
     outcome = await HookExecutor(hooks=[hook]).fire(
         HookEvent.STOP,
         {"session_id": "s1", "phase": "pre_seal", "verify_nudges": 0},
