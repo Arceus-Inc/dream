@@ -18,11 +18,12 @@ unchanged.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from dream.engine._messages import ConversationMessage
     from dream.harness import Harness
     from dream.planner import LedgerStep
     from dream.runner._observer import RunTaskObserver
@@ -151,6 +152,7 @@ def make_generator_head(
     task_intent: str = "",
     harness_dir: Path | None = None,
     observer: RunTaskObserver | None = None,
+    resume_messages: Sequence[ConversationMessage] | None = None,
 ) -> Callable[
     [str, int, SprintContract | None, LedgerStep],
     Awaitable[None],
@@ -169,6 +171,8 @@ def make_generator_head(
     ``harness_dir`` is forwarded so per-task role overlays in
     ``{harness_dir}/roles/generator.toml`` are honoured. ``observer``
     is forwarded so the generator's text and tool calls stream live.
+    ``resume_messages`` seeds the generator session transcript so a chorus
+    ledger (or FileSessionStore) can continue prior tool-call history.
     """
 
     async def generator(
@@ -185,7 +189,11 @@ def make_generator_head(
             task_intent=task_intent,
         )
         await harness.run_role(
-            "generator", prompt, harness_dir=harness_dir, observer=observer
+            "generator",
+            prompt,
+            harness_dir=harness_dir,
+            observer=observer,
+            resume_messages=resume_messages,
         )
 
     return generator

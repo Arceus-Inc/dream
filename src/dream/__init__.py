@@ -49,6 +49,13 @@ from dream.events import (
     TurnComplete,
 )
 from dream.harness import Harness, HarnessConfig
+from dream.messages import (
+    ConversationMessage,
+    ImageBlock,
+    TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+)
 from dream.observability import tail_events
 from dream.session import Session, SessionCost, SessionOptions
 from dream.types import MessageRole, StopReason
@@ -58,6 +65,7 @@ __version__ = "0.1.0"
 __all__ = [
     "Compacted",
     "CompactionError",
+    "ConversationMessage",
     "DreamError",
     "Error",
     "Event",
@@ -72,6 +80,7 @@ __all__ = [
     "HookEvent",
     "HookResult",
     "HookSpec",
+    "ImageBlock",
     "MemoryDelta",
     "MemoryRecord",
     "MemoryScope",
@@ -97,10 +106,13 @@ __all__ = [
     "Skill",
     "StopReason",
     "TaskCancelled",
+    "TextBlock",
     "TextDelta",
     "Tool",
     "ToolContext",
     "ToolResult",
+    "ToolResultBlock",
+    "ToolUseBlock",
     "ToolUseResult",
     "ToolUseStart",
     "TurnComplete",

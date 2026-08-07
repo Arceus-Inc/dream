@@ -24,7 +24,7 @@ discipline only (the v1 contract every role is built around).
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -40,6 +40,7 @@ from dream.runner._observer import RunTaskObserver
 from dream.session import SessionCost, SessionOptions
 
 if TYPE_CHECKING:
+    from dream.engine._messages import ConversationMessage
     from dream.harness import Harness
 
 __all__ = [
@@ -122,6 +123,7 @@ async def run_role(
     options: SessionOptions | None = None,
     harness_dir: Path | None = None,
     observer: RunTaskObserver | None = None,
+    resume_messages: Sequence[ConversationMessage] | None = None,
 ) -> RunRoleResult:
     """Run one session as ``role``; return assistant text + cost.
 
@@ -129,8 +131,8 @@ async def run_role(
     ``options.system_prompt``, marks the manifest on
     ``SessionOptions.metadata`` (keys :data:`ROLE_NAME_METADATA_KEY` /
     :data:`ROLE_MANIFEST_METADATA_KEY`), opens a session via
-    ``harness.start_session``, drains ``session.send(intent)`` to
-    completion, and surfaces the result. The session is closed even on
+    ``harness.start_session`` (optionally seeding ``resume_messages``), drains
+    ``session.send(intent)`` to completion, and surfaces the result. The session is closed even on
     the error path. An ``events.Error`` mid-stream becomes a
     :class:`RoleSessionError`.
 
@@ -167,7 +169,7 @@ async def run_role(
         metadata=metadata,
     )
 
-    session = await harness.start_session(effective)
+    session = await harness.start_session(effective, resume_messages=resume_messages)
 
     role_label = str(manifest.name)
 

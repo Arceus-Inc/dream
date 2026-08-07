@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -24,6 +24,7 @@ from dream.session import Session, SessionOptions
 if TYPE_CHECKING:
     from dream.config.paths import DreamPaths
     from dream.engine._engine import QueryEngine
+    from dream.engine._messages import ConversationMessage
     from dream.planner import PlannerCallable
     from dream.roles import RoleManifest, RoleName
     from dream.runner._observer import RunTaskObserver
@@ -155,7 +156,12 @@ class Harness:
 
     # -- sessions ---------------------------------------------------------
 
-    async def start_session(self, options: SessionOptions | None = None) -> Session:
+    async def start_session(
+        self,
+        options: SessionOptions | None = None,
+        *,
+        resume_messages: Sequence[ConversationMessage] | None = None,
+    ) -> Session:
         """Create a new Session, binding an engine if one is configured.
 
         When ``HarnessConfig._engine_factory`` is set, the factory is
@@ -164,6 +170,10 @@ class Harness:
         Session is returned without an engine binding -- ``send`` will
         raise ``NotImplementedError`` until the production wiring is in
         place.
+
+        ``resume_messages`` seeds the session transcript before the first
+        ``send`` so a caller (chorus ledger, FileSessionStore) can continue
+        an existing conversation rather than starting cold.
         """
         import uuid
 
@@ -173,7 +183,12 @@ class Harness:
         engine = None
         if self.config._engine_factory is not None:
             engine = self.config._engine_factory(session_id, opts)
-        return Session(id=session_id, options=opts, _engine=engine)
+        return Session(
+            id=session_id,
+            options=opts,
+            _engine=engine,
+            resume_messages=list(resume_messages) if resume_messages else None,
+        )
 
     async def run_role(
         self,
@@ -183,6 +198,7 @@ class Harness:
         options: SessionOptions | None = None,
         harness_dir: Path | None = None,
         observer: RunTaskObserver | None = None,
+        resume_messages: Sequence[ConversationMessage] | None = None,
     ) -> RunRoleResult:
         """Run one session as a named role; return its assistant text + cost.
 
@@ -212,6 +228,7 @@ class Harness:
             options=options,
             harness_dir=harness_dir,
             observer=observer,
+            resume_messages=resume_messages,
         )
 
     async def run_task(
@@ -232,6 +249,7 @@ class Harness:
         observer: RunTaskObserver | None = None,
         rubric: str | None = None,
         plan_admission: PlanAdmission | None = None,
+        resume_messages: Sequence[ConversationMessage] | None = None,
     ) -> RunTaskResult:
         """Run an end-to-end task: planner → bounded sprint loop.
 
@@ -248,6 +266,10 @@ class Harness:
         ``observer`` is forwarded to the runner and to every head so a
         single :class:`~dream.runner.StdioObserver` (or custom hook) sees
         every macro and streaming event.
+
+        ``resume_messages`` seeds the autowired generator session with prior
+        typed transcript (chorus ledger / FileSessionStore). Custom
+        ``generator_execute`` heads must handle resume themselves.
         """
         from dataclasses import replace as _replace
 
@@ -274,6 +296,7 @@ class Harness:
                 harness_dir=harness_dir,
                 observer=meter,
                 worktree_root=root,
+                resume_messages=resume_messages,
             )
         )
 
@@ -318,6 +341,7 @@ class Harness:
         harness_dir: Path | None,
         observer: RunTaskObserver | None,
         worktree_root: Path | None = None,
+        resume_messages: Sequence[ConversationMessage] | None = None,
     ) -> tuple[
         PlannerCallable,
         GeneratorExecute,
@@ -358,7 +382,11 @@ class Harness:
             planner = make_planner_head(self, harness_dir=harness_dir, observer=observer)
         if generator_execute is None:
             generator_execute = make_generator_head(
-                self, task_intent=intent, harness_dir=harness_dir, observer=observer
+                self,
+                task_intent=intent,
+                harness_dir=harness_dir,
+                observer=observer,
+                resume_messages=resume_messages,
             )
         if evaluator_propose is None:
             evaluator_propose = make_evaluator_propose_head(

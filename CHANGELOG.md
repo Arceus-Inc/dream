@@ -1,8 +1,11 @@
-# Changelog
+## Unreleased
 
-All notable changes to this project will be documented in this file.
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+### Added
+- `resume_messages` on `Harness.start_session`, `Harness.run_role`, and `Harness.run_task`
+  (autowired generator) so callers can seed typed transcript from a durable store
+  (chorus ledger / FileSessionStore) instead of intent-string injection.
+- Public `dream.messages` types: `ConversationMessage`, `TextBlock`, `ToolUseBlock`,
+  `ToolResultBlock`, `ImageBlock`.
 
 ## [Unreleased]
 
