@@ -100,3 +100,6 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = ["-q", "--strict-markers"]
+markers = [
+  "eval: integration-style eval proving runtime behavior end-to-end",
+]

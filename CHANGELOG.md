@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `dream.security.SecretProxy` — register secrets as stable `dream_secret_*`
+  placeholders for the model/transcript, resolve to real values only at tool
+  execution, and redact tool results before they return; wired via optional
+  `EngineToolDispatcher.secret_proxy`.
 - Powered hooks: `HookSpec.allow_continue`, `HookResult.continue_message` /
   `replacement_result` / `inject_context`, `HookEvent.SUBAGENT_START`.
   `HookExecutor` honors `allow_block` and `allow_continue` (first-wins continue;

@@ -58,6 +58,7 @@ from dream.contracts.tool import ToolResult
 from dream.engine._tool_guardrails import GuardrailVerdict, ToolGuardrails, fingerprint_args
 from dream.hooks import HookExecutor
 from dream.permissions import Outcome, PermissionDecision, PermissionRequest
+from dream.security import SecretProxy
 from dream.services.tool_outputs import offload_tool_output
 from dream.tools._base import BaseTool
 from dream.tools._context import ToolExecutionContext
@@ -138,6 +139,9 @@ class EngineToolDispatcher:
     # Exact-failure circuit breaker (Hermes tool_guardrails). Default-on with
     # warn@2 / block@5; sessions can pass a custom instance.
     tool_guardrails: ToolGuardrails = field(default_factory=ToolGuardrails)
+    # Optional secret proxy: model/transcript see placeholders; execute resolves
+    # real values; results are redacted before POST_TOOL_USE and return.
+    secret_proxy: SecretProxy | None = None
 
     async def dispatch(self, name: str, input: dict[str, Any]) -> tuple[str, bool]:
         # PRE_TOOL_USE → (optional veto / replace input) → execute → POST_TOOL_USE.
@@ -251,7 +255,12 @@ class EngineToolDispatcher:
             metadata=dict(self.context_metadata),  # copy: a tool can't leak into the next call
             delegations=self.delegations,
         )
-        result, elapsed = await self._run_with_timeout(name, tool, input, ctx, is_read_only)
+        execute_input = input
+        if self.secret_proxy is not None:
+            execute_input = dict(self.secret_proxy.resolve_tool_input(input))
+        result, elapsed = await self._run_with_timeout(
+            name, tool, execute_input, ctx, is_read_only
+        )
         if isinstance(result, tuple):
             # A synthetic timeout result (already recorded) rather than a ToolResult.
             return self._apply_guardrails(name, input, _DispatchOutcome(*result))
@@ -359,9 +368,12 @@ class EngineToolDispatcher:
         self, name: str, result: ToolResult, *, is_read_only: bool, elapsed: float
     ) -> _DispatchOutcome:
         """Offload an oversized payload, emit the dispatch record, return inline."""
+        content = result.content
+        if self.secret_proxy is not None:
+            content = self.secret_proxy.redact_text(content)
         scratch = self._resolved_scratch()
         inline, pointer = offload_tool_output(
-            result.content,
+            content,
             scratch_dir=scratch,
             tool_use_id=uuid4().hex[:12],
             tool_name=name,
