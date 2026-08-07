@@ -40,6 +40,7 @@ class _CapturingHarness:
             final_text=self._final_text,
             cost=SessionCost(),
             events=(),
+            messages=(),
         )
 
 

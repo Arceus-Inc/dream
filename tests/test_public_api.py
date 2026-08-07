@@ -13,6 +13,8 @@ EXPECTED_PUBLIC_API: frozenset[str] = frozenset({
     # facade
     "Harness", "HarnessConfig",
     "Session", "SessionOptions", "SessionCost",
+    "ConversationMessage", "ImageBlock", "TextBlock",
+    "ToolResultBlock", "ToolUseBlock",
     # events
     "Event", "TextDelta", "ToolUseStart", "ToolUseResult", "TurnComplete",
     "Compacted", "HookBlocked", "PermissionDenied", "Error",

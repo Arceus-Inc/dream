@@ -130,12 +130,20 @@ class Session:
         id: str,
         options: SessionOptions | None = None,
         _engine: QueryEngine | None = None,
+        resume_messages: list[ConversationMessage] | None = None,
     ) -> None:
         self.id = id
         self.options = options or SessionOptions()
         self.cost = SessionCost()
         self._engine = _engine
-        self._transcript: list[ConversationMessage] = []
+        # Seed prior transcript before the first ``send`` so ``run_session``
+        # resumes the conversation (skips orientation when non-empty).
+        if resume_messages:
+            from dream.engine._messages import sanitize_conversation_messages
+
+            self._transcript = list(sanitize_conversation_messages(resume_messages))
+        else:
+            self._transcript = []
         self._cancel_event: asyncio.Event | None = None
         self._closed = False
         # Single-flight guard: ``Session`` keeps per-call cancel state on the

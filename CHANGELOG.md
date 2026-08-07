@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `resume_messages` on `Harness.start_session`, `Harness.run_role`, and `Harness.run_task` (autowired generator) so callers can seed typed transcript from a durable store (chorus ledger / FileSessionStore) instead of intent-string injection.
+- Public `dream.messages` types: `ConversationMessage`, `TextBlock`, `ToolUseBlock`, `ToolResultBlock`, `ImageBlock`.
 - Powered hooks: `HookSpec.allow_continue`, `HookResult.continue_message` /
   `replacement_result` / `inject_context`, `HookEvent.SUBAGENT_START`.
   `HookExecutor` honors `allow_block` and `allow_continue` (first-wins continue;
