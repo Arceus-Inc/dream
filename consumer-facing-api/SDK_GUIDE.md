@@ -48,6 +48,15 @@ def build_harness(
     skills: bool = True,             # auto-discover workspace SKILL.md files
     memory: bool = True,             # workspace memory (read) + memory_* tools
     working_memory: bool = False,    # opt-in task scratchpad + memory_propose seam
+    tasks: bool = False,             # opt-in background-task tools
+    cron: bool = False,              # opt-in cron tools
+    web: bool = False,               # opt-in web tools
+    browser: bool = False,           # opt-in browser control
+    observability: bool = False,     # opt-in query tools
+    worktree: bool = False,          # opt-in worktree tools
+    code_intel: bool = False,        # opt-in LSP / execute_code
+    plan: bool = False,              # opt-in plan_show
+    legacy_surface: bool = False,    # restore all former default packs
     mcp: bool = True,                # connect .harness/mcp-allowlist.toml
     plugins: bool = True,            # load .harness/plugins-enabled.toml
     subagents: SubagentSet | None = None,  # opt-in ephemeral teammates via spawn_subagent
@@ -57,6 +66,11 @@ def build_harness(
     wake_model: str | None = None,   # cheaper model for wake heartbeats
 ) -> Harness
 ```
+
+The default registry contains the Level-2 coding tools. Enable additional
+capabilities with their pack flag, such as `web=True` for `web_search`,
+`web_extract`, and `web_fetch`. Existing callers that rely on the former
+full default surface can use `legacy_surface=True` while migrating.
 
 Notes:
 

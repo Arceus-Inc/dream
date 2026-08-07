@@ -7,7 +7,7 @@ todo_write/skill). Everything else is an opt-in pack registered via the
 
 from __future__ import annotations
 
-from dream.tools._registry import ToolRegistry, ToolSource
+from dream.tools._registry import ToolCollisionError, ToolRegistry, ToolSource
 from dream.tools.builtin.bash import BashTool
 from dream.tools.builtin.browser_run import BrowserRunTool
 from dream.tools.builtin.cron_create import CronCreateTool
@@ -102,8 +102,18 @@ def _register(registry: ToolRegistry, tool: object) -> None:
 
     if not isinstance(tool, BaseTool):
         raise TypeError(f"expected BaseTool, got {type(tool)!r}")
-    if registry.get(tool.name) is not None:
-        return
+    existing = registry.get(tool.name)
+    if existing is not None:
+        if any(
+            registered is existing
+            and source is ToolSource.DEFAULT
+            and type(registered) is type(tool)
+            for registered, source in registry.iter_with_source()
+        ):
+            return
+        raise ToolCollisionError(
+            f"tool name {tool.name!r} already registered and cannot be shadowed by a pack"
+        )
     registry.register(tool, source=ToolSource.DEFAULT)
 
 

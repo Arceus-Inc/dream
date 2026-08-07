@@ -110,6 +110,18 @@ def test_pack_registration_is_idempotent() -> None:
     }
 
 
+def test_pack_registration_rejects_untrusted_collision() -> None:
+    from dream.tools._registry import ToolCollisionError
+    from dream.tools.builtin.web_search import WebSearchTool
+
+    reg = default_registry()
+    custom = WebSearchTool()
+    reg.register(custom, source=ToolSource.PER_REPO)
+
+    with pytest.raises(ToolCollisionError):
+        register_web_tools(reg)
+
+
 def test_individual_packs_do_not_cross_pollute() -> None:
     reg = default_registry()
     register_plan_tools(reg)

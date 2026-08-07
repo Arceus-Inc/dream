@@ -109,7 +109,7 @@ side effects (`safe` = never mutates, `mutating`, `external`); *tier* is the
 minimum sandbox tier required. Errors follow a three-part contract
 (`root_cause / safe_retry / stop_condition`) so the model can recover.
 
-### 5a. Default registry (18 tools, `dream.tools.builtin.default_registry`)
+### 5a. Default registry (10 tools, `dream.tools.builtin.default_registry`)
 
 | Tool | Risk / tier | Use case |
 |---|---|---|
@@ -119,18 +119,17 @@ minimum sandbox tier required. Errors follow a three-part contract
 | `bash` | mutating / 1 | Run a shell command **through the sandbox adapter**, cwd-confined to the workspace; 10-min timeout, tree-kill on expiry. |
 | `git` | safe / 0 | Read-only git subcommands (status/diff/log) — lets planner/evaluator inspect history without shell access. |
 | `read_offloaded` | safe / 0 | Re-read a large tool result that was offloaded to session scratch instead of bloating context. |
+| `glob` | safe / 0 | Find files by name or path pattern. |
+| `grep` | safe / 0 | Search repository files with a regular expression. |
+| `todo_write` | mutating / 1 | Persist the task checklist to `TODO.md` in the workspace. |
 | `skill` | safe / 0 | Load a skill playbook by name — the progressive-disclosure lever (§7). |
-| `memory_search` | safe / 0 | Keyword search over workspace memory records (id + description + snippet per hit). |
-| `memory_get` | safe / 0 | Load one full memory record by id; unknown id steers back to `memory_search`. |
-| `query_logs` | safe / 0 | Query this session's own trace events (labels, substring, time window) — self-observability. |
-| `query_metrics` | safe / 0 | Aggregated counters over the same trace (tool counts, error rates). |
-| `task_create` | mutating / 1 | Spawn a long-running background command as a managed task (detached, logged) instead of blocking a turn. |
-| `task_get` | safe / 0 | Poll a background task's status/return code/timing. |
-| `task_output` | safe / 0 | Tail the last N bytes of a background task's log. |
-| `task_stop` | mutating / 1 | Stop a background task; idempotent on terminal tasks. |
-| `cron_list` | safe / 0 | List configured cron jobs with schedule + next run. |
-| `cron_show` | safe / 0 | Full config of one cron job. |
-| `plan_show` | safe / 0 | Render the exec-plan (spec + ledger) for a task id — how a session orients mid-task. |
+The former default extras are opt-in packs. Pass `memory=True` for
+`memory_search` / `memory_get`, `tasks=True` for background-task tools,
+`cron=True` for cron tools, `web=True` for web tools, `browser=True` for
+`browser_run`, `observability=True` for query tools, `worktree=True` for
+worktree tools, `code_intel=True` for `lsp` / `execute_code`, and `plan=True`
+for `plan_show`. Use `legacy_surface=True` as a migration escape hatch for
+callers that need the former full surface.
 
 ### 5a.1 Task-memory tools — opt-in (`build_harness(working_memory=True)`)
 
@@ -176,10 +175,10 @@ the OTel JSONL.
 
 ### 5c. Implemented but not in the default registry
 
-`glob`, `grep`, `todo_write`, `web_fetch` (`src/dream/tools/builtin/`) — ready
-for callers that build a custom `ToolRegistry`; kept out of the default set to
-keep the wire schema lean. `HeartbeatTool` is the single *virtual* tool
-advertised on wake turns (§10) — never part of a work session.
+Pack tools are ready for callers that enable the corresponding
+`build_harness()` flag; they stay out of the default set to keep the wire
+schema lean. `HeartbeatTool` is the single *virtual* tool advertised on wake
+turns (§10) — never part of a work session.
 
 ### 5d. Registry & provenance
 
