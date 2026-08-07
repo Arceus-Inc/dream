@@ -36,6 +36,7 @@ from dream.tools.builtin.task_stop import TaskStopTool
 from dream.tools.builtin.task_update import TaskUpdateTool
 from dream.tools.builtin.todo_write import TodoWriteTool
 from dream.tools.builtin.web_extract import WebExtractTool
+from dream.tools.builtin.web_fetch import WebFetchTool
 from dream.tools.builtin.web_search import WebSearchTool
 from dream.tools.builtin.working_memory import (
     WorkingMemoryAppendTool,
@@ -77,6 +78,7 @@ _DEFAULT_ORDER: tuple[str, ...] = (
     "todo_write",
     "web_search",
     "web_extract",
+    "web_fetch",
     "browser_run",
     "execute_code",
 )
@@ -116,6 +118,7 @@ def default_registry() -> ToolRegistry:
     registry.register(TodoWriteTool(), source=ToolSource.DEFAULT)
     registry.register(WebSearchTool(), source=ToolSource.DEFAULT)
     registry.register(WebExtractTool(), source=ToolSource.DEFAULT)
+    registry.register(WebFetchTool(), source=ToolSource.DEFAULT)
     registry.register(BrowserRunTool(), source=ToolSource.DEFAULT)
     registry.register(ExecuteCodeTool(), source=ToolSource.DEFAULT)
     return registry
