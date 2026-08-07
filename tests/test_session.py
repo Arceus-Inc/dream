@@ -358,6 +358,7 @@ async def test_session_cancel_interrupts_owned_background_children() -> None:
     engine = _engine(FakeStreamer([]), FakeDispatcher())
     engine.delegations = manager
     session = Session(id="s1", _engine=engine)
+    session._prompt_indices.append(0)
 
     await session.cancel()
 
@@ -688,3 +689,4 @@ def test_translate_compaction_applies_compacted_shape_to_transcript() -> None:
     # now the compacted shape, not the stale full history.
     assert post_blobs < pre_blobs
     assert cleared > 0
+    assert session._prompt_indices == []

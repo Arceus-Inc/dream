@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import shutil
+from collections import OrderedDict
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -41,7 +42,7 @@ class ShadowCheckpointManager:
     ) -> None:
         self._store = store
         self._config = config or ShadowCheckpointConfig()
-        self._checkpointed_dirs: dict[str | None, set[Path]] = {}
+        self._checkpointed_dirs: OrderedDict[str | None, set[Path]] = OrderedDict()
         self._git_available: bool | None = None
 
     @property
@@ -77,6 +78,9 @@ class ShadowCheckpointManager:
             return EnsureResult(outcome=CheckpointOutcome.DIRECTORY_TOO_BROAD)
 
         checkpointed_dirs = self._checkpointed_dirs.setdefault(session_id, set())
+        self._checkpointed_dirs.move_to_end(session_id)
+        while len(self._checkpointed_dirs) > 64:
+            self._checkpointed_dirs.popitem(last=False)
         if abs_dir in checkpointed_dirs:
             return EnsureResult(outcome=CheckpointOutcome.ALREADY_THIS_TURN)
 
@@ -175,6 +179,7 @@ class ShadowCheckpointManager:
         *,
         commit_sha: str,
         messages: Sequence[ConversationMessage],
+        prompt_indices: Sequence[int],
         rewind_turns: int = 1,
     ) -> CombinedRestoreResult:
         """Restore the worktree and truncate the conversation (Hermes ``/rollback``).
@@ -192,10 +197,26 @@ class ShadowCheckpointManager:
                 messages=tuple(messages),
                 transcript_removed=0,
             )
+        if rewind_turns > 0 and rewind_turns > len(prompt_indices):
+            return CombinedRestoreResult(
+                fs=RestoreResult(
+                    outcome=RestoreOutcome.FAILED,
+                    detail=(
+                        "requested rewind boundary is unavailable "
+                        f"for {rewind_turns} turn(s)"
+                    ),
+                ),
+                messages=tuple(messages),
+                transcript_removed=0,
+            )
         fs = self.restore(working_dir, commit_sha=commit_sha)
         if fs.outcome is not RestoreOutcome.RESTORED:
             return CombinedRestoreResult(fs=fs, messages=tuple(messages), transcript_removed=0)
-        kept, removed = rewind_transcript(messages, turns=rewind_turns)
+        kept, removed = rewind_transcript(
+            messages,
+            prompt_indices=prompt_indices,
+            turns=rewind_turns,
+        )
         return CombinedRestoreResult(
             fs=fs,
             messages=tuple(kept),

@@ -56,6 +56,7 @@ def test_restore_and_rewind_aligns_fs_and_transcript(
         work_dir,
         commit_sha=sha,
         messages=messages,
+        prompt_indices=(0, 2),
         rewind_turns=1,
     )
     assert isinstance(result, CombinedRestoreResult)
@@ -77,6 +78,7 @@ def test_restore_and_rewind_fs_only_when_rewind_zero(
         work_dir,
         commit_sha=taken.snapshot.commit_sha,
         messages=messages,
+        prompt_indices=(0,),
         rewind_turns=0,
     )
     assert result.fs.outcome is RestoreOutcome.RESTORED
@@ -92,6 +94,7 @@ def test_restore_and_rewind_propagates_fs_failure(
         work_dir,
         commit_sha="deadbeef" * 5,
         messages=messages,
+        prompt_indices=(0,),
         rewind_turns=1,
     )
     assert result.fs.outcome is RestoreOutcome.NOT_FOUND

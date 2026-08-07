@@ -86,6 +86,7 @@ def test_negative_rewind_does_not_restore(
         work_dir,
         commit_sha=taken.snapshot.commit_sha,
         messages=[],
+        prompt_indices=(),
         rewind_turns=-1,
     )
     assert result.fs.outcome is RestoreOutcome.FAILED

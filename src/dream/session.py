@@ -141,6 +141,7 @@ class Session:
         self.cost = SessionCost()
         self._engine = _engine
         self._transcript: list[ConversationMessage] = []
+        self._prompt_indices: list[int] = []
         self._cancel_event: asyncio.Event | None = None
         self._closed = False
         # Single-flight guard: ``Session`` keeps per-call cancel state on the
@@ -243,10 +244,14 @@ class Session:
             engine.working_dir,
             commit_sha=sha,
             messages=self._transcript,
+            prompt_indices=self._prompt_indices,
             rewind_turns=rewind_turns,
         )
         if result.fs.outcome is RestoreOutcome.RESTORED:
             self._transcript = list(result.messages)
+            self._prompt_indices = [
+                index for index in self._prompt_indices if index < len(self._transcript)
+            ]
         return result
 
     async def send(self, prompt: str) -> AsyncIterator[Event]:
@@ -274,6 +279,7 @@ class Session:
         resume = list(self._transcript) if self._transcript else None
         user_msg = ConversationMessage(role="user", content=[TextBlock(text=prompt)])
         self._transcript.append(user_msg)
+        self._prompt_indices.append(len(self._transcript) - 1)
 
         config = self._engine.make_session_config()
         inner: AsyncGenerator[Any, None] = run_session(  # type: ignore[assignment]
@@ -449,6 +455,7 @@ class Session:
         carryover = engine.carryover_metadata
         if carryover is not None and carryover.last_compacted_transcript is not None:
             self._transcript[:] = list(carryover.last_compacted_transcript)
+            self._prompt_indices.clear()
             carryover.last_compacted_transcript = None
             return
         compactor = engine.compactor
@@ -470,6 +477,7 @@ class Session:
         )
         if result is not None:
             self._transcript[:] = new_transcript
+            self._prompt_indices.clear()
 
     async def cancel(self) -> None:
         """Cancel the in-flight ``send``, if any.
