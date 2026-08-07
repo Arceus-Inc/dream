@@ -49,6 +49,7 @@ from dream.prompts.environment import render_runtime_info
 from dream.roles import RoleManifest
 from dream.runner._role_session import ROLE_MANIFEST_METADATA_KEY, ROLE_NAME_METADATA_KEY
 from dream.sandbox import SANDBOX_CONTEXT_KEY, SandboxAdapter, select_backend
+from dream.security import SecretProxy
 from dream.services import cron as cron_service
 from dream.services.compact._carryover_state import CarryoverMetadata
 from dream.services.compact._orchestrator import AutoCompactState
@@ -106,6 +107,7 @@ def build_harness(
     policy_warning_sink: PolicyWarningSink | None = None,
     env: Mapping[str, str] | None = None,
     wake_model: str | None = None,
+    secret_proxy: SecretProxy | None = None,
 ) -> Harness:
     """Build a Harness whose engine factory produces a real, tool-wired engine.
 
@@ -277,6 +279,7 @@ def build_harness(
             capabilities=capabilities,
             harness=harness,
             subagents=subagents,
+            secret_proxy=secret_proxy,
         )
 
     config._engine_factory = _factory
@@ -495,6 +498,7 @@ def _build_session_engine(
     capabilities: ProviderCapabilities,
     harness: Harness,
     subagents: SubagentSet | None = None,
+    secret_proxy: SecretProxy | None = None,
 ) -> QueryEngine:
     """Construct one session's ``QueryEngine`` from explicit, pre-resolved deps.
 
@@ -718,4 +722,5 @@ def _build_session_engine(
         model=options.model or model,
         hook_executor=hook_executor,
         delegations=harness.config.delegations,
+        secret_proxy=secret_proxy,
     )

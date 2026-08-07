@@ -39,7 +39,7 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -58,6 +58,7 @@ from dream.contracts.tool import ToolResult
 from dream.engine._tool_guardrails import GuardrailVerdict, ToolGuardrails, fingerprint_args
 from dream.hooks import HookExecutor
 from dream.permissions import Outcome, PermissionDecision, PermissionRequest
+from dream.security import SecretProxy
 from dream.services.tool_outputs import offload_tool_output
 from dream.tools._base import BaseTool
 from dream.tools._context import ToolExecutionContext
@@ -72,6 +73,18 @@ PermissionGate = Callable[[PermissionRequest], PermissionDecision]
 # Spec 13: POST_TOOL_USE carries a bounded ``result_summary`` so an observer
 # never gets the full (possibly offloaded) payload through the hook channel.
 _RESULT_SUMMARY_MAX_CHARS = 500
+
+
+def _redact_structured(value: object, secret_proxy: SecretProxy) -> object:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return secret_proxy.redact_text(value)
+    if isinstance(value, list):
+        return [_redact_structured(item, secret_proxy) for item in value]
+    if isinstance(value, dict):
+        return {key: _redact_structured(item, secret_proxy) for key, item in value.items()}
+    return value
 
 
 @dataclass(frozen=True)
@@ -138,6 +151,9 @@ class EngineToolDispatcher:
     # Exact-failure circuit breaker (Hermes tool_guardrails). Default-on with
     # warn@2 / block@5; sessions can pass a custom instance.
     tool_guardrails: ToolGuardrails = field(default_factory=ToolGuardrails)
+    # Optional secret proxy: model/transcript see placeholders; execute resolves
+    # real values; results are redacted before POST_TOOL_USE and return.
+    secret_proxy: SecretProxy | None = None
 
     async def dispatch(self, name: str, input: dict[str, Any]) -> tuple[str, bool]:
         # PRE_TOOL_USE → (optional veto / replace input) → execute → POST_TOOL_USE.
@@ -237,9 +253,12 @@ class EngineToolDispatcher:
         if validation_error is not None:
             return _DispatchOutcome(*validation_error)
 
-        is_read_only = tool.is_read_only_for(input)
+        execute_input = input
+        if self.secret_proxy is not None:
+            execute_input = dict(self.secret_proxy.resolve_tool_input(input))
+        is_read_only = tool.is_read_only_for(execute_input)
         if self.permission_gate is not None:
-            request = self._permission_request(name, tool, input, is_read_only)
+            request = self._permission_request(name, tool, execute_input, is_read_only)
             decision = self.permission_gate(request)
             if not decision.allowed:
                 return _DispatchOutcome(*self._denied(name, decision, is_read_only))
@@ -251,7 +270,9 @@ class EngineToolDispatcher:
             metadata=dict(self.context_metadata),  # copy: a tool can't leak into the next call
             delegations=self.delegations,
         )
-        result, elapsed = await self._run_with_timeout(name, tool, input, ctx, is_read_only)
+        result, elapsed = await self._run_with_timeout(
+            name, tool, execute_input, ctx, is_read_only
+        )
         if isinstance(result, tuple):
             # A synthetic timeout result (already recorded) rather than a ToolResult.
             return self._apply_guardrails(name, input, _DispatchOutcome(*result))
@@ -359,9 +380,19 @@ class EngineToolDispatcher:
         self, name: str, result: ToolResult, *, is_read_only: bool, elapsed: float
     ) -> _DispatchOutcome:
         """Offload an oversized payload, emit the dispatch record, return inline."""
+        content = result.content
+        if self.secret_proxy is not None:
+            content = self.secret_proxy.redact_text(content)
+            structured = result.structured
+            if structured is not None:
+                redacted = _redact_structured(structured, self.secret_proxy)
+                structured = redacted if isinstance(redacted, dict) else None
+            safe_result = replace(result, content=content, structured=structured)
+        else:
+            safe_result = result
         scratch = self._resolved_scratch()
         inline, pointer = offload_tool_output(
-            result.content,
+            content,
             scratch_dir=scratch,
             tool_use_id=uuid4().hex[:12],
             tool_name=name,
@@ -374,7 +405,7 @@ class EngineToolDispatcher:
             elapsed=elapsed,
             offloaded=offloaded,
         )
-        return _DispatchOutcome(inline, result.is_error, result)
+        return _DispatchOutcome(inline, result.is_error, safe_result)
 
     def _permission_request(
         self, name: str, tool: BaseTool, input: dict[str, Any], is_read_only: bool

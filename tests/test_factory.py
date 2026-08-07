@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from dream import Harness, SessionOptions, build_harness
 from dream.contracts.tool import ToolResult
 from dream.engine._engine import QueryEngine
+from dream.security import SecretProxy
 from dream.services.tool_outputs import DEFAULT_TOOL_OUTPUT_INLINE_CHARS
 from dream.tools._base import BaseTool, ToolDeclaration
 from dream.tools._context import ToolExecutionContext
@@ -153,6 +154,14 @@ def test_build_harness_default_omits_task_memory_tools(tmp_path: Path) -> None:
     _build(tmp_path, registry=registry)
     names = {t.name for t in registry.list_tools()}
     assert names.isdisjoint(_TASK_MEMORY_TOOLS)
+
+
+def test_build_harness_threads_secret_proxy(tmp_path: Path) -> None:
+    proxy = SecretProxy(token_factory=lambda: "fixed")
+    harness = _build(tmp_path, secret_proxy=proxy)
+    engine = harness.config._engine_factory("s_probe", SessionOptions())  # type: ignore[misc]
+
+    assert engine.dispatcher.secret_proxy is proxy  # type: ignore[attr-defined]
 
 
 def test_build_harness_working_memory_flag_registers_tools(tmp_path: Path) -> None:

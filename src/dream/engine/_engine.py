@@ -34,6 +34,7 @@ from dream.engine._tool_dispatch import DispatchRecord, EngineToolDispatcher, Pe
 from dream.hooks import HookExecutor
 from dream.observability._tracer import NoopTracer, Tracer
 from dream.permissions import SessionLimiter, SessionLimits
+from dream.security import SecretProxy
 from dream.services.compact import DEFAULT_KEEP_RECENT
 from dream.services.compact._carryover_state import CarryoverMetadata, UtilisationRatio
 from dream.services.compact._orchestrator import AutoCompactState, SummariserFn
@@ -146,6 +147,7 @@ def build_query_engine(
     hook_executor: HookExecutor | None = None,
     orientation: OrientationConfig | None = None,
     delegations: AsyncDelegationManager | None = None,
+    secret_proxy: SecretProxy | None = None,
 ) -> QueryEngine:
     """Wrap a ``ToolRegistry`` in the canonical dispatcher and bind a streamer.
 
@@ -164,6 +166,7 @@ def build_query_engine(
         role_allowed_tools=role_allowed_tools,
         hook_executor=hook_executor,
         delegations=delegations,
+        secret_proxy=secret_proxy,
     )
     meta = context_metadata or {}
     role_raw = meta.get("dream.role")

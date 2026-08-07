@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from dream.contracts.tool import ToolResult
 from dream.engine._engine import QueryEngine, build_query_engine
 from dream.engine._tool_dispatch import EngineToolDispatcher
+from dream.security import SecretProxy
 from dream.tools._base import BaseTool, ToolDeclaration
 from dream.tools._context import ToolExecutionContext
 from dream.tools._registry import ToolRegistry, ToolSource
@@ -206,6 +207,20 @@ def test_build_query_engine_role_allowed_tools_defaults_to_none(
 
     assert isinstance(engine.dispatcher, EngineToolDispatcher)
     assert engine.dispatcher.role_allowed_tools is None
+
+
+def test_build_query_engine_threads_secret_proxy(tmp_path: Path) -> None:
+    proxy = SecretProxy(token_factory=lambda: "fixed")
+    engine = build_query_engine(
+        streamer=FakeStreamer(turns=[]),
+        registry=_registry_with(_NopTool()),
+        session_id="sf",
+        working_dir=tmp_path,
+        secret_proxy=proxy,
+    )
+
+    assert isinstance(engine.dispatcher, EngineToolDispatcher)
+    assert engine.dispatcher.secret_proxy is proxy
 
 
 # --- private import surface --------------------------------------------------
