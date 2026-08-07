@@ -9,10 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Level-2 ``apply_patch`` (Codex multi-hunk add/update/delete/move) — the sole
   surgical edit tool; former ``edit_file`` removed.
-- ``session_search`` (memory pack): search-only prior-run recall over the
-  ``EpisodicStore`` Protocol via ``EpisodicContext`` metadata wiring. No
-  get-by-id drill-down; siblings supply the store.
-- Contracts ``0.7.0``: ``EpisodicStore`` / ``EpisodicRecord`` / ``EpisodicSearchHit``.
 - Spec 05 per-repo tools: discover ``.harness/tools/{name}.toml``, validate
   the strict declaration schema, register as ``ToolSource.PER_REPO`` command
   runners (shadowing a default warns; missing ``risk``/``tier_required`` blocks
@@ -30,8 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   via `register_*_tools` / `build_harness` flags (`tasks`, `cron`, `web`,
   `browser`, `observability`, `worktree`, `code_intel`, `plan`). Pass
   `legacy_surface=True` to restore the previous fat default. Memory tools
-  register only when `memory=True` (still the default) and now include
-  ``session_search``.
+  register only when `memory=True` (still the default).
 - Planner/evaluator default manifests read via `grep`/`glob` instead of the
   pack-only `query_logs` tool.
 

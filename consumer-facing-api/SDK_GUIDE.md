@@ -187,11 +187,6 @@ goes into the system prompt; the agent pulls full records with
 `memory_search` / `memory_get`. Writing memories is **deliberately your
 repo's job** (curation is policy, not mechanism).
 
-Prior-run recall is separate: `session_search` (same memory pack) searches an
-`EpisodicStore` Protocol wired via `put_episodic_context` — search-only slim
-hits, no get-by-id. Dream does not ship a store; siblings (e.g. chorus)
-implement the Protocol.
-
 ### Working memory — the task-memory tier (opt-in)
 
 The read side above is the *durable* store (employee/team/company facts your repo

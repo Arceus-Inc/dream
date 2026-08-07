@@ -32,7 +32,6 @@ from dream.tools.builtin.plan_show import PlanShowTool
 from dream.tools.builtin.propose_memory import MemoryProposeTool
 from dream.tools.builtin.read_offloaded import ReadOffloadedTool
 from dream.tools.builtin.remote_trigger import RemoteTriggerTool
-from dream.tools.builtin.session_search import SessionSearchTool
 from dream.tools.builtin.skill import SkillTool
 from dream.tools.builtin.spawn_subagent import SpawnSubagentTool
 from dream.tools.builtin.task_create import TaskCreateTool
@@ -71,7 +70,6 @@ _FULL_ORDER: tuple[str, ...] = (
     "lsp",
     "memory_search",
     "memory_get",
-    "session_search",
     "query_logs",
     "query_metrics",
     "task_create",
@@ -135,10 +133,9 @@ def default_registry() -> ToolRegistry:
 
 
 def register_memory_tools(registry: ToolRegistry) -> None:
-    """Register durable workspace memory + episodic session search (Spec 11)."""
+    """Register durable workspace memory tools (Spec 11)."""
     _register(registry, MemorySearchTool())
     _register(registry, MemoryGetTool())
-    _register(registry, SessionSearchTool())
 
 
 def register_task_tools(registry: ToolRegistry) -> None:
