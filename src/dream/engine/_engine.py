@@ -40,6 +40,7 @@ from dream.services.compact._orchestrator import AutoCompactState, SummariserFn
 from dream.tools._registry import ToolRegistry
 
 if TYPE_CHECKING:
+    from dream.state.shadow import ShadowCheckpointManager
     from dream.subagents._async_delegation import AsyncDelegationManager
 
 
@@ -86,6 +87,9 @@ class QueryEngine:
     # Role name from session metadata (planner/generator/evaluator) for STOP hooks.
     role: str | None = None
     delegations: AsyncDelegationManager | None = None
+    # Hermes shadow checkpoints — shared across sessions on the harness; enables
+    # :meth:`Session.list_checkpoints` / :meth:`Session.restore_checkpoint`.
+    checkpoint_manager: ShadowCheckpointManager | None = None
 
     def make_session_config(
         self,
@@ -146,6 +150,7 @@ def build_query_engine(
     hook_executor: HookExecutor | None = None,
     orientation: OrientationConfig | None = None,
     delegations: AsyncDelegationManager | None = None,
+    checkpoint_manager: ShadowCheckpointManager | None = None,
 ) -> QueryEngine:
     """Wrap a ``ToolRegistry`` in the canonical dispatcher and bind a streamer.
 
@@ -186,6 +191,7 @@ def build_query_engine(
         orientation=orientation,
         role=role_raw if isinstance(role_raw, str) else None,
         delegations=delegations,
+        checkpoint_manager=checkpoint_manager,
     )
 
 

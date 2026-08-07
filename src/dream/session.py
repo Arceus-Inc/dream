@@ -57,6 +57,11 @@ from dream.events import (
 
 if TYPE_CHECKING:
     from dream.engine._engine import QueryEngine
+    from dream.state.shadow import (
+        CheckpointSnapshot,
+        CombinedRestoreResult,
+        ShadowCheckpointManager,
+    )
 
 
 def _tool_failed_marker(tool_name: str) -> str:
@@ -176,6 +181,73 @@ class Session:
         ``_transcript`` private attribute directly.
         """
         return self._transcript
+
+    @property
+    def checkpoint_manager(self) -> ShadowCheckpointManager | None:
+        """Shadow FS checkpoint manager when the bound engine was built with one."""
+        engine = self._engine
+        if engine is None:
+            return None
+        return engine.checkpoint_manager
+
+    def list_checkpoints(self) -> list[CheckpointSnapshot]:
+        """List shadow checkpoints for this session's working directory (newest first)."""
+        engine = self._engine
+        manager = self.checkpoint_manager
+        if engine is None or manager is None:
+            return []
+        return manager.list_for(engine.working_dir)
+
+    def restore_checkpoint(
+        self,
+        commit_sha: str | None = None,
+        *,
+        rewind_turns: int = 1,
+    ) -> CombinedRestoreResult:
+        """Hermes-style human rewind: restore FS and truncate the transcript.
+
+        ``commit_sha=None`` selects the newest checkpoint. Refuses while a
+        ``send`` is in flight so restore cannot race the live turn loop.
+        """
+        from dream.state.shadow import CombinedRestoreResult, RestoreOutcome, RestoreResult
+
+        if self._active:
+            raise RuntimeError("cannot restore checkpoint while a send is in flight")
+        engine = self._engine
+        manager = self.checkpoint_manager
+        if engine is None or manager is None:
+            return CombinedRestoreResult(
+                fs=RestoreResult(
+                    outcome=RestoreOutcome.DISABLED,
+                    detail="no checkpoint manager bound on this session",
+                ),
+                messages=tuple(self._transcript),
+                transcript_removed=0,
+            )
+
+        sha = commit_sha
+        if sha is None:
+            listed = manager.list_for(engine.working_dir)
+            if not listed:
+                return CombinedRestoreResult(
+                    fs=RestoreResult(
+                        outcome=RestoreOutcome.NOT_FOUND,
+                        detail="no checkpoints for working directory",
+                    ),
+                    messages=tuple(self._transcript),
+                    transcript_removed=0,
+                )
+            sha = listed[0].commit_sha
+
+        result = manager.restore_and_rewind(
+            engine.working_dir,
+            commit_sha=sha,
+            messages=self._transcript,
+            rewind_turns=rewind_turns,
+        )
+        if result.fs.outcome is RestoreOutcome.RESTORED:
+            self._transcript = list(result.messages)
+        return result
 
     async def send(self, prompt: str) -> AsyncIterator[Event]:
         """Submit a user prompt and stream typed events back.

@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from enum import Enum, StrEnum
 from pathlib import Path
 
+from dream.engine._messages import ConversationMessage
+
 
 class MutatingToolName(StrEnum):
     """Built-in tools that may mutate the working tree."""
@@ -87,6 +89,15 @@ class RestoreResult:
     detail: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class CombinedRestoreResult:
+    """Filesystem restore plus optional transcript rewind (Hermes ``/rollback``)."""
+
+    fs: RestoreResult
+    messages: tuple[ConversationMessage, ...] = ()
+    transcript_removed: int = 0
+
+
 _TOOL_TO_REASON: dict[MutatingToolName, CheckpointReason] = {
     MutatingToolName.WRITE_FILE: CheckpointReason.BEFORE_WRITE_FILE,
     MutatingToolName.EDIT_FILE: CheckpointReason.BEFORE_EDIT_FILE,
@@ -109,6 +120,7 @@ __all__ = [
     "CheckpointOutcome",
     "CheckpointReason",
     "CheckpointSnapshot",
+    "CombinedRestoreResult",
     "EnsureResult",
     "MutatingToolName",
     "RestoreOutcome",

@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import contextlib
 import shutil
+from collections.abc import Sequence
 from pathlib import Path
 
+from dream.engine._messages import ConversationMessage
+from dream.state.shadow._rewind import rewind_transcript
 from dream.state.shadow._store import ShadowCheckpointStore
 from dream.state.shadow._types import (
     CheckpointOutcome,
     CheckpointReason,
     CheckpointSnapshot,
+    CombinedRestoreResult,
     EnsureResult,
     RestoreOutcome,
     RestoreResult,
@@ -157,6 +161,30 @@ class ShadowCheckpointManager:
             return RestoreResult(outcome=RestoreOutcome.FAILED, detail=err)
 
         return RestoreResult(outcome=RestoreOutcome.RESTORED, restored_to=commit_sha[:8])
+
+    def restore_and_rewind(
+        self,
+        working_dir: Path,
+        *,
+        commit_sha: str,
+        messages: Sequence[ConversationMessage],
+        rewind_turns: int = 1,
+    ) -> CombinedRestoreResult:
+        """Restore the worktree and truncate the conversation (Hermes ``/rollback``).
+
+        Transcript rewind runs only after a successful filesystem restore so a
+        failed snap never desyncs chat from disk. ``rewind_turns=0`` keeps the
+        transcript unchanged (FS-only restore).
+        """
+        fs = self.restore(working_dir, commit_sha=commit_sha)
+        if fs.outcome is not RestoreOutcome.RESTORED:
+            return CombinedRestoreResult(fs=fs, messages=tuple(messages), transcript_removed=0)
+        kept, removed = rewind_transcript(messages, turns=rewind_turns)
+        return CombinedRestoreResult(
+            fs=fs,
+            messages=tuple(kept),
+            transcript_removed=removed,
+        )
 
     def _take(self, working_dir: Path, reason: CheckpointReason) -> EnsureResult:
         err = self._store.ensure_initialized(working_dir)
