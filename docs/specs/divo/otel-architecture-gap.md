@@ -23,11 +23,15 @@ Compared: dream (this repo), chorus, lattice, horizon vs hermes-otel, Paperclip,
 
 ## Gaps we close in this branch
 
-1. dream: optional `dream[otel]` → real TracerProvider + OTLP exporter + `OtelTracer` / `CompositeTracer`.
-2. dream: keep JSONL as durable local substrate; OTLP is fan-out, not a replacement.
-3. chorus: `OtelSpanSink` on EventBus when endpoint set (spec 08 §4), fan-out via `FanoutBus`.
+1. dream: OTel SDK is a **core** dependency; `CompositeTracer` is default-on
+   (JSONL + OTLP). Endpoint defaults to `http://localhost:4318`.
+2. dream: keep JSONL as durable local substrate; OTLP is always fan-out.
+3. chorus: `OtelSpanSink` on EventBus by default; opt out with `OTEL_SDK_DISABLED`.
 4. Typed surface only — no `Any` / `dict[str, Any]` / `getattr` in new modules; `AttributeValue` for span attrs.
 5. TDD + per-step eval scripts under `evals/otel/`.
+
+Opt-out: `OTEL_SDK_DISABLED=true` (standard OTel env). Endpoint override:
+`OTEL_EXPORTER_OTLP_ENDPOINT`.
 
 ## Explicit non-goals (this PR series)
 

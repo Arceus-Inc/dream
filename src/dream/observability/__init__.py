@@ -1,9 +1,10 @@
-"""Observability — OTel-shaped JSONL traces + optional OTLP export (Spec 12).
+"""Observability — OTel-shaped JSONL traces + default OTLP export (Spec 12).
 
 One durable line per LLM call, tool call/result, validator finding, state
-transition, and (later, 12d) evaluation record, with span nesting. When
-``OTEL_EXPORTER_OTLP_ENDPOINT`` is set and ``dream[otel]`` is installed, the
-same lifecycle is also exported via OpenTelemetry BatchSpanProcessor.
+transition, and (later, 12d) evaluation record, with span nesting. The same
+lifecycle is exported via OpenTelemetry BatchSpanProcessor by default
+(endpoint ``http://localhost:4318`` unless overridden). Set
+``OTEL_SDK_DISABLED=true`` to keep JSONL only.
 """
 
 from __future__ import annotations

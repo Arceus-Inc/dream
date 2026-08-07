@@ -593,8 +593,8 @@ def _build_session_engine(
             credentials_path=creds_file if creds_file.is_file() else None,
         )
     )
-    # Trace substrate (Spec 12a JSONL) ± optional OTLP when
-    # ``OTEL_EXPORTER_OTLP_ENDPOINT`` is set (dream[otel]).
+    # Trace substrate (Spec 12a JSONL) + default-on OTLP
+    # (``OTEL_SDK_DISABLED=true`` keeps JSONL only).
     tracer = build_session_tracer(
         session_id=session_id,
         task_id=session_id,

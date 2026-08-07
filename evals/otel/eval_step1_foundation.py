@@ -1,6 +1,6 @@
-"""Step-1 eval: dream OTEL foundation contracts.
+"""Step-1 eval: dream OTEL is default-on.
 
-Run: ``uv run --extra otel python evals/otel/eval_step1_foundation.py``
+Run: ``uv run python evals/otel/eval_step1_foundation.py``
 Exit 0 iff all checks pass.
 """
 
@@ -23,73 +23,51 @@ def _check(name: str, ok: bool, detail: str = "") -> None:
 
 
 def main() -> None:
-    # 1. Zero-cost gate: importing the gate module must not pull opentelemetry.
-    for key in list(sys.modules):
-        if key.startswith("opentelemetry"):
-            del sys.modules[key]
+    os.environ.pop("OTEL_SDK_DISABLED", None)
     os.environ.pop("OTEL_EXPORTER_OTLP_ENDPOINT", None)
+
     from dream.observability._otel_config import is_otel_enabled, load_otel_config
 
-    _check("disabled without endpoint", not is_otel_enabled())
+    _check("enabled by default", is_otel_enabled())
     cfg = load_otel_config()
-    _check("config disabled", not cfg.enabled)
-    _check(
-        "no otel import when disabled",
-        not any(k.startswith("opentelemetry") for k in sys.modules),
-    )
+    _check("default endpoint localhost", cfg.endpoint == "http://localhost:4318")
 
-    # 2. Attribute typing is closed (no Any).
+    os.environ["OTEL_SDK_DISABLED"] = "true"
+    _check("disabled via flag", not is_otel_enabled())
+    os.environ.pop("OTEL_SDK_DISABLED", None)
+
     from dream.observability._attributes import AttributeValue, coerce_attributes
 
     sample: dict[str, AttributeValue] = {"a": 1, "b": "x", "c": True, "d": 1.5}
-    coerced = coerce_attributes(sample)
-    _check("coerce preserves values", coerced == sample)
+    _check("coerce preserves values", coerce_attributes(sample) == sample)
 
-    # 3. With endpoint + otel extra, provider builds and InMemory exporter sees spans.
-    os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] = "http://127.0.0.1:4318"
-    try:
-        from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
-            InMemorySpanExporter,
-        )
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-        from dream.observability._otel_provider import (
-            OtelProviderHandle,
-            build_tracer_provider,
-            reset_otel_provider_for_tests,
-        )
-        from dream.observability._otel_tracer import OtelTracer
+    from dream.observability._otel_provider import (
+        OtelProviderHandle,
+        build_tracer_provider,
+        reset_otel_provider_for_tests,
+    )
+    from dream.observability._otel_tracer import OtelTracer
 
-        reset_otel_provider_for_tests()
-        memory = InMemorySpanExporter()
-        handle = build_tracer_provider(
-            load_otel_config(),
-            span_exporter=memory,
-            service_name="dream-eval",
-            service_version="0.0.0-eval",
-        )
-        _check("provider handle enabled", isinstance(handle, OtelProviderHandle) and handle.enabled)
-        tracer = OtelTracer(
-            handle.tracer,
-            session_id="sess-eval",
-            task_id="task-eval",
-        )
-        with tracer.span("llm.call", {"gen_ai.request.model": "eval-model"}):
-            tracer.event("tool.result", {"ok": True})
-        handle.force_flush()
-        spans = memory.get_finished_spans()
-        _check("emitted at least one span", len(spans) >= 1, f"got {len(spans)}")
-        names = {s.name for s in spans}
-        _check("llm.call span present", "llm.call" in names, str(names))
-    except ImportError as exc:
-        _check("otel extra installed", False, str(exc))
-    finally:
-        os.environ.pop("OTEL_EXPORTER_OTLP_ENDPOINT", None)
-        try:
-            from dream.observability._otel_provider import reset_otel_provider_for_tests
-
-            reset_otel_provider_for_tests()
-        except ImportError:
-            pass
+    reset_otel_provider_for_tests()
+    memory = InMemorySpanExporter()
+    handle = build_tracer_provider(
+        load_otel_config(),
+        span_exporter=memory,
+        service_name="dream-eval",
+        service_version="0.0.0-eval",
+    )
+    _check("provider handle enabled", isinstance(handle, OtelProviderHandle) and handle.enabled)
+    tracer = OtelTracer(handle.tracer, session_id="sess-eval", task_id="task-eval")
+    with tracer.span("llm.call", {"gen_ai.request.model": "eval-model"}):
+        tracer.event("tool.result", {"ok": True})
+    handle.force_flush()
+    spans = memory.get_finished_spans()
+    _check("emitted at least one span", len(spans) >= 1, f"got {len(spans)}")
+    names = {s.name for s in spans}
+    _check("llm.call span present", "llm.call" in names, str(names))
+    reset_otel_provider_for_tests()
 
     print("eval_step1_foundation: all checks passed")
 
