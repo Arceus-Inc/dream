@@ -41,18 +41,24 @@ class ShadowCheckpointManager:
     ) -> None:
         self._store = store
         self._config = config or ShadowCheckpointConfig()
-        self._checkpointed_dirs: set[Path] = set()
+        self._checkpointed_dirs: dict[str | None, set[Path]] = {}
         self._git_available: bool | None = None
 
     @property
     def config(self) -> ShadowCheckpointConfig:
         return self._config
 
-    def begin_turn(self) -> None:
+    def begin_turn(self, session_id: str | None = None) -> None:
         """Reset per-turn dedup (call on each USER_PROMPT_SUBMIT / agent turn)."""
-        self._checkpointed_dirs.clear()
+        self._checkpointed_dirs.pop(session_id, None)
 
-    def ensure(self, working_dir: Path, *, reason: CheckpointReason) -> EnsureResult:
+    def ensure(
+        self,
+        working_dir: Path,
+        *,
+        reason: CheckpointReason,
+        session_id: str | None = None,
+    ) -> EnsureResult:
         """Take a checkpoint if enabled and not already done this turn."""
         if not self._config.enabled:
             return EnsureResult(outcome=CheckpointOutcome.DISABLED)
@@ -70,7 +76,8 @@ class ShadowCheckpointManager:
         if abs_dir == Path("/").resolve() or abs_dir == Path.home().resolve():
             return EnsureResult(outcome=CheckpointOutcome.DIRECTORY_TOO_BROAD)
 
-        if abs_dir in self._checkpointed_dirs:
+        checkpointed_dirs = self._checkpointed_dirs.setdefault(session_id, set())
+        if abs_dir in checkpointed_dirs:
             return EnsureResult(outcome=CheckpointOutcome.ALREADY_THIS_TURN)
 
         try:
@@ -81,7 +88,7 @@ class ShadowCheckpointManager:
         # Only suppress retries after a conclusive snap (or no-op). Transient
         # FAILED must leave the turn open so a later mutate can try again.
         if result.outcome is not CheckpointOutcome.FAILED:
-            self._checkpointed_dirs.add(abs_dir)
+            checkpointed_dirs.add(abs_dir)
         return result
 
     def list_for(self, working_dir: Path) -> list[CheckpointSnapshot]:
@@ -176,6 +183,15 @@ class ShadowCheckpointManager:
         failed snap never desyncs chat from disk. ``rewind_turns=0`` keeps the
         transcript unchanged (FS-only restore).
         """
+        if rewind_turns < 0:
+            return CombinedRestoreResult(
+                fs=RestoreResult(
+                    outcome=RestoreOutcome.FAILED,
+                    detail=f"turns must be >= 0; got {rewind_turns}",
+                ),
+                messages=tuple(messages),
+                transcript_removed=0,
+            )
         fs = self.restore(working_dir, commit_sha=commit_sha)
         if fs.outcome is not RestoreOutcome.RESTORED:
             return CombinedRestoreResult(fs=fs, messages=tuple(messages), transcript_removed=0)

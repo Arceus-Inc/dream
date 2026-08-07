@@ -68,6 +68,30 @@ def test_dedup_same_turn(mgr: ShadowCheckpointManager, work_dir: Path) -> None:
     assert second.outcome is CheckpointOutcome.ALREADY_THIS_TURN
 
 
+def test_dedup_is_scoped_to_session(mgr: ShadowCheckpointManager, work_dir: Path) -> None:
+    first = mgr.ensure(work_dir, reason=CheckpointReason.BEFORE_WRITE_FILE, session_id="a")
+    (work_dir / "README.md").write_text("changed\n", encoding="utf-8")
+    second = mgr.ensure(work_dir, reason=CheckpointReason.BEFORE_BASH, session_id="b")
+    assert first.outcome is CheckpointOutcome.TAKEN
+    assert second.outcome is CheckpointOutcome.TAKEN
+
+
+def test_negative_rewind_does_not_restore(
+    mgr: ShadowCheckpointManager, work_dir: Path
+) -> None:
+    taken = mgr.ensure(work_dir, reason=CheckpointReason.BEFORE_WRITE_FILE)
+    assert taken.snapshot is not None
+    (work_dir / "README.md").write_text("mutated\n", encoding="utf-8")
+    result = mgr.restore_and_rewind(
+        work_dir,
+        commit_sha=taken.snapshot.commit_sha,
+        messages=[],
+        rewind_turns=-1,
+    )
+    assert result.fs.outcome is RestoreOutcome.FAILED
+    assert (work_dir / "README.md").read_text(encoding="utf-8") == "mutated\n"
+
+
 def test_new_turn_allows_another_when_changed(mgr: ShadowCheckpointManager, work_dir: Path) -> None:
     assert (
         mgr.ensure(work_dir, reason=CheckpointReason.BEFORE_WRITE_FILE).outcome
@@ -229,5 +253,10 @@ async def test_hook_begin_turn_on_user_prompt(mgr: ShadowCheckpointManager, work
     await hook(HookEvent.USER_PROMPT_SUBMIT, {"session_id": "s1", "prompt": "go"})
     (work_dir / "README.md").write_text("next\n", encoding="utf-8")
     assert (
-        mgr.ensure(work_dir, reason=CheckpointReason.BEFORE_BASH).outcome is CheckpointOutcome.TAKEN
+        mgr.ensure(
+            work_dir,
+            reason=CheckpointReason.BEFORE_BASH,
+            session_id="s1",
+        ).outcome
+        is CheckpointOutcome.TAKEN
     )

@@ -205,7 +205,7 @@ class DreamPaths:
 
     @property
     def checkpoints_dir(self) -> Path:
-        """Shared shadow-git store root (Hermes ``~/.hermes/checkpoints/store``)."""
+        """Shared shadow-git store root under ``$DREAM_HOME/checkpoints``."""
         return self.home / "checkpoints"
 
     # --- the one explicit side effect ---
