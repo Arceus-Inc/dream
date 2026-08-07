@@ -129,8 +129,7 @@ def test_duplicate_credential_label_refuses_startup(tmp_path) -> None:
 
     creds = tmp_path / "credentials.toml"
     creds.write_text(
-        '[[openai]]\nkey = "sk-a"\nlabel = "dup"\n'
-        '[[openai]]\nkey = "sk-b"\nlabel = "dup"\n',
+        '[[openai]]\nkey = "sk-a"\nlabel = "dup"\n[[openai]]\nkey = "sk-b"\nlabel = "dup"\n',
         encoding="utf-8",
     )
     os.chmod(creds, 0o600)  # pass the perms check so we reach the label check
@@ -262,16 +261,23 @@ def test_next_substrate_rejects_stale_after() -> None:
 
 
 def test_failover_event_is_emitted() -> None:
-    """Criterion 15: ``substrate.failover {from, to, reason}`` is observable.
-    Without this event the operator can't tell why latency suddenly tripled.
-    """
-    from dream.api.failover import FailoverPolicy
+    """Criterion 15: substrate failover is observable with typed from/to/reason."""
+    from dream.api.failover import FailoverPolicy, FailoverReason
+    from dream.api.failover_events import SubstrateFailoverEvent
 
-    events: list[dict] = []
-    policy = FailoverPolicy(order=["openai", "anthropic"], on_event=events.append)
-    policy.next_substrate(after="openai", reason="pool_exhausted")
+    events: list[SubstrateFailoverEvent] = []
 
-    assert any(e.get("type") == "substrate.failover" for e in events)
+    def _capture(event: object) -> None:
+        if isinstance(event, SubstrateFailoverEvent):
+            events.append(event)
+
+    policy = FailoverPolicy(order=["openai", "anthropic"], on_event=_capture)
+    policy.next_substrate(after="openai", reason=FailoverReason.POOL_EXHAUSTED)
+
+    assert len(events) == 1
+    assert events[0].from_substrate == "openai"
+    assert events[0].to_substrate == "anthropic"
+    assert events[0].reason is FailoverReason.POOL_EXHAUSTED
 
 
 def test_mid_turn_substrate_switch_refused_by_default() -> None:

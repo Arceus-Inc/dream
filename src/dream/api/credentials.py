@@ -27,23 +27,27 @@ import time
 import tomllib
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
-from typing import Literal
 
-Outcome = Literal[
-    "success",
-    "transient_retried_success",
-    "transient_exhausted",
-    "auth",
-    "hard_refusal",
-]
-"""Classified call outcomes, fed in by the dispatch layer.
 
-The classification table is Spec 02 §11. ``transient_retried_success``
-and ``success`` are equivalent at the pool layer — the spec keeps the
-distinction so observability can show that the SDK's inner retry actually
-fired, even though the credential's rung is unaffected.
-"""
+class AttemptOutcome(StrEnum):
+    """Classified call outcomes, fed in by the dispatch layer (Spec 02 §11).
+
+    ``transient_retried_success`` and ``success`` are equivalent at the pool
+    layer — the distinction exists so observability can show that the SDK's
+    inner retry fired, even though the credential's rung is unaffected.
+    """
+
+    SUCCESS = "success"
+    TRANSIENT_RETRIED_SUCCESS = "transient_retried_success"
+    TRANSIENT_EXHAUSTED = "transient_exhausted"
+    AUTH = "auth"
+    HARD_REFUSAL = "hard_refusal"
+
+
+# Backward-compatible alias used by older call sites / docs.
+Outcome = AttemptOutcome
 
 
 _RUNG_COOLDOWNS_SECONDS: dict[int, float] = {
@@ -132,6 +136,10 @@ class CredentialPool:
     def is_empty(self) -> bool:
         return not self._credentials
 
+    def all_credentials(self) -> tuple[Credential, ...]:
+        """All credentials in declaration order (live and benched)."""
+        return tuple(self._credentials)
+
     def get(self, label: str) -> Credential:
         for cred in self._credentials:
             if cred.label == label:
@@ -153,40 +161,40 @@ class CredentialPool:
                 return cred
         raise NoLiveCredential(f"all credentials in pool {self.substrate!r} are benched")
 
-    def record_attempt(self, label: str, *, outcome: Outcome) -> None:
+    def record_attempt(self, label: str, *, outcome: AttemptOutcome) -> None:
         """Apply the §11 classification table to one credential.
 
-        - ``success`` / ``transient_retried_success`` → reset rung to 0.
-        - ``transient_exhausted`` → escalate one rung (1 → 2 → 3, capped).
-        - ``auth`` → bench at rung 3 directly (§11, decision 11).
-        - ``hard_refusal`` → no rung change (the credential is fine; the
+        - ``SUCCESS`` / ``TRANSIENT_RETRIED_SUCCESS`` → reset rung to 0.
+        - ``TRANSIENT_EXHAUSTED`` → escalate one rung (1 → 2 → 3, capped).
+        - ``AUTH`` → bench at rung 3 directly (§11, decision 11).
+        - ``HARD_REFUSAL`` → no rung change (the credential is fine; the
           *request* was malformed).
         """
         cred = self.get(label)
         now = time.monotonic()
 
-        if outcome in ("success", "transient_retried_success"):
+        if outcome in (AttemptOutcome.SUCCESS, AttemptOutcome.TRANSIENT_RETRIED_SUCCESS):
             cred.rung = 0
             cred.cooldown_until = None
             cred.last_success = now
             return
 
-        if outcome == "transient_exhausted":
+        if outcome == AttemptOutcome.TRANSIENT_EXHAUSTED:
             # Escalate one rung, capped at 3. From rung 0 this yields 1, so the
             # old ``... if rung > 0 else 1`` ternary was a no-op.
             cred.rung = min(cred.rung + 1, 3)
             cred.cooldown_until = now + _RUNG_COOLDOWNS_SECONDS[cred.rung]
-            cred.last_error = outcome
+            cred.last_error = str(outcome)
             return
 
-        if outcome == "auth":
+        if outcome == AttemptOutcome.AUTH:
             cred.rung = 3
             cred.cooldown_until = now + _RUNG_COOLDOWNS_SECONDS[3]
-            cred.last_error = outcome
+            cred.last_error = str(outcome)
             return
 
-        if outcome == "hard_refusal":
-            cred.last_error = outcome
+        if outcome == AttemptOutcome.HARD_REFUSAL:
+            cred.last_error = str(outcome)
             return
 
         raise ValueError(f"unknown outcome {outcome!r}")
@@ -287,6 +295,7 @@ def _enforce_permissions(path: Path) -> None:
 
 # Re-exports kept terse; the dispatcher and adapter sites import these.
 __all__ = [
+    "AttemptOutcome",
     "Credential",
     "CredentialPool",
     "EmptyActivePool",

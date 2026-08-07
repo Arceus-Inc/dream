@@ -44,6 +44,7 @@ from dream.engine._messages import (
     ToolResultBlock,
     ToolUseBlock,
 )
+from dream.engine._retry_errors import CompressRequired
 from dream.observability._events import llm_call_attrs, tool_call_attrs, tool_result_attrs
 from dream.observability._tracer import NoopTracer, Tracer
 from dream.services.compact._orchestrator import react_to_ptl
@@ -160,11 +161,8 @@ async def run_query(
                     # deliberately not caught here so cooperative cancel propagates.
                     if yielded:
                         raise
-                    if (
-                        ptl_attempted
-                        or ctx.ptl_preserve_recent is None
-                        or not is_context_length_overflow(exc)
-                    ):
+                    compress = isinstance(exc, CompressRequired) or is_context_length_overflow(exc)
+                    if ptl_attempted or ctx.ptl_preserve_recent is None or not compress:
                         raise
                     shrunk, did_shrink = react_to_ptl(
                         messages,

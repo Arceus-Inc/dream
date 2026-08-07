@@ -52,6 +52,7 @@ from dream.engine._events import (
     StreamEvent,
     ToolExecutionStarted,
 )
+from dream.engine._failover_streamer import FailoverStreamer
 from dream.engine._fsm import (
     SessionState,
     TurnState,
@@ -111,9 +112,7 @@ def _default_now() -> datetime:
     return datetime.now(UTC)
 
 
-CONTEXT_PRESSURE_REASON = (
-    "context-pressure: transcript still over threshold after compaction"
-)
+CONTEXT_PRESSURE_REASON = "context-pressure: transcript still over threshold after compaction"
 
 
 def _build_compaction_done_event(
@@ -166,7 +165,11 @@ async def _invoke_auto_compact(
         await _fire_event(
             config.hook_executor,
             HookEvent.PRE_COMPACT,
-            {"session_id": config.session_id, "message_count": pre_count, "token_count": pre_tokens},
+            {
+                "session_id": config.session_id,
+                "message_count": pre_count,
+                "token_count": pre_tokens,
+            },
         )
     new_transcript, result = await auto_compact_if_needed_async(
         transcript,
@@ -255,9 +258,7 @@ def _fire(bus: TransitionBus | None, event: TransitionEvent) -> TransitionEvent:
     return event
 
 
-async def _fire_lifecycle(
-    executor: HookExecutor | None, event: HookEvent, session_id: str
-) -> None:
+async def _fire_lifecycle(executor: HookExecutor | None, event: HookEvent, session_id: str) -> None:
     """Fire a session-scoped spec-13 lifecycle hook (SESSION_START / STOP).
 
     A no-op when no executor is configured. ``executor.fire`` never raises —
@@ -375,9 +376,7 @@ async def _race_next_or_coma(
             await next_task
         # Re-raise ComaDetected from the monitor task.
         monitor_task.result()
-        raise AssertionError(
-            "monitor_task completed without raising ComaDetected"
-        )
+        raise AssertionError("monitor_task completed without raising ComaDetected")
     return next_task.result()
 
 
@@ -483,9 +482,7 @@ async def _maybe_compact(
     if config.compactor is None:
         return transcript, None
     begin_turn(config.compactor, turn_id=f"t{turn_number}")
-    return await _invoke_auto_compact(
-        transcript, config, force=False, fire_pre_compact=True
-    )
+    return await _invoke_auto_compact(transcript, config, force=False, fire_pre_compact=True)
 
 
 def _is_still_under_context_pressure(
@@ -512,17 +509,15 @@ async def _maybe_hygiene_compact(
     ``compaction_hygiene_threshold``. Uses ``force=True`` so it can run even
     when start-of-turn auto compaction already fired this turn.
     """
+    if config.compactor is None or config.compaction_hygiene_threshold is None:
+        return transcript, None
     if (
-        config.compactor is None
-        or config.compaction_hygiene_threshold is None
+        utilisation(transcript, config.compaction_capabilities)
+        < config.compaction_hygiene_threshold
     ):
         return transcript, None
-    if utilisation(transcript, config.compaction_capabilities) < config.compaction_hygiene_threshold:
-        return transcript, None
 
-    return await _invoke_auto_compact(
-        transcript, config, force=True, fire_pre_compact=True
-    )
+    return await _invoke_auto_compact(transcript, config, force=True, fire_pre_compact=True)
 
 
 async def _yield_context_pressure_turn(
@@ -536,10 +531,7 @@ async def _yield_context_pressure_turn(
     yield _fire(transitions, _turn_transition(TurnState.READ, TurnState.PLAN))
     yield _fire(transitions, _turn_transition(TurnState.PLAN, TurnState.ACT))
     yield StatusEvent(
-        message=(
-            f"context pressure (turn {turn_number}): "
-            "skipping act loop after compaction"
-        )
+        message=(f"context pressure (turn {turn_number}): skipping act loop after compaction")
     )
     yield _fire(transitions, _turn_transition(TurnState.ACT, TurnState.VERIFY))
     yield _fire(transitions, _turn_transition(TurnState.VERIFY, TurnState.RECORD))
@@ -587,32 +579,44 @@ async def _drive_one_turn(
     # ``run_query`` is declared as ``AsyncIterator`` but is in fact an async
     # generator; the cast lets us call ``aclose()`` on timeout to release the
     # inner streamer promptly.
-    inner = cast(AsyncGenerator[StreamEvent, None], run_query(ctx, transcript))
-    try:
-        async with asyncio.timeout(config.turn_timeout_seconds):
-            async for ev in _drive_turn_with_heartbeat(inner, config.heartbeat):
-                yield ev
-                if isinstance(ev, ToolExecutionStarted):
-                    tools_called.append(ev.tool)
-                elif isinstance(ev, AssistantTurnComplete):
-                    turn_usage = turn_usage + ev.usage
-    except ComaDetected:
-        kind = TurnEndKind.COMA
-        with contextlib.suppress(Exception):
+    coma_failover_used = False
+    while True:
+        inner = cast(AsyncGenerator[StreamEvent, None], run_query(ctx, transcript))
+        try:
+            async with asyncio.timeout(config.turn_timeout_seconds):
+                async for ev in _drive_turn_with_heartbeat(inner, config.heartbeat):
+                    yield ev
+                    if isinstance(ev, ToolExecutionStarted):
+                        tools_called.append(ev.tool)
+                    elif isinstance(ev, AssistantTurnComplete):
+                        turn_usage = turn_usage + ev.usage
+            break
+        except ComaDetected:
+            with contextlib.suppress(Exception):
+                await inner.aclose()
+            if not coma_failover_used and _advance_after_coma(config.client):
+                coma_failover_used = True
+                yield StatusEvent(
+                    message="substrate coma: failovers to next substrate, retrying turn"
+                )
+                continue
+            kind = TurnEndKind.COMA
+            break
+        except TimeoutError:
+            kind = TurnEndKind.TIMEOUT
             await inner.aclose()
-    except TimeoutError:
-        kind = TurnEndKind.TIMEOUT
-        await inner.aclose()
-    except Exception as exc:
-        # Any non-timeout failure still owes the caller a terminal SessionEnd
-        # (emitted via the abort path) rather than crashing the stream. The
-        # catch stays broad here because ``run_query`` already narrows provider/
-        # transport faults to ``ErrorEvent``; what reaches this seam is an
-        # unexpected infra error we must still surface as a structured abort.
-        kind = TurnEndKind.ERROR
-        error_message = f"error: {exc}"
-        with contextlib.suppress(Exception):
-            await inner.aclose()
+            break
+        except Exception as exc:
+            # Any non-timeout failure still owes the caller a terminal SessionEnd
+            # (emitted via the abort path) rather than crashing the stream. The
+            # catch stays broad here because ``run_query`` already narrows provider/
+            # transport faults to ``ErrorEvent``; what reaches this seam is an
+            # unexpected infra error we must still surface as a structured abort.
+            kind = TurnEndKind.ERROR
+            error_message = f"error: {exc}"
+            with contextlib.suppress(Exception):
+                await inner.aclose()
+            break
 
     yield _fire(transitions, _turn_transition(TurnState.ACT, TurnState.VERIFY))
     yield _fire(transitions, _turn_transition(TurnState.VERIFY, TurnState.RECORD))
@@ -625,6 +629,13 @@ async def _drive_one_turn(
         ended_at=config.now(),
         error_message=error_message,
     )
+
+
+def _advance_after_coma(client: TurnStreamer) -> bool:
+    """Rotate substrate after heartbeat coma when the client is a FailoverStreamer."""
+    if isinstance(client, FailoverStreamer):
+        return client.advance_after_coma()
+    return False
 
 
 def _classify_turn_outcome(
@@ -806,10 +817,7 @@ async def run_session(
             review_rounds += 1
             last_review_items = decision.review_item
         if decision.action in {"seal", "seal-with-warnings"}:
-            if (
-                config.delegations is not None
-                and config.delegations.active(config.session_id) > 0
-            ):
+            if config.delegations is not None and config.delegations.active(config.session_id) > 0:
                 completion = await config.delegations.wait_next(config.session_id)
                 user_messages = [
                     *user_messages,
@@ -821,10 +829,7 @@ async def run_session(
                 continue
             # Hermes-style STOP continue: allow_continue hooks may inject a
             # synthetic user nudge and keep the session working (≤ max_verify_nudges).
-            if (
-                config.hook_executor is not None
-                and verify_nudges < config.max_verify_nudges
-            ):
+            if config.hook_executor is not None and verify_nudges < config.max_verify_nudges:
                 stop_outcome = await config.hook_executor.fire(
                     HookEvent.STOP,
                     {
@@ -901,9 +906,7 @@ async def run_session(
             turn_result.kind, consecutive_timeouts=consecutive_timeouts
         )
 
-        record = _turn_record_from_result(
-            turn_number, turn_result, outcome=turn_outcome
-        )
+        record = _turn_record_from_result(turn_number, turn_result, outcome=turn_outcome)
         yield record
         total_usage = total_usage + turn_result.usage
 
