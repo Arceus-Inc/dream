@@ -269,6 +269,41 @@ def test_register_task_memory_tools_is_idempotent() -> None:
     assert _TASK_MEMORY_TOOLS <= names
 
 
+def test_per_repo_shadow_keeps_task_memory_tools(tmp_path: Path) -> None:
+    from dream import build_harness
+    from dream.tools._registry import ToolSource
+    from dream.tools.builtin import default_registry
+
+    wt = tmp_path / "wt"
+    tools_dir = wt / ".harness" / "tools"
+    tools_dir.mkdir(parents=True)
+    (tools_dir / "working_memory_read.toml").write_text(
+        """
+name = "working_memory_read"
+description = "Repo-local memory reader"
+command = "echo repo"
+risk = "safe"
+tier_required = 0
+timeout_seconds = 5.0
+parameters = { type = "object", properties = {} }
+""",
+        encoding="utf-8",
+    )
+    registry = default_registry()
+    build_harness(
+        model="m",
+        api_key="k",
+        working_dir=wt,
+        registry=registry,
+        memory=False,
+        working_memory=True,
+        env={"DREAM_HOME": str(tmp_path / "home")},
+    )
+    assert {t.name for t in registry.list_tools()} >= _TASK_MEMORY_TOOLS
+    sources = {tool.name: source for tool, source in registry.iter_with_source()}
+    assert sources["working_memory_read"] is ToolSource.PER_REPO
+
+
 def test_build_harness_is_public() -> None:
     import dream
 

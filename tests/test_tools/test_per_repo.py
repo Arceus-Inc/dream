@@ -94,6 +94,87 @@ timeout_seconds = 30.0
     assert any("tier_required" in f for f in exc.value.findings)
 
 
+def test_invalid_later_declaration_does_not_mutate_registry(tmp_path: Path) -> None:
+    tools_dir = tmp_path / "tools"
+    _write_tool(
+        tools_dir,
+        "a_valid",
+        """
+name = "a_valid"
+description = "Valid"
+command = "echo valid"
+risk = "safe"
+tier_required = 0
+timeout_seconds = 5.0
+parameters = { type = "object", properties = {} }
+""",
+    )
+    _write_tool(
+        tools_dir,
+        "b_invalid",
+        """
+name = "b_invalid"
+description = "Invalid"
+command = "echo {missing}"
+risk = "safe"
+tier_required = 0
+timeout_seconds = 5.0
+parameters = { type = "object", properties = {} }
+""",
+    )
+    reg = default_registry()
+    with pytest.raises(PerRepoToolError):
+        load_per_repo_tools(reg, tools_dir)
+    assert reg.get("a_valid") is None
+
+
+def test_unknown_command_placeholder_is_rejected(tmp_path: Path) -> None:
+    tools_dir = tmp_path / "tools"
+    _write_tool(
+        tools_dir,
+        "unknown",
+        """
+name = "unknown"
+description = "Unknown placeholder"
+command = "echo {missing}"
+risk = "safe"
+tier_required = 0
+timeout_seconds = 5.0
+parameters = { type = "object", properties = {} }
+""",
+    )
+    with pytest.raises(PerRepoToolError, match="unknown command placeholder"):
+        load_per_repo_tools(default_registry(), tools_dir)
+
+
+@pytest.mark.parametrize(
+    "parameters",
+    [
+        '{ type = "string", properties = {} }',
+        '{ type = "object", properties = "invalid" }',
+    ],
+)
+def test_parameter_schema_must_be_object_with_mapping_properties(
+    tmp_path: Path, parameters: str
+) -> None:
+    tools_dir = tmp_path / "tools"
+    _write_tool(
+        tools_dir,
+        "bad_schema",
+        f"""
+name = "bad_schema"
+description = "Bad schema"
+command = "echo"
+risk = "safe"
+tier_required = 0
+timeout_seconds = 5.0
+parameters = {parameters}
+""",
+    )
+    with pytest.raises(PerRepoToolError):
+        load_per_repo_tools(default_registry(), tools_dir)
+
+
 def test_shadow_default_warns(tmp_path: Path) -> None:
     tools_dir = tmp_path / "tools"
     _write_tool(

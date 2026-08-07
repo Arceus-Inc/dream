@@ -66,7 +66,11 @@ class ToolRegistry:
         """
         name = tool.name
         prior_source = self._sources.get(name)
-        if prior_source is not None and not replace:
+        if prior_source is not None and (
+            not replace
+            or prior_source is not ToolSource.DEFAULT
+            or source is not ToolSource.PER_REPO
+        ):
             raise ToolCollisionError(
                 f"tool name {name!r} already registered "
                 f"(prior source: {prior_source.value}, new source: {source.value})"

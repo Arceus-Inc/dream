@@ -242,14 +242,6 @@ def build_harness(
         plan=plan,
         legacy_surface=legacy_surface,
     )
-    # Spec 05: discover per-repo tools from ``.harness/tools/*.toml``. Invalid
-    # declarations (missing risk/tier_required, bad schema) block construction.
-    try:
-        per_repo = load_per_repo_tools(tool_registry, paths.tools_dir())
-    except PerRepoToolError as exc:
-        raise ValueError(
-            "per-repo tool declarations failed validation: " + "; ".join(exc.findings)
-        ) from exc
     # Task memory (spec 11a) is opt-in: only register its tools when asked so
     # the default tool surface stays unchanged. The per-session context is
     # wired below in ``_build_session_engine`` (it needs the session id).
@@ -259,6 +251,14 @@ def build_harness(
     # ``subagents is None`` keeps the tool surface byte-identical (default off).
     if subagents is not None and tool_registry.get("spawn_subagent") is None:
         tool_registry.register(SpawnSubagentTool(), source=ToolSource.DEFAULT)
+    # Spec 05: discover per-repo tools after all default registrations so a
+    # declared per-repo tool can intentionally shadow any built-in.
+    try:
+        per_repo = load_per_repo_tools(tool_registry, paths.tools_dir())
+    except PerRepoToolError as exc:
+        raise ValueError(
+            "per-repo tool declarations failed validation: " + "; ".join(exc.findings)
+        ) from exc
     compactor = AutoCompactState()
     # Auto-discover workspace skills (Spec 06) unless the caller supplied a
     # registry or opted out. An explicit ``skill_registry`` wins — the REPL

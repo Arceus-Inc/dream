@@ -158,6 +158,8 @@ def load_per_repo_tools(registry: ToolRegistry, tools_dir: Path) -> PerRepoLoadR
     findings: list[str] = []
     registered: list[str] = []
     warnings: list[str] = []
+    declarations: list[tuple[Path, _PerRepoDeclaration, PerRepoCommandTool]] = []
+    names: set[str] = set()
 
     for path in sorted(tools_dir.glob("*.toml")):
         try:
@@ -169,7 +171,21 @@ def load_per_repo_tools(registry: ToolRegistry, tools_dir: Path) -> PerRepoLoadR
             findings.append(f"tool declaration invalid ({path.name}): {exc}")
             continue
 
-        tool = PerRepoCommandTool(decl, parameters=parameters)
+        if decl.name in names:
+            findings.append(f"duplicate per-repo tool name: {decl.name!r}")
+            continue
+        names.add(decl.name)
+        try:
+            tool = PerRepoCommandTool(decl, parameters=parameters)
+        except (TypeError, ValueError, ValidationError) as exc:
+            findings.append(f"tool declaration invalid ({path.name}): {exc}")
+            continue
+        declarations.append((path, decl, tool))
+
+    if findings:
+        raise PerRepoToolError(tuple(findings))
+
+    for path, decl, tool in declarations:
         # Stem should match declared name (operator ergonomics); mismatch warns.
         if path.stem != decl.name:
             warnings.append(
@@ -183,8 +199,6 @@ def load_per_repo_tools(registry: ToolRegistry, tools_dir: Path) -> PerRepoLoadR
             )
         registered.append(decl.name)
 
-    if findings:
-        raise PerRepoToolError(tuple(findings))
     return PerRepoLoadResult(registered=tuple(registered), warnings=tuple(warnings))
 
 
@@ -206,14 +220,39 @@ def _load_declaration(path: Path) -> tuple[_PerRepoDeclaration, dict[str, object
 
     decl = _PerRepoDeclaration.model_validate(dict(raw))
     parameters = _resolve_parameters(decl.parameters, tools_dir=path.parent)
-    if parameters.get("type") not in (None, "object") and "properties" not in parameters:
-        # Accept bare ``properties`` tables or full object schemas.
+    schema_type = parameters.get("type")
+    properties = parameters.get("properties")
+    if schema_type not in (None, "object"):
         raise PerRepoToolError(
             (f"tool declaration {decl.name!r}: parameters must be a JSON object schema",)
         )
+    if properties is not None and not isinstance(properties, Mapping):
+        raise PerRepoToolError(
+            (f"tool declaration {decl.name!r}: parameters.properties must be a mapping",)
+        )
     if "type" not in parameters:
         parameters = {"type": "object", **parameters}
+    properties = parameters.get("properties", {})
+    if not isinstance(properties, Mapping):
+        raise PerRepoToolError(
+            (f"tool declaration {decl.name!r}: parameters.properties must be a mapping",)
+        )
+    unknown = _command_placeholders(decl.command) - {str(name) for name in properties}
+    if unknown:
+        names = ", ".join(sorted(unknown))
+        raise PerRepoToolError(
+            (f"tool declaration {decl.name!r}: unknown command placeholder(s): {names}",)
+        )
     return decl, parameters
+
+
+def _command_placeholders(command: str) -> set[str]:
+    """Return field names referenced by a command template."""
+    fields: set[str] = set()
+    for _, field_name, _, _ in Formatter().parse(command):
+        if field_name is not None:
+            fields.add(field_name)
+    return fields
 
 
 def _resolve_parameters(
