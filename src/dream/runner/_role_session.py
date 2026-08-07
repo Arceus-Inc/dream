@@ -80,6 +80,7 @@ class RunRoleResult:
     final_text: str
     cost: SessionCost
     events: tuple[Event, ...]
+    messages: tuple[ConversationMessage, ...]
 
 
 def resolve_role_manifest(
@@ -256,4 +257,5 @@ async def run_role(
         final_text="".join(text_chunks),
         cost=session.cost,
         events=tuple(captured),
+        messages=tuple(session.transcript),
     )

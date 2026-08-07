@@ -175,6 +175,8 @@ def make_generator_head(
     ledger (or FileSessionStore) can continue prior tool-call history.
     """
 
+    prior_messages = list(resume_messages or ())
+
     async def generator(
         task_id: str,
         sprint_number: int,
@@ -188,12 +190,13 @@ def make_generator_head(
             step=step,
             task_intent=task_intent,
         )
-        await harness.run_role(
+        result = await harness.run_role(
             "generator",
             prompt,
             harness_dir=harness_dir,
             observer=observer,
-            resume_messages=resume_messages,
+            resume_messages=prior_messages,
         )
+        prior_messages[:] = result.messages
 
     return generator

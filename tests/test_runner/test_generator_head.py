@@ -174,6 +174,26 @@ async def test_generator_head_returns_none() -> None:
     assert out is None
 
 
+async def test_generator_head_carries_transcript_between_sprints() -> None:
+    harness, streamer = _harness_with_reply()
+    head = make_generator_head(harness)
+
+    await head("task-001", 1, _contract(sprint_number=1), _step())
+    await head("task-001", 2, _contract(sprint_number=2), _step(step_id="s2"))
+
+    assert len(streamer.calls) == 2
+    second_messages = streamer.calls[1]
+    second_user_text = [
+        block.text
+        for message in second_messages
+        if message.role == "user"
+        for block in message.content
+        if isinstance(block, TextBlock)
+    ]
+    assert any("sprint 1" in text for text in second_user_text)
+    assert any("sprint 2" in text for text in second_user_text)
+
+
 # --------------------------------------------------------------------------
 # Role wiring: invokes ``run_role`` with ``generator``
 # --------------------------------------------------------------------------
