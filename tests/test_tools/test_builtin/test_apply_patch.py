@@ -144,6 +144,27 @@ async def test_add_existing_file_is_rejected(
     assert existing.read_text(encoding="utf-8") == "preserve\n"
 
 
+async def test_delete_and_readd_same_file_is_rejected(
+    tool: ApplyPatchTool, ctx: ToolExecutionContext, tmp_path: Path
+) -> None:
+    existing = tmp_path / "existing.txt"
+    existing.write_text("preserve\n", encoding="utf-8")
+    result = await tool.execute(
+        {
+            "patch": (
+                "*** Begin Patch\n"
+                "*** Delete File: existing.txt\n"
+                "*** Add File: existing.txt\n"
+                "+replace\n"
+                "*** End Patch"
+            )
+        },
+        ctx,
+    )
+    assert result.is_error is True
+    assert existing.read_text(encoding="utf-8") == "preserve\n"
+
+
 async def test_move_existing_destination_is_rejected(
     tool: ApplyPatchTool, ctx: ToolExecutionContext, tmp_path: Path
 ) -> None:

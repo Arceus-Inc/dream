@@ -305,6 +305,14 @@ def identify_files_added(text: str) -> list[str]:
     return result
 
 
+def identify_files_moved(text: str) -> list[str]:
+    result: list[str] = []
+    for line in text.strip().split("\n"):
+        if line.startswith("*** Move to: "):
+            result.append(line[len("*** Move to: ") :])
+    return result
+
+
 def text_to_patch(text: str, orig: dict[str, str]) -> tuple[Patch, int]:
     lines = text.strip().split("\n")
     if (
@@ -409,14 +417,8 @@ def process_patch(
         raise DiffError("Patch must start with *** Begin Patch")
     paths = identify_files_needed(stripped)
     orig = load_files(paths, open_fn)
-    for path in (
-        *identify_files_added(stripped),
-        *(
-            line[len("*** Move to: ") :]
-            for line in stripped.splitlines()
-            if line.startswith("*** Move to: ")
-        ),
-    ):
+    destination_paths = (*identify_files_added(stripped), *identify_files_moved(stripped))
+    for path in destination_paths:
         with suppress(FileNotFoundError):
             orig[path] = open_fn(path)
     patch, fuzz = text_to_patch(stripped, orig)
@@ -434,6 +436,7 @@ __all__ = [
     "Patch",
     "PatchAction",
     "identify_files_added",
+    "identify_files_moved",
     "identify_files_needed",
     "process_patch",
 ]
