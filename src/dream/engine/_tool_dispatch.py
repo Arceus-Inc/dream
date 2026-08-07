@@ -75,7 +75,7 @@ PermissionGate = Callable[[PermissionRequest], PermissionDecision]
 _RESULT_SUMMARY_MAX_CHARS = 500
 
 
-def _redact_structured(value: Any, secret_proxy: SecretProxy) -> Any:
+def _redact_structured(value: object, secret_proxy: SecretProxy) -> object:
     if value is None:
         return None
     if isinstance(value, str):
@@ -383,7 +383,10 @@ class EngineToolDispatcher:
         content = result.content
         if self.secret_proxy is not None:
             content = self.secret_proxy.redact_text(content)
-            structured = _redact_structured(result.structured, self.secret_proxy)
+            structured = result.structured
+            if structured is not None:
+                redacted = _redact_structured(structured, self.secret_proxy)
+                structured = redacted if isinstance(redacted, dict) else None
             safe_result = replace(result, content=content, structured=structured)
         else:
             safe_result = result
