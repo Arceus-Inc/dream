@@ -46,17 +46,17 @@ def build_harness(
     registry: ToolRegistry | None = None,      # bring your own tool registry
     skill_registry: SkillRegistry | None = None,
     skills: bool = True,             # auto-discover workspace SKILL.md files
-    memory: bool = True,             # workspace memory (read) + memory_* tools
+    memory: bool = True,             # workspace memory + memory_* tools
     working_memory: bool = False,    # opt-in task scratchpad + memory_propose seam
-    tasks: bool = False,             # opt-in background-task tools
-    cron: bool = False,              # opt-in cron tools
-    web: bool = False,               # opt-in web tools
-    browser: bool = False,           # opt-in browser control
-    observability: bool = False,     # opt-in query tools
-    worktree: bool = False,          # opt-in worktree tools
-    code_intel: bool = False,        # opt-in LSP / execute_code
-    plan: bool = False,              # opt-in plan_show
-    legacy_surface: bool = False,    # restore all former default packs
+    tasks: bool = False,             # background task_* tools
+    cron: bool = False,              # cron_* + remote_trigger
+    web: bool = False,               # web_search / web_fetch / web_extract
+    browser: bool = False,           # browser_run (CDP)
+    observability: bool = False,     # query_logs / query_metrics
+    worktree: bool = False,          # enter/exit_worktree
+    code_intel: bool = False,        # lsp + execute_code
+    plan: bool = False,              # plan_show
+    legacy_surface: bool = False,    # register every former default pack
     mcp: bool = True,                # connect .harness/mcp-allowlist.toml
     plugins: bool = True,            # load .harness/plugins-enabled.toml
     subagents: SubagentSet | None = None,  # opt-in ephemeral teammates via spawn_subagent
@@ -74,13 +74,20 @@ full default surface can use `legacy_surface=True` while migrating.
 
 Notes:
 
+- Default tool surface is the **Level-2 coding set** (10 tools). Opt into packs
+  with the flags above, or pass `legacy_surface=True` during migration.
+- Per-repo tools from `.harness/tools/*.toml` load at construction (invalid
+  declarations raise).
 - Construction never raises on a bad skill / plugin / allowlist — degraded
-  surfaces are skipped or surfaced as findings, the harness still builds.
+  surfaces are skipped or surfaced as findings, the harness still builds
+  (except invalid per-repo tool TOML, which blocks).
 - MCP connect and plugin import are async I/O, so they run **once, lazily**
   on the first `start_session` (every path funnels through it, including
   `run_task`), and the MCP manager is closed on `aclose()` / `async with` exit.
 - Tools registered on the shared `registry` *after* `build_harness` but before
   a session starts are picked up — the wire schema is computed per session.
+- Org/employee tools (Arceus MCP `arceus_*`) are not dream builtins — admit
+  them via the MCP allowlist from chorus / `@arceus/mcp`.
 
 ## 3. The task loop (`run_task`)
 

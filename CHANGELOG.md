@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ``build_harness``).
 
 ### Changed
+- Consumer docs (`HARNESS.md`, `SDK_GUIDE.md`) document the Level-2 default
+  surface, opt-in packs, per-repo tools, and that Arceus employee tools stay
+  upstream via MCP.
+- Web tool descriptions sharpened so ``web_search`` / ``web_fetch`` /
+  ``web_extract`` no longer overlap in when-to-use guidance.
 - **Breaking:** `default_registry()` is now the Level-2 coding surface only
   (`read_file`, `edit_file`, `write_file`, `bash`, `git`, `read_offloaded`,
   `glob`, `grep`, `todo_write`, `skill`). Former extras moved to opt-in packs

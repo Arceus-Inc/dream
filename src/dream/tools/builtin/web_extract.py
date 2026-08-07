@@ -74,11 +74,10 @@ class WebExtractTool(BaseTool):
 
     name = "web_extract"
     description = (
-        "Fetch one or more web pages and return their cleaned main content (article "
-        "text with nav/ads/boilerplate stripped). Use this to READ a page you found "
-        "with web_search. Each result carries a `needs_render` flag: when true, the "
-        "page is a JS shell or came back empty/thin, so escalate to a rendering "
-        "browser or try a different source."
+        "Read page bodies via Tavily extract (needs API key): cleaned article text "
+        "with nav/ads stripped, for one or more known URLs. Prefer web_fetch when "
+        "you have no key or need a single cheap SSRF-guarded GET. If a result sets "
+        "needs_render=true (JS shell / thin content), escalate to browser_run."
     )
     declaration = ToolDeclaration(
         risk="external", tier_required=2, timeout_seconds=_TIMEOUT_SECONDS

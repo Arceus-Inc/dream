@@ -59,10 +59,10 @@ outside its manifest even if the permission gate would allow it (and the
 manifest is never used to *widen* the gate).
 
 **Implemented.** `RoleManifest` + defaults (`src/dream/roles/`):
-- **planner** — read-only triplet, no shell, no writers; drafts, never executes.
+- **planner** — read-only (`read_file`, `git`, `grep`, `glob`); no shell, no writers; drafts, never executes.
 - **generator** — `tools=None` = every registered tool, intersected with the
   sandbox tier; the only role that does work.
-- **evaluator** — read-only triplet; judges, never fixes.
+- **evaluator** — reads + `bash` for in-session verify; no writers / spawn.
 - `compute_minimum_toolset` / `compute_session_role_allowlist` — manifest ∩
   tier ∩ declared tool tiers, stamped per session.
 
@@ -109,31 +109,54 @@ side effects (`safe` = never mutates, `mutating`, `external`); *tier* is the
 minimum sandbox tier required. Errors follow a three-part contract
 (`root_cause / safe_retry / stop_condition`) so the model can recover.
 
-### 5a. Default registry (10 tools, `dream.tools.builtin.default_registry`)
+### 5a. Default registry — Level-2 coding surface (10 tools)
+
+`dream.tools.builtin.default_registry()` ships the Spec 05 core six plus the
+medium coding companions every agent uses:
 
 | Tool | Risk / tier | Use case |
 |---|---|---|
-| `read_file` | safe / 0 | Read a repo file (line-numbered, offset/limit) — the agent's eyes. |
+| `read_file` | safe / 0 | Read a repo file (line-numbered, offset/limit). |
 | `edit_file` | mutating / 1 | Surgical substring replacement in an existing file. |
-| `write_file` | mutating / 1 | Create or overwrite a file — primary artifact producer. |
-| `bash` | mutating / 1 | Run a shell command **through the sandbox adapter**, cwd-confined to the workspace; 10-min timeout, tree-kill on expiry. |
-| `git` | safe / 0 | Read-only git subcommands (status/diff/log) — lets planner/evaluator inspect history without shell access. |
-| `read_offloaded` | safe / 0 | Re-read a large tool result that was offloaded to session scratch instead of bloating context. |
-| `glob` | safe / 0 | Find files by name or path pattern. |
-| `grep` | safe / 0 | Search repository files with a regular expression. |
-| `todo_write` | mutating / 1 | Persist the task checklist to `TODO.md` in the workspace. |
-| `skill` | safe / 0 | Load a skill playbook by name — the progressive-disclosure lever (§7). |
-The former default extras are opt-in packs. Pass `memory=True` for
-`memory_search` / `memory_get`, `tasks=True` for background-task tools,
-`cron=True` for cron tools, `web=True` for web tools, `browser=True` for
-`browser_run`, `observability=True` for query tools, `worktree=True` for
-worktree tools, `code_intel=True` for `lsp` / `execute_code`, and `plan=True`
-for `plan_show`. Use `legacy_surface=True` as a migration escape hatch for
-callers that need the former full surface.
+| `write_file` | mutating / 1 | Create or overwrite a file. |
+| `bash` | mutating / 1 | Run a shell command **through the sandbox adapter**, cwd-confined. |
+| `git` | safe / 0 | Read-only git subcommands (status/diff/log). |
+| `read_offloaded` | safe / 0 | Re-read a large tool result offloaded to session scratch. |
+| `glob` | safe / 0 | Find files by glob pattern. |
+| `grep` | safe / 0 | Regex content search (ripgrep with Python fallback). |
+| `todo_write` | safe / 0 | Update the session todo list. |
+| `skill` | safe / 0 | Load a skill playbook by name (§7). |
 
-### 5a.1 Task-memory tools — opt-in (`build_harness(working_memory=True)`)
+Pack tools stay out of the default set to keep the wire schema lean.
+`HeartbeatTool` is the single *virtual* tool advertised on wake turns (§10) —
+never part of a work session.
 
-Off by default; registered only when opted in, so the default surface above stays
+### 5a.1 Opt-in packs (`build_harness` flags)
+
+Former fat-default extras are packs. Defaults: only `memory=True`. Pass
+`legacy_surface=True` to restore the previous all-packs surface.
+
+| Flag | Tools |
+|---|---|
+| `memory=True` (default) | `memory_search`, `memory_get` |
+| `tasks=True` | `task_create`, `task_get`, `task_output`, `task_stop`, `task_update` |
+| `cron=True` | `cron_*`, `remote_trigger` |
+| `web=True` | `web_search` (find URLs), `web_fetch` (direct GET), `web_extract` (Tavily clean body) |
+| `browser=True` | `browser_run` (CDP / JS rendering) |
+| `observability=True` | `query_logs`, `query_metrics` |
+| `worktree=True` | `enter_worktree`, `exit_worktree` |
+| `code_intel=True` | `lsp`, `execute_code` |
+| `plan=True` | `plan_show` |
+
+### 5a.2 Per-repo tools (`.harness/tools/{name}.toml`)
+
+Spec 05: declare a command-template tool in-repo. Loaded at `build_harness`
+time as `ToolSource.PER_REPO`. Missing `risk` / `tier_required` blocks
+construction; shadowing a default name warns via `policy_warning_sink`.
+
+### 5a.3 Task-memory tools — opt-in (`build_harness(working_memory=True)`)
+
+Off by default; registered only when opted in, so the Level-2 surface above stays
 byte-identical. The task-memory tier (spec 11a) — dream's *one* memory clock. See §8.1.
 
 | Tool | Risk / tier | Use case |
@@ -143,7 +166,7 @@ byte-identical. The task-memory tier (spec 11a) — dream's *one* memory clock. 
 | `working_memory_append` | safe / 0 | Append one note line to the scratchpad. |
 | `memory_propose` | safe / 0 | Outbound seam: nominate a durable fact (`slug`/`content`/`rationale`) into the `_proposals/` queue for the consuming repo to promote. dream proposes, never promotes. |
 
-### 5a.2 Subagent tool — opt-in (`build_harness(subagents=...)`)
+### 5a.4 Subagent tool — opt-in (`build_harness(subagents=...)`)
 
 Off by default; registered only when a `SubagentSet` is provided, so the default
 surface stays byte-identical. Subagents are capability-minimized, ephemeral
@@ -173,19 +196,16 @@ the OTel JSONL.
 | `mcp_auth` | Configure credentials for an MCP server and reconnect it. |
 | `list_mcp_resources` / `read_mcp_resource` | Enumerate / read MCP resources (files, docs) exposed by connected servers. |
 
-### 5c. Implemented but not in the default registry
+Employee / company tools (`arceus_*`, approvals, sprint, workspace deploy) live
+in `@arceus/mcp` / chorus — not in dream. Admit them via the MCP allowlist;
+dream only ships harness roles (`planner` / `generator` / `evaluator`).
 
-Pack tools are ready for callers that enable the corresponding
-`build_harness()` flag; they stay out of the default set to keep the wire
-schema lean. `HeartbeatTool` is the single *virtual* tool advertised on wake
-turns (§10) — never part of a work session.
-
-### 5d. Registry & provenance
+### 5c. Registry & provenance
 
 `ToolRegistry` (`src/dream/tools/_registry.py`) — deterministic ordering,
-collision refusal, and a `ToolSource` provenance tag per tool
-(`DEFAULT | PER_REPO | SKILL | MCP`). Only `DEFAULT` is trusted at its
-declared tier; everything discovered rides the trust ramp (§6).
+collision refusal (per-repo may shadow with a warning), and a `ToolSource`
+provenance tag per tool (`DEFAULT | PER_REPO | SKILL | MCP`). Only `DEFAULT`
+is trusted at its declared tier; everything discovered rides the trust ramp (§6).
 
 ## 6. Permissions, tiers, trust
 
@@ -319,12 +339,14 @@ and tool calls, and `head.retry`; OTel-shaped JSONL trace per session
 run (§6). One execution mechanism so a backend swap can't reopen confinement
 holes.
 
-**Implemented** (`src/dream/sandbox/`): `SandboxAdapter` protocol +
-`SubprocessSandbox` backend (`select_backend("subprocess")`), stamped into
-every session's `context_metadata` (`SANDBOX_CONTEXT_KEY`); the `bash` tool
-resolves and confines `cwd` *before* consulting the adapter (absolute/`..`
-escapes refused), maps timeouts and stdout/stderr back through the
-three-part error contract. Docker is a deliberate refusing seam.
+**Implemented** (`src/dream/sandbox/`): `SandboxAdapter` protocol with
+`SubprocessSandbox` (local) and `DockerSandbox` (container isolation,
+`--network none` by default). Backend selected from `.harness/sandbox.toml`
+(`select_backend`); stamped into every session's `context_metadata`
+(`SANDBOX_CONTEXT_KEY`). The `bash` tool resolves and confines `cwd` *before*
+consulting the adapter (absolute/`..` escapes refused), and maps timeouts /
+stdout/stderr back through the three-part error contract. Cloud providers
+(Modal/Daytona/etc.) stay out of dream — Paperclip / chorus own those.
 
 ## 14. Glossary of context keys
 

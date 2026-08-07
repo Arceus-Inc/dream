@@ -81,9 +81,10 @@ class WebSearchTool(BaseTool):
 
     name = "web_search"
     description = (
-        "Search the web for current information and return the top results with "
-        "titles, URLs, and snippets (optionally a synthesized answer). Use this "
-        "for facts that may have changed or are outside the training data."
+        "Find URLs via Tavily search (needs DREAM_TAVILY_API_KEY / TAVILY_API_KEY). "
+        "Returns titles, URLs, and snippets — not full page bodies. Prefer this to "
+        "discover sources; then use web_fetch (no key) or web_extract (cleaned body) "
+        "to read a specific URL."
     )
     declaration = ToolDeclaration(
         risk="external", tier_required=2, timeout_seconds=_TIMEOUT_SECONDS
