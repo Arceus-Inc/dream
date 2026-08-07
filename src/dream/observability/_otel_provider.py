@@ -8,7 +8,6 @@ returns True (or from tests injecting an in-memory exporter). Uses
 from __future__ import annotations
 
 import atexit
-import logging
 from contextlib import suppress
 from dataclasses import dataclass
 
@@ -19,8 +18,6 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExporter
 from opentelemetry.trace import Tracer as SdkTracer
 
 from dream.observability._otel_config import OtelConfig
-
-_logger = logging.getLogger("dream.observability.otel")
 
 _provider: TracerProvider | None = None
 _handle: OtelProviderHandle | None = None
@@ -98,10 +95,6 @@ def get_otel_tracer(
     try:
         return build_tracer_provider(resolved, span_exporter=span_exporter)
     except ImportError:
-        _logger.warning(
-            "OTEL_EXPORTER_OTLP_ENDPOINT is set but opentelemetry packages are "
-            "missing; install dream[otel]. Running without OTLP export.",
-        )
         return None
 
 
@@ -132,10 +125,8 @@ def _traces_url(endpoint: str) -> str:
 def _shutdown_provider() -> None:
     global _provider, _handle
     if _handle is not None:
-        try:
+        with suppress(Exception):
             _handle.shutdown()
-        except Exception:
-            _logger.debug("otel provider shutdown failed", exc_info=True)
     _provider = None
     _handle = None
 

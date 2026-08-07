@@ -6,7 +6,7 @@ defaults to ``http://localhost:4318`` when unset.
 
 from __future__ import annotations
 
-import logging
+import warnings
 
 from dream.observability._composite import CompositeTracer
 from dream.observability._otel_config import is_otel_enabled, load_otel_config
@@ -15,7 +15,7 @@ from dream.observability._otel_tracer import OtelTracer
 from dream.observability._tracer import JsonlTracer, NoopTracer, Tracer
 from dream.observability._writer import TraceWriter
 
-_logger = logging.getLogger("dream.observability.otel")
+_missing_otel_warning_emitted = False
 
 
 def build_session_tracer(
@@ -36,7 +36,14 @@ def build_session_tracer(
 
     handle = get_otel_tracer(config=load_otel_config())
     if handle is None:
-        _logger.warning("OTel provider failed to start; continuing with JSONL-only tracing.")
+        global _missing_otel_warning_emitted
+        if not _missing_otel_warning_emitted:
+            warnings.warn(
+                "OTel provider failed to start; continuing with JSONL-only tracing.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            _missing_otel_warning_emitted = True
         return jsonl
     otel = OtelTracer(handle.tracer, session_id=session_id, task_id=task_id)
     return CompositeTracer((jsonl, otel))
