@@ -26,7 +26,14 @@ from __future__ import annotations
 
 import contextlib
 import json
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import (
+    AsyncGenerator,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Mapping,
+    Sequence,
+)
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -185,22 +192,16 @@ class OpenAIChatStreamer:
     async def stream_turn(
         self, messages: Sequence[ConversationMessage]
     ) -> AsyncIterator[StreamEvent]:
-        wire = conversation_to_openai_messages(
-            messages, system_prompt=self._system_prompt
-        )
+        wire = conversation_to_openai_messages(messages, system_prompt=self._system_prompt)
         chunks = await self._stream_chat(wire, self._model)
         # Own the transport stream's lifecycle: ``aclosing`` releases the httpx
         # connection (in ``httpx_chat_completion_stream``) whenever this turn is
         # closed — including an outer cancel/timeout that closes us mid-stream.
-        async with contextlib.aclosing(
-            cast(AsyncGenerator[dict[str, Any], None], chunks)
-        ):
+        async with contextlib.aclosing(cast(AsyncGenerator[dict[str, Any], None], chunks)):
             async for ev in self._consume(chunks):
                 yield ev
 
-    async def _consume(
-        self, chunks: AsyncIterator[dict[str, Any]]
-    ) -> AsyncIterator[StreamEvent]:
+    async def _consume(self, chunks: AsyncIterator[dict[str, Any]]) -> AsyncIterator[StreamEvent]:
         text_parts: list[str] = []
         tool_calls: dict[int, _ToolCallAccumulator] = {}
         usage: UsageSnapshot = UsageSnapshot()
@@ -277,9 +278,7 @@ class OpenAIChatStreamer:
         yield AssistantTurnComplete(blocks=blocks, usage=usage)
 
 
-def _merge_tool_call(
-    acc: dict[int, _ToolCallAccumulator], partial: dict[str, Any]
-) -> None:
+def _merge_tool_call(acc: dict[int, _ToolCallAccumulator], partial: dict[str, Any]) -> None:
     # ``partial`` is one streamed tool_call delta fragment, e.g.
     # {"index": 0, "id": "call_x", "type": "function",
     #  "function": {"name": "bash", "arguments": "{\"cm"}}  # arguments arrive in pieces
@@ -311,8 +310,7 @@ def _usage_from_payload(payload: dict[str, Any]) -> UsageSnapshot:
         input_tokens=int(payload.get("prompt_tokens", 0) or 0),
         output_tokens=int(payload.get("completion_tokens", 0) or 0),
         cache_read_tokens=int(
-            (payload.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
-            or 0
+            (payload.get("prompt_tokens_details") or {}).get("cached_tokens", 0) or 0
         ),
     )
 
@@ -329,12 +327,8 @@ class NoOpDispatcher:
     is loud rather than silently returning an "is_error" string.
     """
 
-    async def dispatch(
-        self, name: str, input: dict[str, Any]
-    ) -> tuple[str, bool]:
-        raise RuntimeError(
-            f"NoOpDispatcher refuses to dispatch {name!r}: no tools are registered"
-        )
+    async def dispatch(self, name: str, input: dict[str, Any]) -> tuple[str, bool]:
+        raise RuntimeError(f"NoOpDispatcher refuses to dispatch {name!r}: no tools are registered")
 
 
 # --- httpx-backed production stream factory --------------------------------
@@ -349,7 +343,7 @@ def httpx_chat_completion_stream(
     *,
     api_key: str,
     base_url: str,
-    extra_params: dict[str, Any] | None = None,
+    extra_params: Mapping[str, object] | None = None,
     timeout_seconds: float = 60.0,
 ) -> StreamChatCompletion:
     """Build a production ``StreamChatCompletion`` that talks SSE via httpx.

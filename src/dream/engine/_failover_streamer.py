@@ -1,61 +1,78 @@
-"""``FailoverStreamer`` — retry + substrate rotation at the TurnStreamer seam.
+"""``FailoverStreamer`` — credential pool + substrate rotation at the TurnStreamer seam.
 
-Harvested from the Spec-02 api layer (2026-07-18): the engine's turn path had zero
-retry — ``raise_for_status()`` propagated one 429 straight out and killed the beat.
-This wrapper composes :class:`~dream.api.failover.FailoverPolicy` (spec 02 §12-16)
-with the engine's ``TurnStreamer`` seam so every substrate behind it inherits:
+Two-layer resilience (Spec 02):
 
-- bounded same-substrate retries with backoff on retryable failures (429/5xx/transport)
-- rotation to the next substrate when retries exhaust; sticky (no auto switch-back, §16)
-- turn boundaries only (§13): an error after events were yielded re-raises — replaying a
-  half-yielded turn would duplicate events downstream
-- transparency (§12): nothing is injected into prompt history; observability via ``on_event``
-- :class:`~dream.api.failover.NoLiveSubstrate` on chain exhaustion (criterion 17)
+- **Inner:** bounded retries on the same live credential (backoff / Retry-After cap).
+- **Outer:** :class:`~dream.api.credentials.CredentialPool` benches dead keys; when the
+  pool is empty, :class:`~dream.api.failover.FailoverPolicy` advances substrate.
 
-With a single substrate configured (today's live stack: one Azure deployment) the wrapper
-degrades to bounded retry — the rotation seam is ready for the day a second provider key
-lands in the environment.
+Failures are classified once via :func:`~dream.api.error_classify.classify_failure`
+so overflow compresses (never failovers) and auth benches without burning retries.
 """
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
-from typing import TYPE_CHECKING, Any
 
-import httpx
-
-from dream.api.failover import EventCallback, FailoverPolicy, NoLiveSubstrate
-
-if TYPE_CHECKING:
-    from dream.engine._events import StreamEvent
-    from dream.engine._messages import ConversationMessage
-
-# 408/429 + server-side failures are worth retrying on the same substrate; auth
-# (401/403) means the substrate's credential is dead — rotate without burning retries.
-_RETRYABLE_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
-_AUTH_STATUSES = frozenset({401, 403})
+from dream.api.credentials import AttemptOutcome, Credential, CredentialPool, NoLiveCredential
+from dream.api.error_classify import ClassifiedFailure, classify_failure
+from dream.api.failover import FailoverPolicy, FailoverReason, NoLiveSubstrate
+from dream.api.failover_events import EventCallback
+from dream.engine._events import StreamEvent
+from dream.engine._loop import TurnStreamer
+from dream.engine._messages import ConversationMessage
+from dream.engine._substrate_slot import SubstrateSlot
 
 
 class FailoverStreamer:
-    """Wrap an ordered chain of named TurnStreamers with retry + failover."""
+    """Wrap an ordered chain of :class:`SubstrateSlot`s with retry + failover."""
 
     def __init__(
         self,
-        streamers: Sequence[tuple[str, Any]],
+        slots: Sequence[SubstrateSlot],
         *,
-        retries_per_substrate: int = 2,
+        retries_per_credential: int = 2,
         backoff_seconds: Sequence[float] = (1.0, 4.0),
         on_event: EventCallback | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
-        if not streamers:
-            raise ValueError("FailoverStreamer requires at least one substrate")
-        self._policy = FailoverPolicy(order=[name for name, _ in streamers], on_event=on_event)
-        self._by_name = dict(streamers)
-        self._retries = retries_per_substrate
+        if not slots:
+            raise ValueError("FailoverStreamer requires at least one substrate slot")
+        names = [slot.name for slot in slots]
+        if len(set(names)) != len(names):
+            raise ValueError(f"duplicate substrate names in slots: {names}")
+        self._slots = {slot.name: slot for slot in slots}
+        self._policy = FailoverPolicy(order=list(names), on_event=on_event)
+        self._retries = retries_per_credential
         self._backoff = tuple(backoff_seconds)
         self._sleep = sleep
+
+    @classmethod
+    def from_named_streamers(
+        cls,
+        streamers: Sequence[tuple[str, TurnStreamer]],
+        *,
+        retries_per_credential: int = 2,
+        backoff_seconds: Sequence[float] = (1.0, 4.0),
+        on_event: EventCallback | None = None,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> FailoverStreamer:
+        """Build slots with a one-credential pool per named streamer (test helper)."""
+        slots: list[SubstrateSlot] = []
+        for name, streamer in streamers:
+            pool = CredentialPool(
+                name,
+                (Credential(label="sole", key="unused", substrate=name),),
+            )
+            slots.append(SubstrateSlot(name=name, pool=pool, streamers={"sole": streamer}))
+        return cls(
+            slots,
+            retries_per_credential=retries_per_credential,
+            backoff_seconds=backoff_seconds,
+            on_event=on_event,
+            sleep=sleep,
+        )
 
     async def stream_turn(
         self, messages: Sequence[ConversationMessage]
@@ -63,37 +80,83 @@ class FailoverStreamer:
         last_error: BaseException | None = None
         while True:
             name = self._policy.active()
-            attempts = self._retries + 1
-            for attempt in range(attempts):
-                if attempt:
-                    # Backoff before each retry; the last configured delay repeats.
-                    delay = self._backoff[min(attempt - 1, len(self._backoff) - 1)]
-                    await self._sleep(delay)
-                yielded = False
-                try:
-                    async for event in self._by_name[name].stream_turn(messages):
-                        yielded = True
-                        yield event
-                    return
-                except httpx.HTTPStatusError as exc:
-                    if yielded:  # mid-turn (§13): no transparent replay, ever
-                        raise
-                    last_error = exc
-                    status = exc.response.status_code
-                    if status in _AUTH_STATUSES:
-                        break  # substrate-level failure — rotate, don't re-send a dead key
-                    if status not in _RETRYABLE_STATUSES:
-                        raise  # our request is malformed; neither retry nor rotation helps
-                except httpx.TransportError as exc:
-                    if yielded:
-                        raise
-                    last_error = exc
+            slot = self._slots[name]
             try:
-                self._policy.next_substrate(after=name)
+                async for event in self._stream_with_pool(slot, messages):
+                    yield event
+                return
+            except _PoolExhausted as exc:
+                last_error = exc.cause
+                reason = exc.reason
+            try:
+                self._policy.next_substrate(after=name, reason=reason)
             except NoLiveSubstrate:
                 raise NoLiveSubstrate(
                     f"failover chain exhausted after {name!r}; last error: {last_error!r}"
                 ) from last_error
+
+    async def _stream_with_pool(
+        self,
+        slot: SubstrateSlot,
+        messages: Sequence[ConversationMessage],
+    ) -> AsyncIterator[StreamEvent]:
+        last_error: BaseException | None = None
+        last_reason = FailoverReason.POOL_EXHAUSTED
+        while True:
+            try:
+                cred = slot.pool.pick_live()
+            except NoLiveCredential as exc:
+                raise _PoolExhausted(cause=last_error or exc, reason=last_reason) from exc
+
+            streamer = slot.streamers[cred.label]
+            attempts = self._retries + 1
+            for attempt in range(attempts):
+                if attempt:
+                    delay = self._backoff[min(attempt - 1, len(self._backoff) - 1)]
+                    await self._sleep(delay)
+                yielded = False
+                try:
+                    async for event in streamer.stream_turn(messages):
+                        yielded = True
+                        yield event
+                    slot.pool.record_attempt(cred.label, outcome=AttemptOutcome.SUCCESS)
+                    return
+                except BaseException as exc:
+                    if yielded:
+                        raise
+                    last_error = exc
+                    classified = classify_failure(exc)
+                    last_reason = _reason_for(classified)
+                    if classified.should_compress:
+                        raise
+                    if not classified.retryable:
+                        slot.pool.record_attempt(cred.label, outcome=classified.outcome)
+                        # Hard refusals are request bugs — do not burn the pool.
+                        if classified.outcome == AttemptOutcome.HARD_REFUSAL:
+                            raise
+                        break
+                    if attempt + 1 >= attempts:
+                        slot.pool.record_attempt(cred.label, outcome=classified.outcome)
+                        break
+                    if classified.backoff_seconds is not None:
+                        await self._sleep(classified.backoff_seconds)
+
+
+class _PoolExhausted(Exception):
+    """Internal: active substrate has no live credentials left."""
+
+    def __init__(self, *, cause: BaseException | None, reason: FailoverReason) -> None:
+        super().__init__("substrate credential pool exhausted")
+        self.cause = cause
+        self.reason = reason
+
+
+def _reason_for(classified: ClassifiedFailure) -> FailoverReason:
+    if classified.outcome == AttemptOutcome.AUTH:
+        return FailoverReason.AUTH
+    if classified.outcome == AttemptOutcome.TRANSIENT_EXHAUSTED:
+        return FailoverReason.TRANSIENT_EXHAUSTED
+    return FailoverReason.POOL_EXHAUSTED
 
 
 __all__ = ["FailoverStreamer"]

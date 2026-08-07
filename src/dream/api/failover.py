@@ -1,31 +1,32 @@
 """Transparent failover across substrates (Spec 02 §12-16).
 
-The policy carries the dropdown order from ``substrates.toml`` and tracks
-which substrate is currently active. It does **not** know about credential
-pools — that's :mod:`dream.api.credentials`' job. The dispatcher calls
+The policy carries the dropdown order and tracks which substrate is currently
+active. It does **not** know about credential pools — that's
+:mod:`dream.api.credentials`' job. The dispatcher calls
 :meth:`FailoverPolicy.next_substrate` when *all* credentials for the active
 substrate are benched; this module's only concern is which substrate comes
 next and whether the switch is allowed mid-turn.
 
-Three invariants the spec calls out by name (and that are easy to
-accidentally break):
+Three invariants the spec calls out by name:
 
 1. Failover is **transparent to the agent** — no event is injected into
    prompt history; the operator-facing event goes through ``on_event``.
 2. Failover happens **at turn boundaries only** unless
-   :attr:`allow_mid_turn` is explicitly set. The dispatcher is expected
-   to consult :meth:`allow_mid_turn_switch` before issuing a switch
-   inside an in-flight turn.
-3. ``health.recovered`` is emitted **without** auto-switching back, so a
-   flapping substrate doesn't cause the runner to flap with it. Switch-back
-   is operator-driven.
+   :attr:`allow_mid_turn` is explicitly set.
+3. ``health.recovered`` is emitted **without** auto-switching back.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+
+from dream.api.failover_events import (
+    EventCallback,
+    FailoverReason,
+    SubstrateFailoverEvent,
+    SubstrateHealthDegradedEvent,
+    SubstrateHealthRecoveredEvent,
+)
 
 
 class NoLiveSubstrate(RuntimeError):
@@ -37,17 +38,12 @@ class NoLiveSubstrate(RuntimeError):
     """
 
 
-EventCallback = Callable[[dict[str, Any]], None]
-
-
 @dataclass
 class FailoverPolicy:
     """Stateful policy object that walks the substrate dropdown.
 
-    ``order`` is the ranked list of substrate names (most-preferred first),
-    sourced from ``.harness/substrates.toml`` ``priority``. ``on_event`` is
-    invoked for every failover, recovery, or degradation; it's the wire to
-    the runner's observability layer.
+    ``order`` is the ranked list of substrate names (most-preferred first).
+    ``on_event`` is invoked for every failover or health probe transition.
     """
 
     order: list[str]
@@ -62,36 +58,26 @@ class FailoverPolicy:
             raise ValueError("FailoverPolicy requires a non-empty order")
         self._active = self.order[0]
 
-    # --- queries -------------------------------------------------------------
-
     def active(self) -> str:
         """The substrate the dispatcher should route to right now."""
         return self._active
 
     def allow_mid_turn_switch(self) -> bool:
-        """Whether the dispatcher is allowed to switch mid-turn.
-
-        Default ``False`` per §13: mid-turn switching breaks tool-call
-        correlation and replays cost. An explicit ``allow_mid_turn=True``
-        opts in.
-        """
+        """Whether the dispatcher is allowed to switch mid-turn."""
         return self.allow_mid_turn
 
-    # --- transitions ---------------------------------------------------------
-
-    def next_substrate(self, *, after: str, reason: str = "pool_exhausted") -> str:
+    def next_substrate(
+        self,
+        *,
+        after: str,
+        reason: FailoverReason = FailoverReason.POOL_EXHAUSTED,
+    ) -> str:
         """Advance one step in the failover chain.
 
-        Updates :meth:`active` and emits ``substrate.failover``. Raises
-        :class:`NoLiveSubstrate` when ``after`` is the last entry (criterion
-        17) or isn't in the configured order at all (operator removed the
-        active substrate mid-session — deferred to next start, but the
-        in-memory chain is what we honour).
+        Updates :meth:`active` and emits :class:`SubstrateFailoverEvent`.
+        Raises :class:`NoLiveSubstrate` when the chain is exhausted.
         """
         if after != self._active:
-            # Advance only from the true current position; a stale caller value
-            # could otherwise cause a no-op or backward switch and break chain
-            # exhaustion.
             raise ValueError(
                 f"next_substrate(after={after!r}) does not match the active "
                 f"substrate {self._active!r}; advance from the current active only"
@@ -111,48 +97,36 @@ class FailoverPolicy:
         chosen = self.order[idx + 1]
         self._active = chosen
         self._emit(
-            {
-                "type": "substrate.failover",
-                "from": after,
-                "to": chosen,
-                "reason": reason,
-            }
+            SubstrateFailoverEvent(
+                from_substrate=after,
+                to_substrate=chosen,
+                reason=reason,
+            )
         )
         return chosen
 
     def force_active(self, substrate: str) -> None:
-        """Operator-driven switch-back (§16): set the active substrate directly.
-
-        Distinct from :meth:`next_substrate` — that walks the chain on pool
-        exhaustion and emits a failover event; this is the operator saying
-        "go back to the primary, I cleared its issue". Validates membership but
-        emits no event (the switch is deliberate, not a degradation signal).
-        """
+        """Operator-driven switch-back (§16): set the active substrate directly."""
         if substrate not in self.order:
-            raise ValueError(
-                f"unknown substrate {substrate!r}; known: {self.order}"
-            )
+            raise ValueError(f"unknown substrate {substrate!r}; known: {self.order}")
         self._active = substrate
 
     def record_probe(self, substrate: str, *, healthy: bool) -> None:
-        """Record a background health probe result (§16).
-
-        Emits ``health.recovered`` on a clean → up transition and
-        ``health.degraded`` on a fresh degradation, but **never** switches
-        active. Switch-back is operator-driven so the runner doesn't flap.
-        """
+        """Record a background health probe result (§16)."""
         previous = self._probe_state.get(substrate)
         self._probe_state[substrate] = healthy
 
         if healthy and previous is False:
-            self._emit({"type": "substrate.health.recovered", "substrate": substrate})
+            self._emit(SubstrateHealthRecoveredEvent(substrate=substrate))
         elif not healthy and previous is not False:
-            # First-ever probe failing also counts as a fresh degradation.
-            self._emit({"type": "substrate.health.degraded", "substrate": substrate})
+            self._emit(SubstrateHealthDegradedEvent(substrate=substrate))
 
-    # --- internals -----------------------------------------------------------
-
-    def _emit(self, event: dict[str, Any]) -> None:
+    def _emit(
+        self,
+        event: SubstrateFailoverEvent
+        | SubstrateHealthRecoveredEvent
+        | SubstrateHealthDegradedEvent,
+    ) -> None:
         if self.on_event is not None:
             self.on_event(event)
 
@@ -160,5 +134,6 @@ class FailoverPolicy:
 __all__ = [
     "EventCallback",
     "FailoverPolicy",
+    "FailoverReason",
     "NoLiveSubstrate",
 ]

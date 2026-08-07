@@ -21,12 +21,8 @@ from typing import Any
 from dream.config.paths import DreamPaths
 from dream.contracts.plugin import Plugin
 from dream.contracts.provider import ProviderCapabilities
-from dream.engine._adapter_openai import (
-    OpenAIChatStreamer,
-    httpx_chat_completion_stream,
-)
 from dream.engine._engine import QueryEngine, build_query_engine
-from dream.engine._failover_streamer import FailoverStreamer
+from dream.engine._failover_wire import StreamerParts, build_failover_streamer, slots_for_session
 from dream.engine._permission_gate import (
     compute_session_role_allowlist,
     make_permission_gate,
@@ -580,24 +576,22 @@ def _build_session_engine(
         memory_catalogue=memory_catalogue,
         system_prompt=options.system_prompt,
     )
-    # Failover harvest (2026-07-18): every beat's turn rides FailoverStreamer, so a 429/5xx
-    # gets bounded retry instead of killing the beat. One substrate today — the rotation seam
-    # activates when a second (name, streamer) pair is added here.
-    streamer = FailoverStreamer(
-        [
-            (
-                "primary",
-                OpenAIChatStreamer(
-                    stream_chat_completion=httpx_chat_completion_stream(
-                        api_key=api_key,
-                        base_url=base_url,
-                        extra_params=_session_extra_params(tools_wire, options),
-                    ),
-                    model=options.model or model,
-                    system_prompt=system_prompt,
-                ),
-            )
-        ]
+    # Failover harvest + Spec-02 pool: every beat rides FailoverStreamer with a
+    # CredentialPool (single env key by default; ``.harness/credentials.toml``
+    # when present so multi-key cooldown rotation is live).
+    parts = StreamerParts(
+        model=options.model or model,
+        base_url=base_url,
+        system_prompt=system_prompt,
+        extra_params=_session_extra_params(tools_wire, options),
+    )
+    creds_file = working_dir / ".harness" / "credentials.toml"
+    streamer = build_failover_streamer(
+        slots_for_session(
+            api_key=api_key,
+            parts=parts,
+            credentials_path=creds_file if creds_file.is_file() else None,
+        )
     )
     # OTel-shaped trace (Spec 12a): one durable JSONL per session under the
     # task sidecar. The session_id doubles as the sidecar dir key.
