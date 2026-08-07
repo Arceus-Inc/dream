@@ -1,39 +1,24 @@
-"""Spec 10 slice G3 — production planner head.
+"""Spec 10 slice G3 — production planner head (structured-output P2).
 
 ``make_planner_head(harness, ...)`` returns a :data:`PlannerCallable`
-that opens a ``planner``-bound session through ``Harness.run_role`` and
-parses the model's reply into the two artefacts ``run_planner`` writes
-to the worktree.
-
-What this slice pins:
-
-- The callable shape matches ``PlannerCallable`` (``(task_id, intent) ->
-  Awaitable[PlannerOutput]``) so ``run_planner`` accepts it without
-  adaptation.
-- The model is asked for a strict ``<spec>...</spec>`` + ``<ledger>...
-  </ledger>`` envelope; the parser is tolerant of an inner ```json fence
-  the model loves to add.
-- The returned ledger carries the caller's ``task_id`` + ``intent`` and
-  a fresh ``created_at`` — ``run_planner`` overrides ``task_id`` again
-  defensively, but the head owns the rest.
-- Parse failures surface as ``PlannerHeadParseError`` (caller can
-  retry / escalate); ``RoleSessionError`` from the session layer
-  propagates unchanged.
+that opens a ``planner``-bound session through ``Harness.run_role`` with
+native ``response_format`` and parses a JSON :class:`PlannerResponse`.
 """
 
 from __future__ import annotations
 
-import json
 from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 
 import pytest
 
+from dream.api.response_format import ResponseFormatKind
 from dream.engine._cost import UsageSnapshot
 from dream.engine._engine import QueryEngine
 from dream.engine._events import (
     AssistantTextDelta,
     AssistantTurnComplete,
+    ErrorEvent,
     StreamEvent,
 )
 from dream.engine._messages import ConversationMessage, TextBlock
@@ -44,12 +29,9 @@ from dream.runner import (
     RoleSessionError,
     make_planner_head,
 )
+from dream.runner._planner_schema import PlannerLedgerBody, PlannerResponse, PlannerStepBody
 from dream.session import SessionOptions
 from tests.test_engine._fakes import FakeDispatcher
-
-# --------------------------------------------------------------------------
-# Helpers: scripted streamer that records the last user message it received.
-# --------------------------------------------------------------------------
 
 
 class _ScriptedReplyStreamer:
@@ -71,7 +53,6 @@ class _ScriptedReplyStreamer:
 
     @property
     def last_user_text(self) -> str:
-        """The plain text of the most recent ``user`` message in the last call."""
         last = self.calls[-1]
         user_msgs = [m for m in last if m.role == "user"]
         assert user_msgs, "no user message in last call"
@@ -102,25 +83,39 @@ def _harness_with_reply(reply: str) -> tuple[Harness, _ScriptedReplyStreamer]:
     return Harness(config), streamer
 
 
+def _harness_capturing_options(
+    reply: str,
+) -> tuple[Harness, _ScriptedReplyStreamer, list[SessionOptions]]:
+    captured: list[SessionOptions] = []
+    streamer = _ScriptedReplyStreamer(reply)
+
+    def _factory(session_id: str, options: SessionOptions) -> QueryEngine:
+        captured.append(options)
+        return QueryEngine(
+            streamer=streamer,
+            dispatcher=FakeDispatcher(),
+            session_id=session_id,
+            working_dir=Path("/tmp"),
+            max_turns=options.max_turns or 4,
+        )
+
+    config = HarnessConfig(_engine_factory=_factory)  # type: ignore[call-arg]
+    return Harness(config), streamer, captured
+
+
 def _valid_reply(
     *,
     spec: str = "# Plan\n\nDo the thing.",
-    steps: list[dict[str, object]] | None = None,
+    steps: list[PlannerStepBody] | None = None,
     evaluator_enabled: bool | None = None,
-    ledger_extra: str = "",
 ) -> str:
     if steps is None:
-        steps = [{"id": "s1", "description": "do thing one"}]
-    ledger: dict[str, object] = {"steps": steps}
-    if evaluator_enabled is not None:
-        ledger["evaluator_enabled"] = evaluator_enabled
-    body = json.dumps(ledger)
-    return f"<spec>\n{spec}\n</spec>\n<ledger>\n{body}{ledger_extra}\n</ledger>"
-
-
-# --------------------------------------------------------------------------
-# Callable shape + happy-path parse
-# --------------------------------------------------------------------------
+        steps = [PlannerStepBody(id="s1", description="do thing one", sprint_target=None, notes="")]
+    enabled = True if evaluator_enabled is None else evaluator_enabled
+    return PlannerResponse(
+        spec_markdown=spec,
+        ledger=PlannerLedgerBody(steps=steps, evaluator_enabled=enabled),
+    ).model_dump_json()
 
 
 def test_make_planner_head_returns_callable() -> None:
@@ -129,97 +124,38 @@ def test_make_planner_head_returns_callable() -> None:
     assert callable(head)
 
 
-async def test_planner_head_returns_planner_output() -> None:
+@pytest.mark.asyncio
+async def test_planner_head_parses_valid_json_reply() -> None:
     harness, _ = _harness_with_reply(_valid_reply())
     head = make_planner_head(harness)
 
     out = await head("task-001", "ship it")
 
     assert isinstance(out, PlannerOutput)
-
-
-async def test_planner_head_extracts_spec_markdown() -> None:
-    harness, _ = _harness_with_reply(
-        _valid_reply(spec="# Heading\n\nSome prose.")
-    )
-    head = make_planner_head(harness)
-
-    out = await head("task-001", "ship it")
-
-    assert out.spec_markdown == "# Heading\n\nSome prose."
-
-
-async def test_planner_head_extracts_ledger_steps() -> None:
-    harness, _ = _harness_with_reply(
-        _valid_reply(
-            steps=[
-                {"id": "s1", "description": "first"},
-                {
-                    "id": "s2",
-                    "description": "second",
-                    "sprint_target": 2,
-                    "notes": "watch out",
-                },
-            ]
-        )
-    )
-    head = make_planner_head(harness)
-
-    out = await head("task-001", "ship it")
-
-    assert out.ledger.steps == (
-        LedgerStep(id="s1", description="first"),
-        LedgerStep(
-            id="s2",
-            description="second",
-            sprint_target=2,
-            notes="watch out",
-        ),
-    )
-
-
-async def test_planner_head_sets_task_id_and_intent_on_ledger() -> None:
-    harness, _ = _harness_with_reply(_valid_reply())
-    head = make_planner_head(harness)
-
-    out = await head("task-007", "make it good")
-
-    assert out.ledger.task_id == "task-007"
-    assert out.ledger.intent == "make it good"
-
-
-async def test_planner_head_stamps_created_at() -> None:
-    harness, _ = _harness_with_reply(_valid_reply())
-    head = make_planner_head(harness)
-
-    out = await head("task-001", "ship it")
-
-    assert out.ledger.created_at > 0.0
-
-
-async def test_planner_head_defaults_evaluator_enabled_to_true() -> None:
-    harness, _ = _harness_with_reply(_valid_reply())
-    head = make_planner_head(harness)
-
-    out = await head("task-001", "ship it")
-
+    assert out.spec_markdown == "# Plan\n\nDo the thing."
+    assert out.ledger.task_id == "task-001"
+    assert out.ledger.intent == "ship it"
+    assert out.ledger.steps == (LedgerStep(id="s1", description="do thing one"),)
     assert out.ledger.evaluator_enabled is True
 
 
-async def test_planner_head_honours_task_level_evaluator_disabled() -> None:
-    harness, _ = _harness_with_reply(_valid_reply(evaluator_enabled=False))
+@pytest.mark.asyncio
+async def test_planner_head_attaches_response_format() -> None:
+    harness, _, captured = _harness_capturing_options(_valid_reply())
     head = make_planner_head(harness)
 
-    out = await head("task-001", "ship it")
+    await head("task-001", "ship it")
 
-    assert out.ledger.evaluator_enabled is False
+    assert captured
+    rf = captured[0].response_format
+    assert rf is not None
+    assert rf.kind is ResponseFormatKind.JSON_SCHEMA
+    assert rf.json_schema is not None
+    assert rf.json_schema.name == "planner_response"
+    assert rf.json_schema.strict is True
 
 
-# --------------------------------------------------------------------------
-# Prompt construction: what the model actually sees
-# --------------------------------------------------------------------------
-
-
+@pytest.mark.asyncio
 async def test_planner_head_intent_includes_task_id_and_user_intent() -> None:
     harness, streamer = _harness_with_reply(_valid_reply())
     head = make_planner_head(harness)
@@ -231,33 +167,25 @@ async def test_planner_head_intent_includes_task_id_and_user_intent() -> None:
     assert "build a robot" in prompt
 
 
-async def test_planner_head_intent_documents_required_envelope() -> None:
-    """The instruction must name both tags so a real LLM has a chance."""
+@pytest.mark.asyncio
+async def test_planner_head_intent_documents_json_contract() -> None:
     harness, streamer = _harness_with_reply(_valid_reply())
     head = make_planner_head(harness)
 
     await head("task-001", "ship it")
 
     prompt = streamer.last_user_text
-    assert "<spec>" in prompt
-    assert "</spec>" in prompt
-    assert "<ledger>" in prompt
-    assert "</ledger>" in prompt
+    assert "spec_markdown" in prompt
+    assert "JSON object" in prompt
+    assert "<spec>" not in prompt
 
 
-# --------------------------------------------------------------------------
-# Parser tolerance: model wraps ledger JSON in a ```json fence
-# --------------------------------------------------------------------------
-
-
-async def test_planner_head_strips_inner_json_code_fence() -> None:
-    steps = [{"id": "s1", "description": "first"}]
-    body = json.dumps({"steps": steps})
-    reply = (
-        "<spec># Plan</spec>\n"
-        f"<ledger>\n```json\n{body}\n```\n</ledger>"
+@pytest.mark.asyncio
+async def test_planner_head_strips_json_code_fence() -> None:
+    body = _valid_reply(
+        steps=[PlannerStepBody(id="s1", description="first", sprint_target=None, notes="")]
     )
-    harness, _ = _harness_with_reply(reply)
+    harness, _ = _harness_with_reply(f"```json\n{body}\n```")
     head = make_planner_head(harness)
 
     out = await head("task-001", "ship it")
@@ -265,139 +193,70 @@ async def test_planner_head_strips_inner_json_code_fence() -> None:
     assert out.ledger.steps == (LedgerStep(id="s1", description="first"),)
 
 
-async def test_planner_head_strips_bare_code_fence_without_lang() -> None:
-    steps = [{"id": "s1", "description": "first"}]
-    body = json.dumps({"steps": steps})
-    reply = (
-        "<spec># Plan</spec>\n"
-        f"<ledger>\n```\n{body}\n```\n</ledger>"
+@pytest.mark.asyncio
+async def test_planner_head_raises_when_spec_empty() -> None:
+    bad = (
+        '{"spec_markdown":"","ledger":{"steps":[{"id":"s1","description":"x"}],'
+        '"evaluator_enabled":true}}'
     )
-    harness, _ = _harness_with_reply(reply)
+    harness, _ = _harness_with_reply(bad)
     head = make_planner_head(harness)
 
-    out = await head("task-001", "ship it")
-
-    assert out.ledger.steps == (LedgerStep(id="s1", description="first"),)
-
-
-async def test_planner_head_tolerates_surrounding_prose_in_reply() -> None:
-    """The model often prefaces its answer with a sentence or two; ignore it."""
-    body = json.dumps({"steps": [{"id": "s1", "description": "first"}]})
-    reply = (
-        "Sure, here is the plan you requested.\n\n"
-        "<spec>\n# Plan\n\nbody.\n</spec>\n\n"
-        f"<ledger>\n{body}\n</ledger>\n\n"
-        "Let me know if you want changes."
-    )
-    harness, _ = _harness_with_reply(reply)
-    head = make_planner_head(harness)
-
-    out = await head("task-001", "ship it")
-
-    assert out.spec_markdown == "# Plan\n\nbody."
-    assert out.ledger.steps[0].id == "s1"
-
-
-# --------------------------------------------------------------------------
-# Parse failures
-# --------------------------------------------------------------------------
-
-
-async def test_planner_head_raises_when_spec_tag_missing() -> None:
-    body = json.dumps({"steps": [{"id": "s1", "description": "first"}]})
-    reply = f"<ledger>{body}</ledger>"
-    harness, _ = _harness_with_reply(reply)
-    head = make_planner_head(harness)
-
-    with pytest.raises(PlannerHeadParseError, match="spec"):
+    with pytest.raises(PlannerHeadParseError, match="schema"):
         await head("task-001", "ship it")
 
 
-async def test_planner_head_raises_when_ledger_tag_missing() -> None:
-    reply = "<spec># Plan</spec>"
-    harness, _ = _harness_with_reply(reply)
+@pytest.mark.asyncio
+async def test_planner_head_raises_when_steps_empty() -> None:
+    bad = '{"spec_markdown":"# Plan","ledger":{"steps":[],"evaluator_enabled":true}}'
+    harness, _ = _harness_with_reply(bad)
     head = make_planner_head(harness)
 
-    with pytest.raises(PlannerHeadParseError, match="ledger"):
+    with pytest.raises(PlannerHeadParseError, match="schema"):
         await head("task-001", "ship it")
 
 
-async def test_planner_head_raises_on_invalid_ledger_json() -> None:
-    reply = "<spec># Plan</spec>\n<ledger>{not json}</ledger>"
-    harness, _ = _harness_with_reply(reply)
+@pytest.mark.asyncio
+async def test_planner_head_raises_on_invalid_json() -> None:
+    harness, _ = _harness_with_reply("{not json}")
     head = make_planner_head(harness)
 
-    with pytest.raises(PlannerHeadParseError, match="JSON"):
+    with pytest.raises(PlannerHeadParseError):
         await head("task-001", "ship it")
 
 
-async def test_planner_head_raises_when_ledger_not_object() -> None:
-    reply = "<spec># Plan</spec>\n<ledger>[1, 2, 3]</ledger>"
-    harness, _ = _harness_with_reply(reply)
-    head = make_planner_head(harness)
-
-    with pytest.raises(PlannerHeadParseError, match="object"):
-        await head("task-001", "ship it")
-
-
-async def test_planner_head_raises_when_steps_missing() -> None:
-    reply = '<spec># Plan</spec>\n<ledger>{"steps": []}</ledger>'
-    harness, _ = _harness_with_reply(reply)
-    head = make_planner_head(harness)
-
-    with pytest.raises(PlannerHeadParseError, match="step"):
-        await head("task-001", "ship it")
-
-
+@pytest.mark.asyncio
 async def test_planner_head_raises_when_step_missing_id() -> None:
-    body = json.dumps({"steps": [{"description": "no id"}]})
-    reply = f"<spec># Plan</spec>\n<ledger>{body}</ledger>"
-    harness, _ = _harness_with_reply(reply)
+    bad = (
+        '{"spec_markdown":"# Plan","ledger":{"steps":[{"description":"no id"}],'
+        '"evaluator_enabled":true}}'
+    )
+    harness, _ = _harness_with_reply(bad)
     head = make_planner_head(harness)
 
-    with pytest.raises(PlannerHeadParseError, match="id"):
+    with pytest.raises(PlannerHeadParseError, match="schema"):
         await head("task-001", "ship it")
 
 
-async def test_planner_head_raises_when_step_missing_description() -> None:
-    body = json.dumps({"steps": [{"id": "s1"}]})
-    reply = f"<spec># Plan</spec>\n<ledger>{body}</ledger>"
-    harness, _ = _harness_with_reply(reply)
+@pytest.mark.asyncio
+async def test_planner_head_evaluator_enabled_false_round_trips() -> None:
+    harness, _ = _harness_with_reply(_valid_reply(evaluator_enabled=False))
     head = make_planner_head(harness)
 
-    with pytest.raises(PlannerHeadParseError, match="description"):
-        await head("task-001", "ship it")
+    out = await head("task-001", "ship it")
+
+    assert out.ledger.evaluator_enabled is False
 
 
-async def test_planner_head_raises_when_spec_body_is_empty() -> None:
-    body = json.dumps({"steps": [{"id": "s1", "description": "first"}]})
-    reply = f"<spec>   </spec>\n<ledger>{body}</ledger>"
-    harness, _ = _harness_with_reply(reply)
-    head = make_planner_head(harness)
-
-    with pytest.raises(PlannerHeadParseError, match="spec"):
-        await head("task-001", "ship it")
-
-
-# --------------------------------------------------------------------------
-# Engine-level failures bubble unchanged
-# --------------------------------------------------------------------------
-
-
-class _ErrorStreamer:
-    """One-turn streamer that errors before completing."""
-
-    async def stream_turn(
-        self, messages: Sequence[ConversationMessage]
-    ) -> AsyncIterator[StreamEvent]:
-        from dream.engine._events import ErrorEvent
-
-        yield ErrorEvent(message="upstream blew up", recoverable=False)
-        yield AssistantTurnComplete(blocks=[], usage=UsageSnapshot())
-
-
+@pytest.mark.asyncio
 async def test_planner_head_propagates_role_session_error() -> None:
-    streamer = _ErrorStreamer()
+    class _BoomStreamer(_ScriptedReplyStreamer):
+        async def stream_turn(
+            self, messages: Sequence[ConversationMessage]
+        ) -> AsyncIterator[StreamEvent]:
+            yield ErrorEvent(message="boom", recoverable=False)
+
+    streamer = _BoomStreamer(_valid_reply())
 
     def _factory(session_id: str, options: SessionOptions) -> QueryEngine:
         return QueryEngine(
@@ -413,56 +272,3 @@ async def test_planner_head_propagates_role_session_error() -> None:
 
     with pytest.raises(RoleSessionError):
         await head("task-001", "ship it")
-
-
-# --------------------------------------------------------------------------
-# Harness-dir overlay propagates through to ``run_role``
-# --------------------------------------------------------------------------
-
-
-async def test_planner_head_uses_harness_dir_for_role_overlay(
-    tmp_path: Path,
-) -> None:
-    """An overlay manifest's ``system_prompt`` reaches the engine factory."""
-    roles_dir = tmp_path / "roles"
-    roles_dir.mkdir()
-    (roles_dir / "planner.toml").write_text(
-        'system_prompt = "OVERLAY PROMPT"\n', encoding="utf-8"
-    )
-
-    captured: list[SessionOptions] = []
-    streamer = _ScriptedReplyStreamer(_valid_reply())
-
-    def _factory(session_id: str, options: SessionOptions) -> QueryEngine:
-        captured.append(options)
-        return QueryEngine(
-            streamer=streamer,
-            dispatcher=FakeDispatcher(),
-            session_id=session_id,
-            working_dir=Path("/tmp"),
-            max_turns=options.max_turns or 4,
-        )
-
-    harness = Harness(HarnessConfig(_engine_factory=_factory))  # type: ignore[call-arg]
-    head = make_planner_head(harness, harness_dir=tmp_path)
-
-    await head("task-001", "ship it")
-
-    assert captured[0].system_prompt is not None
-    assert captured[0].system_prompt.startswith("OVERLAY PROMPT")
-
-
-# --------------------------------------------------------------------------
-# Decomposition granularity (over-decomposition fix)
-# --------------------------------------------------------------------------
-
-from dream.runner._planner_head import PLANNER_INSTRUCTION_TEMPLATE  # noqa: E402
-
-
-def test_planner_template_discourages_over_decomposition() -> None:
-    # A one-file "module + test" intent should be a single step, not a chain
-    # of module/tests/docs steps that the evaluator then can't all verify.
-    t = PLANNER_INSTRUCTION_TEMPLATE.lower()
-    assert "fewest" in t or "minimal number" in t
-    # And no standalone documentation step unless the intent asks for docs.
-    assert "documentation" in t

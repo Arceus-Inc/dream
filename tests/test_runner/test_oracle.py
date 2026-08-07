@@ -95,7 +95,13 @@ def _step() -> LedgerStep:
 
 
 def _pass_verdict() -> str:
-    return "<verdict>" + json.dumps({"outcome": "pass", "score": 1.0}) + "</verdict>"
+    return (
+        "<verdict>"
+        + json.dumps(
+            {"outcome": "pass", "score": 1.0, "notes": "", "items": []}
+        )
+        + "</verdict>"
+    )
 
 
 # --------------------------------------------------------------------------

@@ -9,11 +9,23 @@ OpenAI-compatible adapters:
 
 Keeping it here means there is exactly one place to update when a new
 reasoning-model family lands, instead of two adapters drifting apart.
+
+Structured-output types live in :mod:`dream.api.response_format`;
+``resolve_structured_output`` is re-exported here for a single import path.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
+
+from dream.api.response_format import (
+    JsonSchema,
+    JsonSchemaBinding,
+    ResponseFormat,
+    ResponseFormatKind,
+    resolve_structured_output,
+)
 
 _REASONING_MODEL_PREFIXES: tuple[str, ...] = ("gpt-5", "o1", "o3", "o4")
 
@@ -30,7 +42,7 @@ def is_reasoning_model(model: str) -> bool:
     return normalized.startswith(_REASONING_MODEL_PREFIXES)
 
 
-def token_limit_param(model: str, max_tokens: int) -> dict[str, int]:
+def token_limit_param(model: str, max_tokens: int) -> Mapping[str, int]:
     """Return the correct token-limit kwarg for ``model``.
 
     ``{"max_completion_tokens": n}`` for reasoning models, else
@@ -57,7 +69,12 @@ def apply_token_limit(body: dict[str, Any], model: str) -> dict[str, Any]:
 
 
 __all__ = [
+    "JsonSchema",
+    "JsonSchemaBinding",
+    "ResponseFormat",
+    "ResponseFormatKind",
     "apply_token_limit",
     "is_reasoning_model",
+    "resolve_structured_output",
     "token_limit_param",
 ]

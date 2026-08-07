@@ -25,6 +25,7 @@ from pathlib import Path
 
 import pytest
 
+from dream.api.response_format import ResponseFormatKind
 from dream.engine._cost import UsageSnapshot
 from dream.engine._engine import QueryEngine
 from dream.engine._events import (
@@ -71,29 +72,27 @@ class _ScriptedReplyStreamer:
         last = self.calls[-1]
         user_msgs = [m for m in last if m.role == "user"]
         assert user_msgs, "no user message in last call"
-        return "".join(
-            b.text for b in user_msgs[-1].content if isinstance(b, TextBlock)
-        )
+        return "".join(b.text for b in user_msgs[-1].content if isinstance(b, TextBlock))
 
 
 def _verdict(
     *,
     outcome: str = "pass",
-    score: float | None = None,
-    notes: str | None = None,
+    score: float = 0.0,
+    notes: str = "",
     items: list[str] | None = None,
     fence: bool = False,
     prose_before: str = "",
     prose_after: str = "",
     tag: str = "verdict",
 ) -> str:
-    body: dict[str, object] = {"outcome": outcome}
-    if score is not None:
-        body["score"] = score
-    if notes is not None:
-        body["notes"] = notes
-    if items is not None:
-        body["items"] = items
+    # Strict wire contract: every EvaluatorVerdict property must be present.
+    body: dict[str, object] = {
+        "outcome": outcome,
+        "score": score,
+        "notes": notes,
+        "items": list(items) if items is not None else [],
+    }
     inner = json.dumps(body)
     if fence:
         inner = f"```json\n{inner}\n```"
@@ -167,9 +166,7 @@ def _contract(
     )
 
 
-def _step(
-    *, step_id: str = "s1", description: str = "build the widget shell"
-) -> LedgerStep:
+def _step(*, step_id: str = "s1", description: str = "build the widget shell") -> LedgerStep:
     return LedgerStep(id=step_id, description=description)
 
 
@@ -222,9 +219,7 @@ async def test_record_uses_call_step_id() -> None:
     harness, _ = _harness_with_reply(_verdict())
     head = make_evaluator_head(harness)
 
-    rec = await head(
-        "task-001", 1, _contract(), _step(step_id="step-alpha")
-    )
+    rec = await head("task-001", 1, _contract(), _step(step_id="step-alpha"))
 
     assert rec.step_id == "step-alpha"
 
@@ -277,9 +272,7 @@ async def test_notes_default_to_empty_when_omitted() -> None:
 
 
 async def test_notes_round_trip_when_present() -> None:
-    harness, _ = _harness_with_reply(
-        _verdict(outcome="needs-changes", notes="missing aria-labels")
-    )
+    harness, _ = _harness_with_reply(_verdict(outcome="needs-changes", notes="missing aria-labels"))
     head = make_evaluator_head(harness)
 
     rec = await head("task-001", 1, _contract(), _step())
@@ -393,7 +386,9 @@ async def test_missing_verdict_envelope_raises_parse_error() -> None:
 
 async def test_parses_bare_json_without_verdict_wrapper() -> None:
     # the typed JSON verdict is accepted even without the <verdict>...</verdict> wrapper
-    harness, _ = _harness_with_reply('{"outcome": "pass", "score": 0.9, "notes": "looks good"}')
+    harness, _ = _harness_with_reply(
+        '{"outcome": "pass", "score": 0.9, "notes": "looks good", "items": []}'
+    )
     head = make_evaluator_head(harness)
 
     rec = await head("task-001", 1, _contract(), _step())
@@ -402,7 +397,11 @@ async def test_parses_bare_json_without_verdict_wrapper() -> None:
 
 
 async def test_parses_fenced_json_without_verdict_wrapper() -> None:
-    harness, _ = _harness_with_reply('```json\n{"outcome": "needs-changes", "items": ["fix x"]}\n```')
+    harness, _ = _harness_with_reply(
+        '```json\n'
+        '{"outcome": "needs-changes", "score": 0.0, "notes": "", "items": ["fix x"]}\n'
+        "```"
+    )
     head = make_evaluator_head(harness)
 
     rec = await head("task-001", 1, _contract(), _step())
@@ -412,7 +411,9 @@ async def test_parses_fenced_json_without_verdict_wrapper() -> None:
 
 async def test_parses_json_embedded_in_prose_without_wrapper() -> None:
     harness, _ = _harness_with_reply(
-        'Here is my verdict:\n{"outcome": "fail", "notes": "broken"}\nThanks.'
+        "Here is my verdict:\n"
+        '{"outcome": "fail", "score": 0.0, "notes": "broken", "items": []}\n'
+        "Thanks."
     )
     head = make_evaluator_head(harness)
 
@@ -469,9 +470,7 @@ async def test_intent_includes_task_id_sprint_and_step() -> None:
     head = make_evaluator_head(harness)
 
     step = _step(step_id="alpha-1", description="wire the kettle")
-    await head(
-        "task-xyz", 7, _contract(task_id="task-xyz", sprint_number=7), step
-    )
+    await head("task-xyz", 7, _contract(task_id="task-xyz", sprint_number=7), step)
 
     prompt = streamer.last_user_text
     assert "task-xyz" in prompt
@@ -538,20 +537,34 @@ async def test_intent_tells_the_evaluator_to_run_verify_via_bash() -> None:
     assert "no shell" not in prompt
 
 
-async def test_intent_explains_verdict_envelope() -> None:
-    """The model must know what envelope to emit."""
+async def test_intent_explains_json_verdict_contract() -> None:
+    """The model must know to emit a JSON verdict object."""
     harness, streamer = _harness_with_reply(_verdict())
     head = make_evaluator_head(harness)
 
     await head("task-001", 1, _contract(), _step())
 
     prompt = streamer.last_user_text
-    assert "<verdict>" in prompt
-    # Both valid outcomes must be advertised so the model knows the
-    # vocabulary it has to choose from.
+    assert "JSON object" in prompt
+    assert "<verdict>" not in prompt
     assert "pass" in prompt
     assert "needs-changes" in prompt
     assert "fail" in prompt
+
+
+async def test_evaluator_head_attaches_response_format() -> None:
+    harness, _, captured = _harness_capturing_options(_verdict())
+    head = make_evaluator_head(harness)
+
+    await head("task-001", 1, _contract(), _step())
+
+    assert captured
+    rf = captured[0].response_format
+    assert rf is not None
+    assert rf.kind is ResponseFormatKind.JSON_SCHEMA
+    assert rf.json_schema is not None
+    assert rf.json_schema.name == "evaluator_verdict"
+    assert rf.json_schema.strict is True
 
 
 async def test_intent_teaches_durable_outcome_semantics() -> None:
@@ -573,7 +586,12 @@ async def test_intent_teaches_durable_outcome_semantics() -> None:
     # Repairable work stays in the loop.
     assert "repair" in prompt or "in-tree" in prompt or "generator can fix" in prompt
     # Durable fail is reserved for non-repairable cases.
-    assert "no honest" in prompt or "no repair" in prompt or "irrecoverable" in prompt or "abandon" in prompt
+    assert (
+        "no honest" in prompt
+        or "no repair" in prompt
+        or "irrecoverable" in prompt
+        or "abandon" in prompt
+    )
     # Prefer needs-changes when concrete items exist.
     assert "prefer" in prompt and "needs-changes" in prompt
 
@@ -593,7 +611,12 @@ async def test_intent_rejects_weaker_substitute_than_task_intent() -> None:
 
     prompt = streamer.last_user_text.lower()
     assert "audience, offer, and a single cta" in prompt or "task intent" in prompt
-    assert "weaker" in prompt or "weaken" in prompt or "fidelity" in prompt or "source of truth" in prompt
+    assert (
+        "weaker" in prompt
+        or "weaken" in prompt
+        or "fidelity" in prompt
+        or "source of truth" in prompt
+    )
 
 
 # --------------------------------------------------------------------------

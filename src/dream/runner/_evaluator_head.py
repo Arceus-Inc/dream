@@ -1,32 +1,15 @@
-"""Production evaluator head: spec 10 slice G5.
+"""Production evaluator head: spec 10 slice G5 + structured-output P2.
 
 ``make_evaluator_head`` builds an :data:`EvaluatorRun` that drives one
-evaluator-bound session through :meth:`Harness.run_role` and parses
-the model's verdict into an :class:`EvaluationRecord` the runner can
-persist via :func:`dream.sprint.record_evaluation`.
+evaluator-bound session through :meth:`Harness.run_role` with a native
+``response_format`` JSON schema and parses the model's verdict into an
+:class:`EvaluationRecord`.
 
-The model is asked for a strict envelope::
+The typed contract is :class:`EvaluatorVerdict` (JSON object). The optional
+``<verdict>...</verdict>`` wrapper remains accepted for parse tolerance, but
+the prompt asks for bare JSON under constrained decode.
 
-    <verdict>
-    {"outcome": "pass"|"needs-changes"|"fail",
-     "score": 0.0,
-     "notes": "...",
-     "items": ["..."]}
-    </verdict>
-
-The parser prefers the ``<verdict>`` section when present but treats the
-wrapper as **optional** — the typed JSON object is the contract, so a bare,
-```json-fenced, or prose-embedded JSON verdict is accepted too. Only a reply
-with no parseable JSON object at all parses into
-:class:`EvaluatorHeadParseError`; engine-layer failures surface as
-:class:`dream.runner.RoleSessionError` unchanged.
-
-Unlike the generator head, ``contract`` is always present here —
-``run_task`` skips the evaluator entirely when it is disabled, so this
-head never sees ``None``.
-
-Verification runs **inside** the evaluator session via ``bash`` (Hermes /
-Claude Code shape). There is no harness ``run_oracle`` sidecar.
+Verification runs **inside** the evaluator session via ``bash``.
 """
 
 from __future__ import annotations
@@ -35,15 +18,21 @@ import json
 import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
+from pydantic import ValidationError
+
+from dream.api.response_format import ResponseFormat
+from dream.runner._evaluator_schema import EVALUATOR_VERDICT_SCHEMA, EvaluatorVerdict
 from dream.runner._head_retry import ask_until_parsed
+from dream.session import SessionOptions
 from dream.sprint import EvaluationRecord
 
 if TYPE_CHECKING:
     from dream.harness import Harness
     from dream.planner import LedgerStep
     from dream.runner._observer import RunTaskObserver
+    from dream.runner._role_session import RunRoleResult
     from dream.sprint import SprintContract
 
 __all__ = [
@@ -53,15 +42,11 @@ __all__ = [
 ]
 
 
-# v3: in-session bash verify; oracle sidecar removed (Hermes/CC-aligned).
-DEFAULT_EVALUATOR_VERSION = "head-v3"
+DEFAULT_EVALUATOR_VERSION = "head-v4"
 
 
 class EvaluatorHeadParseError(RuntimeError):
-    """Raised when the evaluator's reply does not match the verdict envelope."""
-
-
-_VALID_OUTCOMES = frozenset({"pass", "needs-changes", "fail"})
+    """Raised when the evaluator's reply does not match the verdict contract."""
 
 
 _VERDICT_EXAMPLE = """\
@@ -115,11 +100,9 @@ EVALUATOR_INSTRUCTION_TEMPLATE = (
     "\n"
     "OUTPUT FORMAT\n"
     "-------------\n"
-    "Reply with exactly one XML-style section:\n"
+    "After tools finish, reply with ONE JSON object (no XML, no prose, no fences):\n"
     "\n"
-    "<verdict>\n"
     "{example}\n"
-    "</verdict>\n"
     "\n"
     "Requirements:\n"
     '- "outcome" must be one of: pass, needs-changes, fail.\n'
@@ -130,12 +113,8 @@ EVALUATOR_INSTRUCTION_TEMPLATE = (
 )
 
 
-_VERDICT_RE = re.compile(
-    r"<verdict>\s*(.*?)\s*</verdict>", re.DOTALL | re.IGNORECASE
-)
-_FENCE_RE = re.compile(
-    r"^```(?:[A-Za-z0-9_+\-]+)?\s*\n(.*?)\n```\s*$", re.DOTALL
-)
+_VERDICT_RE = re.compile(r"<verdict>\s*(.*?)\s*</verdict>", re.DOTALL | re.IGNORECASE)
+_FENCE_RE = re.compile(r"^```(?:[A-Za-z0-9_+\-]+)?\s*\n(.*?)\n```\s*$", re.DOTALL)
 
 
 def _format_contract_block(contract: SprintContract) -> str:
@@ -163,8 +142,8 @@ def _format_contract_block(contract: SprintContract) -> str:
             "-" * 60,
         ]
         for vs in contract.verification_steps:
-            kind = vs.get("kind", "?")
-            command = vs.get("command", "")
+            kind = str(vs.get("kind", "?"))
+            command = str(vs.get("command", ""))
             parts.append(f"- [{kind}] {command}")
 
     if contract.scope_includes:
@@ -210,27 +189,17 @@ def _build_intent(
     )
 
 
-def _extract_verdict_json(reply: str) -> dict[str, Any]:
-    """Extract the typed JSON verdict from the reply.
-
-    The verdict *object* is the typed contract; the ``<verdict>...</verdict>`` wrapper is optional. We
-    prefer the tagged section when present (back-compat + disambiguation), but fall back to the JSON
-    object anywhere in the reply — bare, ```json-fenced, or embedded in prose — so a model that emits
-    clean typed JSON without the XML wrapper is accepted rather than hard-failing. Only a reply with no
-    parseable JSON object at all is a parse error.
-    """
+def _extract_verdict_json_text(reply: str) -> str:
+    """Extract a JSON object text from the reply (tagged, fenced, bare, or embedded)."""
     match = _VERDICT_RE.search(reply)
     raw = match.group(1).strip() if match is not None else reply.strip()
-    data = _loads_json_object(raw)
-    if data is None:
-        raise EvaluatorHeadParseError(
-            "evaluator reply did not contain a JSON verdict object"
-        )
-    return data
+    text = _unwrap_json_object_text(raw)
+    if text is None:
+        raise EvaluatorHeadParseError("evaluator reply did not contain a JSON verdict object")
+    return text
 
 
-def _loads_json_object(text: str) -> dict[str, Any] | None:
-    """Parse a JSON object out of ``text`` — fence-aware, with a brace-slice fallback. ``None`` if none."""
+def _unwrap_json_object_text(text: str) -> str | None:
     candidate = text.strip()
     fence = _FENCE_RE.match(candidate)
     if fence is not None:
@@ -241,63 +210,37 @@ def _loads_json_object(text: str) -> dict[str, Any] | None:
         if not attempt:
             continue
         try:
-            data = json.loads(attempt)
+            loaded: object = json.loads(attempt)
         except json.JSONDecodeError:
             continue
-        if isinstance(data, dict):
-            return data
+        if isinstance(loaded, dict):
+            return attempt
     return None
 
 
-def _coerce_record(
+def parse_evaluator_verdict(
+    reply: str,
     *,
     task_id: str,
     sprint_number: int,
     step_id: str,
     evaluator_version: str,
-    data: dict[str, Any],
 ) -> EvaluationRecord:
-    outcome = data.get("outcome")
-    if not isinstance(outcome, str) or outcome not in _VALID_OUTCOMES:
-        raise EvaluatorHeadParseError(
-            f"evaluator outcome missing or invalid: {outcome!r}; "
-            f"expected one of {sorted(_VALID_OUTCOMES)}"
-        )
-
-    score_raw = data.get("score", 0.0)
-    if isinstance(score_raw, bool) or not isinstance(score_raw, (int, float)):
-        raise EvaluatorHeadParseError(
-            f"evaluator 'score' must be a number, got {type(score_raw).__name__}"
-        )
-    score = float(score_raw)
-
-    notes = data.get("notes", "")
-    if not isinstance(notes, str):
-        raise EvaluatorHeadParseError(
-            f"evaluator 'notes' must be a string, got {type(notes).__name__}"
-        )
-
-    items_raw = data.get("items", ())
-    if not isinstance(items_raw, (list, tuple)):
-        raise EvaluatorHeadParseError(
-            f"evaluator 'items' must be a list, got {type(items_raw).__name__}"
-        )
-    items: list[str] = []
-    for i, item in enumerate(items_raw):
-        if not isinstance(item, str):
-            raise EvaluatorHeadParseError(
-                f"evaluator item {i} must be a string, got {type(item).__name__}"
-            )
-        items.append(item)
+    """Parse evaluator final text into an :class:`EvaluationRecord`."""
+    text = _extract_verdict_json_text(reply)
+    try:
+        verdict = EvaluatorVerdict.model_validate_json(text)
+    except ValidationError as exc:
+        raise EvaluatorHeadParseError(f"evaluator verdict failed schema validation: {exc}") from exc
 
     return EvaluationRecord(
         task_id=task_id,
         sprint_number=sprint_number,
         step_id=step_id,
-        outcome=outcome,  # type: ignore[arg-type]
-        score=score,
-        notes=notes,
-        items=tuple(items),
+        outcome=verdict.outcome.value,
+        score=verdict.score,
+        notes=verdict.notes,
+        items=tuple(verdict.items),
         evaluator_version=evaluator_version,
     )
 
@@ -309,8 +252,8 @@ def make_evaluator_head(
     harness_dir: Path | None = None,
     evaluator_version: str = DEFAULT_EVALUATOR_VERSION,
     observer: RunTaskObserver | None = None,
-    worktree_root: Path | None = None,  # kept for call-site compat; unused (no oracle)
-    oracle_timeout_seconds: float = 300.0,  # kept for call-site compat; unused
+    worktree_root: Path | None = None,
+    oracle_timeout_seconds: float = 300.0,
 ) -> Callable[
     [str, int, SprintContract, LedgerStep],
     Awaitable[EvaluationRecord],
@@ -318,22 +261,14 @@ def make_evaluator_head(
     """Build an :data:`EvaluatorRun` driven by :meth:`Harness.run_role`.
 
     The evaluator LLM session has ``bash`` and runs verification itself.
-    There is no pre-session ``run_oracle`` subprocess.
-
-    ``task_intent`` is the original task Intent (source of truth). When set,
-    it is embedded so pass cannot rest on a weaker substitute than the Intent.
-
-    ``harness_dir`` is forwarded so per-task role overlays in
-    ``{harness_dir}/roles/evaluator.toml`` are honoured.
-
-    ``evaluator_version`` is stamped onto every record this head
-    produces; bump it when the prompt or parser changes in a way that
-    invalidates prior verdicts.
-
-    ``worktree_root`` / ``oracle_timeout_seconds`` are accepted but ignored
-    (ponytail: keep call sites green; remove in a later cleanup).
+    Final replies are constrained by :data:`EVALUATOR_VERDICT_SCHEMA`.
     """
     del worktree_root, oracle_timeout_seconds
+    response_format = ResponseFormat.for_schema(
+        EVALUATOR_VERDICT_SCHEMA,
+        name="evaluator_verdict",
+        strict=True,
+    )
 
     async def evaluator(
         task_id: str,
@@ -349,9 +284,13 @@ def make_evaluator_head(
             task_intent=task_intent,
         )
 
-        async def _ask(p: str) -> Any:
+        async def _ask(p: str) -> RunRoleResult:
             return await harness.run_role(
-                "evaluator", p, harness_dir=harness_dir, observer=observer
+                "evaluator",
+                p,
+                harness_dir=harness_dir,
+                observer=observer,
+                options=SessionOptions(response_format=response_format),
             )
 
         def _on_retry(attempt: int, err: Exception) -> None:
@@ -366,13 +305,12 @@ def make_evaluator_head(
                 )
 
         def _parse(final_text: str) -> EvaluationRecord:
-            data = _extract_verdict_json(final_text)
-            return _coerce_record(
+            return parse_evaluator_verdict(
+                final_text,
                 task_id=task_id,
                 sprint_number=sprint_number,
                 step_id=step.id,
                 evaluator_version=evaluator_version,
-                data=data,
             )
 
         return await ask_until_parsed(

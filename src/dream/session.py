@@ -27,6 +27,7 @@ from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from dream.api.response_format import ResponseFormat
 from dream.engine._events import (
     AssistantTextDelta,
     AssistantTurnComplete,
@@ -75,6 +76,8 @@ class SessionOptions:
     model: str | None = None
     system_prompt: str | None = None
     max_turns: int | None = None
+    # Typed structured-output constraint; serialized at the adapter boundary.
+    response_format: ResponseFormat | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -293,9 +296,7 @@ class Session:
             # an error result we write the same generic, non-revealing
             # marker the engine writes into its own transcript; a successful
             # result is committed verbatim.
-            transcript_content = (
-                _tool_failed_marker(ev.tool) if ev.is_error else ev.result
-            )
+            transcript_content = _tool_failed_marker(ev.tool) if ev.is_error else ev.result
             pending_tool_results.append(
                 ToolResultBlock(
                     tool_use_id=ev.id,

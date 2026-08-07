@@ -14,6 +14,7 @@ import asyncio
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
+from dream.api.response_format import resolve_structured_output
 from dream.events import ToolUseResult, ToolUseStart
 from dream.roles._manifest import RoleManifest
 from dream.session import SessionOptions
@@ -66,7 +67,18 @@ async def run_subagent_session(
         parent_tools=parent_tools,
     )
     child_metadata[SUBAGENT_NAME_METADATA_KEY] = agent.name
-    options = SessionOptions(max_turns=agent.max_turns, metadata=child_metadata)
+    response_format = None
+    if agent.output_schema is not None:
+        response_format = resolve_structured_output(
+            schema=agent.output_schema,
+            name=f"{agent.name}_output",
+            strict=agent.strict,
+        )
+    options = SessionOptions(
+        max_turns=agent.max_turns,
+        response_format=response_format,
+        metadata=child_metadata,
+    )
 
     try:
         result = await harness.run_role(
