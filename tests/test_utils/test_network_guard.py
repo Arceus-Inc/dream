@@ -79,6 +79,13 @@ def test_hostless_url_is_refused() -> None:
         guard_web_url("https:///path")
 
 
+def test_malformed_bracketed_ipv6_is_refused_not_crash() -> None:
+    # urlparse('http://[::1') raises ValueError ("Invalid IPv6 URL"); the guard
+    # must surface that as a NetworkGuardError rather than crash.
+    with pytest.raises(NetworkGuardError, match="malformed"):
+        guard_web_url("http://[::1")
+
+
 def test_unresolvable_host_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
     def fail(host: str) -> list[ipaddress._BaseAddress]:
         assert host == "nowhere.invalid"

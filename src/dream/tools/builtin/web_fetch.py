@@ -6,23 +6,29 @@ arbitrary ``http(s)://`` URL over ``httpx`` (egress already in the SDK) and
 returns the page body as readable text -- no key, no headless browser, no
 external renderer.
 
-Because it takes an *arbitrary* URL it is SSRF-sensitive, so every target is
-passed through :func:`dream.utils.network_guard.guard_web_url` (deny
-private/reserved address space) before any bytes are exchanged. That is what
-lets it run with zero infra where the browser-backed path cannot: real
-``browser_run`` needs a Chromium CDP endpoint, ``web_fetch`` needs only network
-egress -- the cheap fast path and the no-CDP fallback for simple page reads.
+Because it takes an *arbitrary* URL it is SSRF-sensitive, so every target --
+**including every redirect hop** -- is passed through
+:func:`dream.utils.network_guard.guard_web_url` (deny private/reserved address
+space) before any bytes are exchanged. Automatic redirects are disabled and
+followed by hand so a public URL cannot redirect the fetch onto loopback,
+private, or metadata endpoints. That is what lets it run with zero infra where
+the browser-backed path cannot: real ``browser_run`` needs a Chromium CDP
+endpoint, ``web_fetch`` needs only network egress -- the cheap fast path and the
+no-CDP fallback for simple page reads.
 
 ``risk="external"``, ``tier_required=2`` (same ``REPO_WRITE_NET`` ceiling as
 the other web tools). ``network_host`` is reported per-call so the permission
-gate sees the concrete target.
+gate sees the concrete target. The body is streamed and read only up to a
+multiple of ``max_chars`` so a huge page cannot balloon worker memory.
 """
 
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Any
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from pydantic import BaseModel, Field
@@ -38,9 +44,18 @@ _MAX_CHARS = 12_000
 _MAX_REDIRECTS = 5
 _USER_AGENT = "dream-web-fetch/1.0"
 
-# Many sites serve HTML; the guard only allows http(s), but a body can still be
-# ``text/plain`` or JSON -- we only strip tags for HTML content types.
-_HTML_CONTENT_TYPES = ("text/html", "application/xhtml+xml")
+# Media types we strip tags for. Comparison is on the parameter-free media type
+# (e.g. ``text/html; charset=utf-8`` matches ``text/html``).
+_HTML_MEDIA_TYPES = frozenset({"text/html", "application/xhtml+xml"})
+
+# A redirect is only a 3xx with a Location header we actually follow.
+_REDIRECT_CODES: frozenset[int] = frozenset({301, 302, 303, 307, 308})
+
+# HTML-to-text shrinks the body, so a capped *byte* read yields fewer text
+# characters. Read a few multiples of ``max_chars`` (plus a fixed constant) so a
+# requested output limit can actually be reached, while still bounding memory.
+_READ_BYTE_MULTIPLIER = 4
+_READ_BYTE_FIXED = 16_384
 
 
 class WebFetchInput(BaseModel):
@@ -60,6 +75,25 @@ class WebFetchInput(BaseModel):
             "10.x, etc.) -- meant for local development only."
         ),
     )
+
+
+class _RedirectRefused(NetworkGuardError):
+    """A redirect destination failed the SSRF guard."""
+
+
+class _TooManyRedirects(Exception):
+    """The redirect chain exceeded :data:`_MAX_REDIRECTS` without reaching a body."""
+
+
+@dataclass(frozen=True)
+class _Fetched:
+    """The result of one (guarded, redirect-aware) fetch: a final URL + body."""
+
+    url: str
+    status_code: int
+    media_type: str | None
+    encoding: str
+    body: bytes
 
 
 class WebFetchTool(BaseTool):
@@ -96,16 +130,25 @@ class WebFetchTool(BaseTool):
 
         try:
             url = await asyncio.to_thread(self._guard, args.url, allow_private=args.allow_private)
-        except NetworkGuardError as exc:
-            return tool_error(
-                f"web_fetch refused: {exc}.",
-                root_cause=str(exc),
-                safe_retry="provide a public http(s) URL, or pass allow_private=True for local dev",
-                stop_condition="stop fetching targets the guard refuses",
-            )
+        except (NetworkGuardError, ValueError) as exc:
+            return _refused(exc)
 
         try:
-            response = await self._get(url, timeout_seconds=args.timeout_seconds)
+            fetched = await self._fetch(
+                url,
+                allow_private=args.allow_private,
+                timeout_seconds=args.timeout_seconds,
+                max_chars=args.max_chars,
+            )
+        except _RedirectRefused as exc:
+            return _refused(exc)
+        except _TooManyRedirects as exc:
+            return tool_error(
+                f"web_fetch failed: redirects exceeded the limit ({_MAX_REDIRECTS}).",
+                root_cause=str(exc),
+                safe_retry="follow the redirect chain manually or pick the final URL",
+                stop_condition="stop fetching URLs with unbounded redirect chains",
+            )
         except httpx.HTTPError as exc:
             return tool_error(
                 f"web_fetch failed: could not reach URL ({exc}).",
@@ -114,59 +157,133 @@ class WebFetchTool(BaseTool):
                 stop_condition="stop after two consecutive transport failures",
             )
 
-        if response.status_code >= 400:
+        if fetched.status_code >= 400:
             return tool_error(
-                f"web_fetch failed: URL returned HTTP {response.status_code}.",
-                root_cause=f"target returned status {response.status_code}",
+                f"web_fetch failed: URL returned HTTP {fetched.status_code}.",
+                root_cause=f"target returned status {fetched.status_code}",
                 safe_retry="check the URL, then retry once",
                 stop_condition="stop after two consecutive non-2xx responses",
             )
 
-        content_type = (response.headers.get("content-type") or "").lower()
-        body = self._body_text(response, content_type=content_type)
-        body = body[: args.max_chars - 1].rstrip() + "…" if len(body) > args.max_chars else body
+        body = _body_text(fetched)
+        body = _clamp(body, args.max_chars)
 
         return ToolResult(
             content=body or "(empty body)",
             structured={
-                "url": url,
-                "status_code": response.status_code,
-                "content_type": content_type or None,
+                "url": fetched.url,
+                "status_code": fetched.status_code,
+                "content_type": fetched.media_type,
                 "char_len": len(body),
             },
             metadata={
-                "url": url,
-                "status_code": response.status_code,
+                "url": fetched.url,
+                "status_code": fetched.status_code,
                 "char_len": len(body),
                 "truncated": len(body) == args.max_chars,
-                "summary": f"fetched {url} ({response.status_code}, {len(body)} chars)",
+                "summary": f"fetched {fetched.url} ({fetched.status_code}, {len(body)} chars)",
             },
         )
 
-    async def _get(self, url: str, *, timeout_seconds: float) -> httpx.Response:
-        """Issue one GET. Isolating here so tests can stub the transport."""
+    async def _fetch(
+        self,
+        url: str,
+        *,
+        allow_private: bool,
+        timeout_seconds: float,
+        max_chars: int,
+    ) -> _Fetched:
+        """GET ``url`` following guarded redirects by hand, streaming a capped body."""
+        read_cap = max_chars * _READ_BYTE_MULTIPLIER + _READ_BYTE_FIXED
+        current = url
         async with httpx.AsyncClient(
             transport=self._transport,
             timeout=timeout_seconds,
-            follow_redirects=True,
-            max_redirects=_MAX_REDIRECTS,
+            follow_redirects=False,  # redirects are followed by hand, guarded each hop
             headers={"user-agent": _USER_AGENT},
             trust_env=False,
         ) as client:
-            return await client.get(url)
+            for _ in range(_MAX_REDIRECTS + 1):
+                async with client.stream("GET", current) as response:
+                    if response.status_code in _REDIRECT_CODES:
+                        location = response.headers.get("location")
+                        if not location:
+                            return _fetched_for(response, current, b"")
+                        next_url = urljoin(current, location)
+                        try:
+                            current = await asyncio.to_thread(
+                                self._guard, next_url, allow_private=allow_private
+                            )
+                        except (NetworkGuardError, ValueError) as exc:
+                            raise _RedirectRefused(str(exc)) from exc
+                        continue
+                    body = await _read_up_to(response, read_cap)
+                    return _fetched_for(response, current, body)
+        raise _TooManyRedirects(f"more than {_MAX_REDIRECTS} redirects from {url}")
 
-    @staticmethod
-    def _body_text(response: httpx.Response, *, content_type: str) -> str:
-        if content_type in _HTML_CONTENT_TYPES:
-            return _html_to_text(response.text)
-        return " ".join(response.text.split())
+
+def _fetched_for(response: httpx.Response, url: str, body: bytes) -> _Fetched:
+    return _Fetched(
+        url=url,
+        status_code=response.status_code,
+        media_type=_media_type(response.headers.get("content-type")),
+        encoding=response.encoding or "utf-8",
+        body=body,
+    )
+
+
+async def _read_up_to(response: httpx.Response, cap: int) -> bytes:
+    """Read streamed bytes until ``cap``, then stop (bounds worker memory)."""
+    parts: list[bytes] = []
+    total = 0
+    async for chunk in response.aiter_raw():
+        room = cap - total
+        if room <= 0:
+            break
+        parts.append(chunk[:room])
+        total += min(len(chunk), room)
+        if total >= cap:
+            break
+    return b"".join(parts)
+
+
+def _media_type(content_type: str | None) -> str | None:
+    """Lowercased media type with any ``; params`` stripped or ``None``."""
+    if not content_type:
+        return None
+    return content_type.split(";", 1)[0].strip().lower()
+
+
+def _body_text(fetched: _Fetched) -> str:
+    """Decode the body, stripping HTML tags for HTML media types."""
+    text = fetched.body.decode(fetched.encoding or "utf-8", errors="replace")
+    if fetched.media_type in _HTML_MEDIA_TYPES:
+        return _html_to_text(text)
+    return " ".join(text.split())
+
+
+def _clamp(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 1].rstrip() + "…"
+
+
+def _refused(exc: BaseException | str) -> ToolResult:
+    message = str(exc)
+    return tool_error(
+        f"web_fetch refused: {message}.",
+        root_cause=message,
+        safe_retry="provide a public http(s) URL, or pass allow_private=True for local dev",
+        stop_condition="stop fetching targets the guard refuses",
+    )
 
 
 def _resolve_hostname(raw: str | None) -> str | None:
-    from urllib.parse import urlparse
-
-    parsed = urlparse(raw or "")
-    return parsed.hostname
+    """Host of ``raw`` for the permission gate; ``None`` on a malformed URL (no crash)."""
+    try:
+        return urlparse(raw or "").hostname
+    except ValueError:  # e.g. a malformed bracketed IPv6 host
+        return None
 
 
 def _html_to_text(html: str) -> str:

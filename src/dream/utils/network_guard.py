@@ -98,12 +98,18 @@ def guard_web_url(url: str, *, allow_private: bool = False) -> str:
     reason otherwise. All enforcement happens here -- before transport has a
     chance to talk to the target.
     """
-    parsed = urlparse(url)
+    try:
+        parsed = urlparse(url)
+    except ValueError as exc:  # e.g. a malformed bracketed IPv6 host ("http://[::1")
+        raise NetworkGuardError(f"refused: malformed URL: {exc}") from exc
     if parsed.scheme not in ("http", "https"):
         raise NetworkGuardError(
             f"refused: scheme {parsed.scheme!r} is not allowed; use http or https"
         )
-    host = parsed.hostname
+    try:
+        host = parsed.hostname
+    except ValueError as exc:  # e.g. a malformed bracketed IPv6 host ("http://[::1")
+        raise NetworkGuardError(f"refused: malformed URL host: {exc}") from exc
     if not host:
         raise NetworkGuardError(f"refused: URL has no host: {url!r}")
 

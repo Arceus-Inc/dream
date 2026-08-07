@@ -14,12 +14,23 @@ import httpx
 
 from dream.tools._context import ToolExecutionContext
 from dream.tools.builtin.web_fetch import WebFetchTool
-from dream.utils.network_guard import NetworkGuardError
+from dream.utils.network_guard import NetworkGuardError, guard_web_url
 
 _HTML_BODY = (
     "<html><head><script>var x=1;</script></head><body>"
     "<h1>Title</h1><p>Hello <b>world</b>.</p><p>Second para.</p></body></html>"
 )
+
+
+def _body_response(status: int, text: str, content_type: str = "text/plain") -> httpx.Response:
+    """A response whose body is a *stream* so the tool can read it once via
+    ``aiter_raw`` -- a plain ``Responses(text=...)`` is pre-consumed by httpx's
+    ``MockTransport`` and would raise ``StreamConsumed`` on a streaming read."""
+    return httpx.Response(
+        status,
+        headers={"content-type": content_type},
+        stream=httpx.ByteStream(text.encode("utf-8")),
+    )
 
 
 def _ctx(tmp_path: Path) -> ToolExecutionContext:
@@ -62,11 +73,7 @@ def test_web_fetch_reports_the_target_host() -> None:
 async def test_fetch_returns_text_only(tmp_path: Path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["user-agent"]
-        return httpx.Response(
-            200,
-            headers={"content-type": "text/html"},
-            text=_HTML_BODY,
-        )
+        return _body_response(200, _HTML_BODY, content_type="text/html")
 
     result = await _tool(handler).execute(
         {"url": "https://example.com/page"}, _ctx(tmp_path)
@@ -81,9 +88,7 @@ async def test_fetch_returns_text_only(tmp_path: Path) -> None:
 
 async def test_web_fetch_exposes_structured_metadata(tmp_path: Path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200, headers={"content-type": "text/plain"}, text="hello plain body"
-        )
+        return _body_response(200, "hello plain body")
 
     result = await _tool(handler).execute(
         {"url": "http://example.com/plain"}, _ctx(tmp_path)
@@ -95,9 +100,23 @@ async def test_web_fetch_exposes_structured_metadata(tmp_path: Path) -> None:
     assert result.structured["url"] == "http://example.com/plain"
 
 
+async def test_content_type_with_params_is_html(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _body_response(200, _HTML_BODY, content_type="text/html; charset=utf-8")
+
+    result = await _tool(handler).execute(
+        {"url": "https://example.com/page"}, _ctx(tmp_path)
+    )
+
+    assert result.is_error is False
+    assert "world" in result.content
+    assert "<p>" not in result.content
+    assert result.structured.get("content_type") == "text/html"
+
+
 async def test_max_chars_clamps_output(tmp_path: Path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, headers={"content-type": "text/plain"}, text="a" * 500)
+        return _body_response(200, "a" * 500)
 
     result = await _tool(handler).execute(
         {"url": "https://example.com/x", "max_chars": 50}, _ctx(tmp_path)
@@ -125,7 +144,7 @@ async def test_private_target_is_refused_before_fetch(tmp_path: Path) -> None:
 
 async def test_4xx_is_structured_error(tmp_path: Path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(404, text="not found")
+        return _body_response(404, "not found")
 
     result = await _tool(handler).execute({"url": "https://example.com/missing"}, _ctx(tmp_path))
 
@@ -141,3 +160,87 @@ async def test_transport_error_is_structured(tmp_path: Path) -> None:
 
     assert result.is_error is True
     assert result.metadata.get("root_cause")
+
+
+# --- redirects ---------------------------------------------------------------
+
+
+async def test_redirects_are_followed_and_final_url_reported(tmp_path: Path) -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        if request.url.path == "/start":
+            return httpx.Response(302, headers={"location": "https://example.com/final"})
+        return _body_response(200, "final body")
+
+    result = await _tool(handler).execute(
+        {"url": "https://example.com/start"}, _ctx(tmp_path)
+    )
+
+    assert result.is_error is False
+    assert result.content == "final body"
+    assert result.structured.get("url") == "https://example.com/final"
+    assert seen == ["https://example.com/start", "https://example.com/final"]
+
+
+async def test_redirect_to_private_host_is_refused(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(302, headers={"location": "http://127.0.0.1:8000/internal"})
+
+    def refuse_private(url: str, *, allow_private: bool = False) -> str:
+        del allow_private
+        if "127.0.0.1" in url or "localhost" in url:
+            raise NetworkGuardError(f"refused: {url} resolves to 127.0.0.1")
+        return url
+
+    tool = WebFetchTool(
+        transport=httpx.MockTransport(handler), guard=refuse_private
+    )
+    result = await tool.execute({"url": "https://example.com/start"}, _ctx(tmp_path))
+
+    assert result.is_error is True
+    assert "refused" in result.content
+
+
+async def test_relative_redirect_location_is_resolved(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/start":
+            return httpx.Response(307, headers={"location": "/final"})
+        return _body_response(200, "ok")
+
+    result = await _tool(handler).execute({"url": "https://example.com/start"}, _ctx(tmp_path))
+
+    assert result.is_error is False
+    assert result.structured.get("url") == "https://example.com/final"
+
+
+async def test_redirect_loop_is_an_error(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(302, headers={"location": "/start"})
+
+    result = await _tool(handler).execute({"url": "https://example.com/start"}, _ctx(tmp_path))
+
+    assert result.is_error is True
+    assert "redirect" in result.content.lower()
+
+
+# --- malformed URLs ----------------------------------------------------------
+
+
+async def test_malformed_ipv6_url_is_refused_not_crash(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _body_response(200, "unused")
+
+    tool = WebFetchTool(
+        transport=httpx.MockTransport(handler), guard=guard_web_url
+    )
+    result = await tool.execute({"url": "http://[::1"}, _ctx(tmp_path))
+
+    assert result.is_error is True
+    assert "refused" in result.content
+
+
+def test_malformed_url_does_not_break_permission_gate() -> None:
+    tool = WebFetchTool()
+    assert tool.effects_for({"url": "http://[::1"}) == tool.effects_for({})
