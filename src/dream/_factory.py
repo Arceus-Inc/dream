@@ -28,7 +28,7 @@ from dream.engine._permission_gate import (
     make_permission_gate,
 )
 from dream.harness import AsyncOpener, AsyncTeardown, Harness, HarnessConfig
-from dream.hooks import HookExecutor, collect_hooks
+from dream.hooks import HookExecutor, VerifyOnStopHook, collect_hooks
 from dream.mcp import McpClientManager, mcp_paths, setup_mcp_session
 from dream.memory import (
     MEMORY_CONTEXT_KEY,
@@ -106,6 +106,7 @@ def build_harness(
     policy_warning_sink: PolicyWarningSink | None = None,
     env: Mapping[str, str] | None = None,
     wake_model: str | None = None,
+    verify_on_stop: bool = True,
 ) -> Harness:
     """Build a Harness whose engine factory produces a real, tool-wired engine.
 
@@ -142,6 +143,10 @@ def build_harness(
     providers installed. Both run once, lazily, on the first ``start_session``
     (the async-open chokepoint) — never at construction — and tolerate a missing
     or empty config as "nothing to wire". Pass ``False`` to skip either surface.
+
+    ``verify_on_stop`` (default True) registers Hermes-style STOP continue:
+    mutating file tools without a subsequent evidence tool (bash/read/grep/glob)
+    nudge another turn before seal (capped by ``max_verify_nudges``).
 
     ``env`` is consulted only for host resolution — ``DREAM_HOME`` path
     overrides and shell detection for the runtime-info prompt block — and
@@ -247,6 +252,8 @@ def build_harness(
         ),
     )
     harness = Harness(config)
+    if verify_on_stop:
+        harness.register_hook(VerifyOnStopHook())
 
     # The engine factory closes over ``harness`` (not a hooks snapshot) so the
     # spec-13 lifecycle executor is assembled lazily at session construction
