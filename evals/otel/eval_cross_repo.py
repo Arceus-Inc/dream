@@ -11,8 +11,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-DREAM = Path("/Users/divyansh/dream-wt-otel")
-CHORUS = Path("/Users/divyansh/chorus-wt-otel")
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DREAM = Path(os.environ.get("DREAM_REPO_ROOT", REPO_ROOT))
+CHORUS = Path(os.environ.get("CHORUS_REPO_ROOT", REPO_ROOT.parent / "chorus"))
 
 
 def _run(cwd: Path, script: Path) -> None:
@@ -35,6 +36,14 @@ def _run(cwd: Path, script: Path) -> None:
 
 
 def main() -> None:
+    for name, root, script in (
+        ("DREAM_REPO_ROOT", DREAM, DREAM / "evals/otel/eval_step1_foundation.py"),
+        ("CHORUS_REPO_ROOT", CHORUS, CHORUS / "evals/otel/eval_step1_chorus_otlp.py"),
+    ):
+        if not root.is_dir():
+            raise SystemExit(f"{name} does not exist or is not a directory: {root}")
+        if not script.is_file():
+            raise SystemExit(f"{name} is missing the eval script: {script}")
     _run(DREAM, DREAM / "evals/otel/eval_step1_foundation.py")
     _run(CHORUS, CHORUS / "evals/otel/eval_step1_chorus_otlp.py")
     print("eval_cross_repo: all checks passed")
