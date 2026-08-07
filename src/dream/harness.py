@@ -177,9 +177,7 @@ class Harness:
             engine = self.config._engine_factory(session_id, opts)
         return Session(id=session_id, options=opts, _engine=engine)
 
-    def _resolve_session_store(
-        self, store: FileSessionStore | None
-    ) -> FileSessionStore:
+    def _resolve_session_store(self, store: FileSessionStore | None) -> FileSessionStore:
         if store is not None:
             return store
         if self.config.session_store is not None:
@@ -209,13 +207,20 @@ class Harness:
         options: SessionOptions | None = None,
         store: FileSessionStore | None = None,
     ) -> Session:
-        """Load a saved snapshot and bind a fresh engine (process restart)."""
+        """Load a saved snapshot and bind a fresh engine (process restart).
+
+        When ``options`` is omitted, persisted model, prompt, turn budget, and
+        JSON-compatible metadata are restored. Response formats and any
+        non-JSON metadata must be passed explicitly.
+        """
         resolved = self._resolve_session_store(store)
         snapshot = resolved.load(session_id)
         await self._ensure_open()
         opts = options or SessionOptions(
             model=snapshot.model,
             system_prompt=snapshot.system_prompt,
+            max_turns=snapshot.max_turns,
+            metadata=snapshot.metadata,
         )
         engine = None
         if self.config._engine_factory is not None:

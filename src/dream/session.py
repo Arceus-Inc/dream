@@ -25,9 +25,10 @@ import asyncio
 import contextlib
 from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from dream.api.response_format import ResponseFormat
+from dream.api.structured import JsonValue
 from dream.engine._events import (
     AssistantTextDelta,
     AssistantTurnComplete,
@@ -77,6 +78,16 @@ def _tool_failed_marker(tool_name: str) -> str:
     model re-reads on resume only ever sees this generic line.
     """
     return f"tool {tool_name!r} failed to execute"
+
+
+def _is_json_value(value: object) -> bool:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return True
+    if isinstance(value, list):
+        return all(_is_json_value(item) for item in value)
+    if isinstance(value, dict):
+        return all(isinstance(key, str) and _is_json_value(item) for key, item in value.items())
+    return False
 
 
 @dataclass(frozen=True)
@@ -188,10 +199,18 @@ class Session:
         return self._transcript
 
     def snapshot(self) -> SessionSnapshot:
-        """Build a durable snapshot of this session's transcript and cost."""
+        """Build a durable snapshot of this session's transcript, cost, and options.
+
+        ``max_turns`` and JSON-compatible metadata are persisted. Response
+        formats and non-JSON metadata must be supplied again when resuming.
+        """
         from datetime import UTC, datetime
 
         model = self.options.model or self.model
+        metadata: dict[str, JsonValue] = {}
+        for key, value in self.options.metadata.items():
+            if isinstance(key, str) and _is_json_value(value):
+                metadata[key] = cast(JsonValue, value)
         return SessionSnapshot(
             schema_version=SCHEMA_VERSION,
             session_id=self.id,
@@ -209,6 +228,8 @@ class Session:
             messages=[message_to_record(m) for m in self._transcript],
             tool_calls=extract_tool_calls(self._transcript),
             saved_at=datetime.now(tz=UTC),
+            max_turns=self.options.max_turns,
+            metadata=metadata,
         )
 
     def restore_from_snapshot(self, snapshot: SessionSnapshot) -> None:

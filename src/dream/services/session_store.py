@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Literal, TypeGuard
@@ -79,9 +79,7 @@ class ToolResultBlockRecord:
     is_error: bool
 
 
-ContentBlockRecord = (
-    TextBlockRecord | ImageBlockRecord | ToolUseBlockRecord | ToolResultBlockRecord
-)
+ContentBlockRecord = TextBlockRecord | ImageBlockRecord | ToolUseBlockRecord | ToolResultBlockRecord
 
 
 @dataclass(frozen=True)
@@ -118,6 +116,8 @@ class SessionSnapshot:
     messages: list[ConversationMessageRecord]
     tool_calls: list[ToolCallRecord]
     saved_at: datetime
+    max_turns: int | None = None
+    metadata: dict[str, JsonValue] = field(default_factory=dict)
 
 
 def _checked_session_id(session_id: str) -> str:
@@ -239,6 +239,8 @@ def snapshot_to_dict(snapshot: SessionSnapshot) -> dict[str, object]:
         "session_id": snapshot.session_id,
         "model": snapshot.model,
         "system_prompt": snapshot.system_prompt,
+        "max_turns": snapshot.max_turns,
+        "metadata": snapshot.metadata,
         "cost": {
             "input_tokens": snapshot.cost.input_tokens,
             "output_tokens": snapshot.cost.output_tokens,
@@ -277,6 +279,8 @@ def snapshot_from_dict(data: Mapping[str, object]) -> SessionSnapshot:
         messages=[_message_record_from_dict(item) for item in messages_raw],
         tool_calls=[_tool_call_from_dict(item) for item in tool_calls_raw],
         saved_at=datetime.fromisoformat(saved_at_raw),
+        max_turns=_optional_int(data.get("max_turns")),
+        metadata=_json_dict_from_mapping(_optional_mapping(data.get("metadata"))),
     )
 
 
@@ -294,7 +298,7 @@ class FileSessionStore:
         path = self.path_for(snapshot.session_id)
         payload = snapshot_to_dict(snapshot)
         text = json.dumps(payload, indent=2) + "\n"
-        atomic_write_text(path, text)
+        atomic_write_text(path, text, mode=0o600)
         return path
 
     def load(self, session_id: str) -> SessionSnapshot:
@@ -479,7 +483,25 @@ def _optional_str(value: object) -> str | None:
     return value
 
 
-def messages_from_records(records: Sequence[ConversationMessageRecord]) -> list[ConversationMessage]:
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("max_turns must be an integer or null")
+    return value
+
+
+def _optional_mapping(value: object) -> Mapping[str, object]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError("metadata must be an object")
+    return value
+
+
+def messages_from_records(
+    records: Sequence[ConversationMessageRecord],
+) -> list[ConversationMessage]:
     return [record_to_message(r) for r in records]
 
 

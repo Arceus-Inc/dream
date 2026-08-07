@@ -87,6 +87,20 @@ def test_save_load_roundtrip_preserves_messages_tool_calls_and_cost(tmp_path: Pa
     assert loaded.tool_calls == snapshot.tool_calls
     # saved_at is set at snapshot time; reload preserves it.
     assert loaded.saved_at == snapshot.saved_at
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_snapshot_persists_serializable_options_only() -> None:
+    options = SessionOptions(
+        model="m1",
+        system_prompt="sys",
+        max_turns=3,
+        metadata={"trace_id": "abc", "opaque": object()},
+    )
+    snapshot = Session(id="s1", options=options).snapshot()
+
+    assert snapshot.max_turns == 3
+    assert snapshot.metadata == {"trace_id": "abc"}
 
 
 def test_path_traversal_session_id_rejected(tmp_path: Path) -> None:
@@ -232,10 +246,7 @@ def test_sanitize_after_restore_leaves_no_dangling_tool_use() -> None:
     session.restore_from_snapshot(source.snapshot())
     sanitized = sanitize_conversation_messages(session.transcript)
     tool_use_ids = {
-        block.id
-        for msg in sanitized
-        for block in msg.content
-        if isinstance(block, ToolUseBlock)
+        block.id for msg in sanitized for block in msg.content if isinstance(block, ToolUseBlock)
     }
     tool_result_ids = {
         block.tool_use_id

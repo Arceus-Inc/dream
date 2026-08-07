@@ -186,9 +186,9 @@
             <td>Save &amp; resume</td>
             <td><code>/resume</code> + state.db</td>
             <td><code>agent_runtime_state.sessionId</code></td>
-            <td>In-process <code>resume_messages</code> only</td>
+            <td>File-backed <code>SessionSnapshot</code> + <code>resume_messages</code></td>
             <td>Cross-beat skills; fresh dream session</td>
-            <td><span class="tag gap">gap</span></td>
+            <td><span class="tag ok">have</span></td>
           </tr>
           <tr>
             <td>Secret proxies</td>
@@ -201,7 +201,7 @@
         </tbody>
       </table>
       <p class="muted" style="margin-top:1rem">
-        Note: <code>DreamPaths.sessions_dir</code> already points at <code>~/.dream/data/sessions</code> but nothing writes there.
+        Note: <code>DreamPaths.sessions_dir</code> points at <code>~/.dream/data/sessions</code>; <code>FileSessionStore</code> writes atomic, private snapshots there.
         A typed <code>CredentialBrokerPort</code> (with <code>proxy()</code>) exists on branch <code>feat/credential-brokerage</code> — contract only.
       </p>
     </section>
@@ -210,7 +210,7 @@
       <h2>3. Build order (TDD + eval each step)</h2>
       <div class="card">
         <h3>PR1 — Durable SessionStore</h3>
-        <p><span class="tag gap">gap</span> File-backed snapshot under <code>sessions_dir</code>.</p>
+        <p><span class="tag ok">shipped</span> File-backed snapshot under <code>sessions_dir</code>.</p>
         <ul>
           <li><code>SessionSnapshot</code> + <code>ToolCallRecord</code> (typed <code>JsonValue</code> inputs)</li>
           <li><code>FileSessionStore.save/load</code> (atomic)</li>
