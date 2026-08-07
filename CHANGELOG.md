@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Spec 05 per-repo tools: discover ``.harness/tools/{name}.toml``, validate
+  the strict declaration schema, register as ``ToolSource.PER_REPO`` command
+  runners (shadowing a default warns; missing ``risk``/``tier_required`` blocks
+  ``build_harness``).
+
 ### Changed
 - **Breaking:** `default_registry()` is now the Level-2 coding surface only
   (`read_file`, `edit_file`, `write_file`, `bash`, `git`, `read_offloaded`,

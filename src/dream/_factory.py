@@ -71,6 +71,7 @@ from dream.tasks import (
 )
 from dream.tasks._cron import CRON_MANIFEST_DIR, load_cron_manifests
 from dream.tools._base import BaseTool
+from dream.tools._per_repo import PerRepoToolError, load_per_repo_tools
 from dream.tools._registry import ToolRegistry, ToolSource
 from dream.tools.builtin import (
     default_registry,
@@ -226,6 +227,8 @@ def build_harness(
         raise ValueError("api_key must be a non-empty string")
     resolved_env: Mapping[str, str] = env if env is not None else os.environ
     tool_registry = registry if registry is not None else default_registry()
+    # Resolve paths early so per-repo tools and home overrides share one root.
+    paths = DreamPaths.resolve(working_dir, env=resolved_env).ensure()
     _apply_tool_packs(
         tool_registry,
         memory=memory,
@@ -239,6 +242,14 @@ def build_harness(
         plan=plan,
         legacy_surface=legacy_surface,
     )
+    # Spec 05: discover per-repo tools from ``.harness/tools/*.toml``. Invalid
+    # declarations (missing risk/tier_required, bad schema) block construction.
+    try:
+        per_repo = load_per_repo_tools(tool_registry, paths.tools_dir())
+    except PerRepoToolError as exc:
+        raise ValueError(
+            "per-repo tool declarations failed validation: " + "; ".join(exc.findings)
+        ) from exc
     # Task memory (spec 11a) is opt-in: only register its tools when asked so
     # the default tool surface stays unchanged. The per-session context is
     # wired below in ``_build_session_engine`` (it needs the session id).
@@ -249,10 +260,6 @@ def build_harness(
     if subagents is not None and tool_registry.get("spawn_subagent") is None:
         tool_registry.register(SpawnSubagentTool(), source=ToolSource.DEFAULT)
     compactor = AutoCompactState()
-    # Resolve the home root from env so ``DREAM_HOME`` overrides are honoured
-    # for task storage / sidecars (#43); hardcoding ``Path.home()`` would write
-    # task artifacts under ~/.dream even when the operator redirected the root.
-    paths = DreamPaths.resolve(working_dir, env=resolved_env).ensure()
     # Auto-discover workspace skills (Spec 06) unless the caller supplied a
     # registry or opted out. An explicit ``skill_registry`` wins — the REPL
     # builds its own with shadow reporting. Malformed SKILL.md files are the
@@ -272,9 +279,12 @@ def build_harness(
     # discarding them inside the factory (#47). They derive solely from
     # ``.harness/tool-tier-overrides.toml`` (paths) and are independent of
     # session/role, so one assembly here covers every session in this process.
+    # Per-repo shadow warnings ride the same sink.
     if policy_warning_sink is not None:
         _, policy_warnings = make_permission_gate(tool_registry, paths=paths, cwd=working_dir)
         for warning in policy_warnings:
+            policy_warning_sink(warning)
+        for warning in per_repo.warnings:
             policy_warning_sink(warning)
 
     # 128K is the default we use throughout Spec 02; utilisation surfaces
