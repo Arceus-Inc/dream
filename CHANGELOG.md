@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- OpenTelemetry is **default-on**: core deps ship the OTLP SDK; sessions always
+  fan JSONL traces to OTel (`CompositeTracer`). Endpoint defaults to
+  `http://localhost:4318`; override with `OTEL_EXPORTER_OTLP_ENDPOINT`. Opt out
+  with `OTEL_SDK_DISABLED=true`. See `docs/specs/divo/otel-architecture-gap.md`
+  and `evals/otel/`.
 - Powered hooks: `HookSpec.allow_continue`, `HookResult.continue_message` /
   `replacement_result` / `inject_context`, `HookEvent.SUBAGENT_START`.
   `HookExecutor` honors `allow_block` and `allow_continue` (first-wins continue;

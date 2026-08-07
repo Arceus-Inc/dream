@@ -34,6 +34,10 @@ dependencies = [
   "mcp>=1.0,<2",
   "websockets>=12.0",
   "tzdata>=2024.1; platform_system == 'Windows'",
+  # OTel is default-on (disable with OTEL_SDK_DISABLED=true).
+  "opentelemetry-api>=1.27",
+  "opentelemetry-sdk>=1.27",
+  "opentelemetry-exporter-otlp-proto-http>=1.27",
 ]
 
 [project.optional-dependencies]
@@ -94,6 +98,13 @@ disallow_untyped_defs = false
 # so the strict run passes against the lean default install.
 [[tool.mypy.overrides]]
 module = ["openai", "openai.*", "anthropic", "anthropic.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+  "opentelemetry",
+  "opentelemetry.*",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
