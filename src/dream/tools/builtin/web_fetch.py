@@ -104,7 +104,8 @@ class WebFetchTool(BaseTool):
         "Fetch one http(s) URL with a direct SSRF-guarded GET (no API key, no "
         "browser). Prefer this for simple static/HTML pages. Use web_extract for "
         "Tavily-cleaned multi-URL extraction (requires key); use browser_run only "
-        "when the page needs JavaScript rendering."
+        "when the page needs JavaScript rendering or interactive/authenticated "
+        "flows such as forms or logins."
     )
     declaration = ToolDeclaration(
         risk="external", tier_required=2, timeout_seconds=_DEFAULT_TIMEOUT
