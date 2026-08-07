@@ -104,11 +104,9 @@ def _register(registry: ToolRegistry, tool: object) -> None:
         raise TypeError(f"expected BaseTool, got {type(tool)!r}")
     existing = registry.get(tool.name)
     if existing is not None:
-        if any(
-            registered is existing
-            and source is ToolSource.DEFAULT
-            and type(registered) is type(tool)
-            for registered, source in registry.iter_with_source()
+        if (
+            registry.source_for(tool.name) is ToolSource.DEFAULT
+            and type(existing) is type(tool)
         ):
             return
         raise ToolCollisionError(

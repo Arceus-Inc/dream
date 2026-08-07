@@ -74,6 +74,10 @@ class ToolRegistry:
         """Return the registered tool, or ``None`` if not present."""
         return self._tools.get(name)
 
+    def source_for(self, name: str) -> ToolSource | None:
+        """Return the provenance of a registered tool, or ``None``."""
+        return self._sources.get(name)
+
     def iter_with_source(self) -> Iterator[tuple[BaseTool, ToolSource]]:
         """Yield ``(tool, source)`` pairs in deterministic listing order.
 
