@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from dream.contracts.hook import HookEvent, HookResult, HookSpec
 from dream.state.shadow import MutatingToolName
 
+_MAX_SESSION_STATES = 64
+
 
 @dataclass(frozen=True, slots=True)
 class _VerifyState:
@@ -57,7 +59,7 @@ class VerifyOnStopHook:
 
     def _reset(self, session_id: str) -> None:
         self._state[session_id] = _VerifyState()
-        if len(self._state) > 64:
+        if len(self._state) > _MAX_SESSION_STATES:
             oldest = next(iter(self._state))
             del self._state[oldest]
 
@@ -78,7 +80,7 @@ class VerifyOnStopHook:
             if tool_name in self._config.evidence_tools:
                 state = _VerifyState(mutated=state.mutated, has_evidence=True)
             self._state[session_id] = state
-            if len(self._state) > 64:
+            if len(self._state) > _MAX_SESSION_STATES:
                 oldest = next(iter(self._state))
                 del self._state[oldest]
             return HookResult()
