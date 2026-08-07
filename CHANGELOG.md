@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Optional OpenTelemetry OTLP export (`dream[otel]`): when
+  `OTEL_EXPORTER_OTLP_ENDPOINT` is set, session tracing fans out from the
+  existing JSONL substrate to a real `BatchSpanProcessor` / OTLP HTTP exporter
+  (`CompositeTracer`). Zero-cost when unset (no SDK import). See
+  `docs/specs/divo/otel-architecture-gap.md` and `evals/otel/`.
 - Powered hooks: `HookSpec.allow_continue`, `HookResult.continue_message` /
   `replacement_result` / `inject_context`, `HookEvent.SUBAGENT_START`.
   `HookExecutor` honors `allow_block` and `allow_continue` (first-wins continue;

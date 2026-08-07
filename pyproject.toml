@@ -40,6 +40,11 @@ dependencies = [
 anthropic = ["anthropic>=0.40"]
 openai    = ["openai>=1.50"]
 docker    = ["docker>=7.1"]
+otel = [
+  "opentelemetry-api>=1.27",
+  "opentelemetry-sdk>=1.27",
+  "opentelemetry-exporter-otlp-proto-http>=1.27",
+]
 dev = [
   "pytest>=8.2",
   "pytest-asyncio>=0.23",
@@ -48,6 +53,9 @@ dev = [
   "mypy>=1.11",
   "types-jsonschema>=4.0",
   "types-pyyaml>=6.0",
+  "opentelemetry-api>=1.27",
+  "opentelemetry-sdk>=1.27",
+  "opentelemetry-exporter-otlp-proto-http>=1.27",
 ]
 
 [project.urls]
@@ -94,6 +102,13 @@ disallow_untyped_defs = false
 # so the strict run passes against the lean default install.
 [[tool.mypy.overrides]]
 module = ["openai", "openai.*", "anthropic", "anthropic.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+  "opentelemetry",
+  "opentelemetry.*",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

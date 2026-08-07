@@ -42,7 +42,7 @@ from dream.memory import (
     render_memory_catalogue,
     scan_memory_dir,
 )
-from dream.observability import JsonlTracer, TraceWriter
+from dream.observability import TraceWriter, build_session_tracer
 from dream.permissions import SessionLimits, read_sandbox_config
 from dream.plugins import load_enabled_plugins
 from dream.prompts.environment import render_runtime_info
@@ -593,14 +593,12 @@ def _build_session_engine(
             credentials_path=creds_file if creds_file.is_file() else None,
         )
     )
-    # OTel-shaped trace (Spec 12a): one durable JSONL per session under the
-    # task sidecar. The session_id doubles as the sidecar dir key.
-    tracer = JsonlTracer(
-        # Reuse the env-resolved ``paths`` so the trace log honours
-        # ``DREAM_HOME`` like task storage does (#43).
-        TraceWriter(paths.trace_log(session_id)),
+    # Trace substrate (Spec 12a JSONL) ± optional OTLP when
+    # ``OTEL_EXPORTER_OTLP_ENDPOINT`` is set (dream[otel]).
+    tracer = build_session_tracer(
         session_id=session_id,
         task_id=session_id,
+        writer=TraceWriter(paths.trace_log(session_id)),
     )
     # Spec 13C: gate every tool call against the sandbox policy assembled
     # from the registry's declared tiers + operator .harness config. Stale
