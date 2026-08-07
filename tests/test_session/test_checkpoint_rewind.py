@@ -63,6 +63,7 @@ def test_session_restore_checkpoint_rewinds_fs_and_transcript(tmp_path: Path) ->
             ConversationMessage(role="assistant", content=[TextBlock(text="more done")]),
         ]
     )
+    session._prompt_indices.extend([0, 2])
 
     result = session.restore_checkpoint(rewind_turns=1)
     assert result.fs.outcome is RestoreOutcome.RESTORED
