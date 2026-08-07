@@ -154,7 +154,7 @@ Full concept map with every tool documented: **[consumer-facing-api/HARNESS.md](
 
 Registered by [`default_registry()`](src/dream/tools/builtin/__init__.py):
 
-- **Workspace:** `read_file`, `edit_file`, `write_file`, `bash`, `git`, `glob`, `grep`, `lsp`, `read_offloaded`
+- **Workspace:** `read_file`, `apply_patch`, `write_file`, `bash`, `git`, `glob`, `grep`, `lsp`, `read_offloaded`
 - **Knowledge:** `skill`, `memory_search`, `memory_get`
 - **Tasks & schedule:** `task_create/get/output/stop/update`, `cron_list/show/create/delete/toggle`, `plan_show`, `todo_write`, `remote_trigger`
 - **Isolation:** `enter_worktree`, `exit_worktree`

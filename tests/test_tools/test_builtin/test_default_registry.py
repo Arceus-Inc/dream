@@ -35,6 +35,7 @@ _PACK_NAMES: frozenset[str] = frozenset(
         "lsp",
         "memory_search",
         "memory_get",
+        "session_search",
         "query_logs",
         "query_metrics",
         "task_create",
@@ -104,6 +105,7 @@ def test_pack_registration_is_idempotent() -> None:
     assert {t.name for t in reg.list_tools()} >= {
         "memory_search",
         "memory_get",
+        "session_search",
         "web_search",
         "web_extract",
         "web_fetch",
@@ -186,7 +188,7 @@ async def test_task_tool_recovery_guidance_names_only_registered_tools(
 def test_register_helpers_cover_all_pack_names() -> None:
     """Eval: every pack helper registers a disjoint non-empty subset."""
     checkers = (
-        (register_memory_tools, {"memory_search", "memory_get"}),
+        (register_memory_tools, {"memory_search", "memory_get", "session_search"}),
         (register_task_tools, {"task_create", "task_get", "task_output", "task_stop", "task_update"}),
         (
             register_cron_tools,

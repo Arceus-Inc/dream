@@ -28,7 +28,7 @@ COMPACTABLE_TOOLS: frozenset[str] = frozenset(
         "glob",
         "web_search",
         "web_fetch",
-        "edit_file",
+        "apply_patch",
         "write_file",
     }
 )

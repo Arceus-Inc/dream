@@ -38,14 +38,14 @@ def test_planner_default_tools_are_read_only_triplet() -> None:
     assert "read_file" in tools
     assert "git" in tools
     assert "write_file" not in tools
-    assert "edit_file" not in tools
+    assert "apply_patch" not in tools
     assert "bash" not in tools
 
 
 def test_planner_default_disallowed_tools_lists_all_writers() -> None:
     m = default_role_manifest("planner")
     disallowed = set(m.disallowed_tools)
-    assert {"write_file", "edit_file", "bash"} <= disallowed
+    assert {"write_file", "apply_patch", "bash"} <= disallowed
 
 
 def test_planner_default_permission_mode_is_plan() -> None:
@@ -77,14 +77,14 @@ def test_evaluator_default_tools_include_bash_for_in_session_verify() -> None:
     assert "read_file" in tools
     assert "bash" in tools
     assert "write_file" not in tools
-    assert "edit_file" not in tools
+    assert "apply_patch" not in tools
     assert "spawn_subagent" not in tools
 
 
 def test_evaluator_default_disallowed_lists_writers_not_bash() -> None:
     m = default_role_manifest("evaluator")
     disallowed = set(m.disallowed_tools)
-    assert {"write_file", "edit_file"} <= disallowed
+    assert {"write_file", "apply_patch"} <= disallowed
     assert "bash" not in disallowed
 
 

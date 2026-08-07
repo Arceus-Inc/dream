@@ -20,6 +20,12 @@ from dream.memory._context import (
     put_memory_context,
     read_memory_context,
 )
+from dream.memory._episodic_context import (
+    EPISODIC_CONTEXT_KEY,
+    EpisodicContext,
+    put_episodic_context,
+    read_episodic_context,
+)
 from dream.memory._paths import project_memory_dir
 from dream.memory._proposals import (
     InvalidSlugError,
@@ -44,10 +50,12 @@ from dream.memory._working import (
 
 __all__ = [
     "DEFAULT_CAP_BYTES",
+    "EPISODIC_CONTEXT_KEY",
     "MEMORY_CONTEXT_KEY",
     "TASK_MEMORY_CONTEXT_KEY",
     "CompressionOutcome",
     "Compressor",
+    "EpisodicContext",
     "FileMemoryStore",
     "InvalidSlugError",
     "MemoryContext",
@@ -56,8 +64,10 @@ __all__ = [
     "memory_description",
     "project_memory_dir",
     "proposals_dir",
+    "put_episodic_context",
     "put_memory_context",
     "put_task_memory_context",
+    "read_episodic_context",
     "read_memory_context",
     "read_task_memory_context",
     "render_memory_catalogue",

@@ -17,7 +17,7 @@ from dream.contracts.tool import ToolResult
 from dream.tools._base import BaseTool, ToolDeclaration, ToolEffects
 from dream.tools._context import ToolExecutionContext
 from dream.tools.builtin.bash import BashTool
-from dream.tools.builtin.file_edit import FileEditTool
+from dream.tools.builtin.apply_patch import ApplyPatchTool
 from dream.tools.builtin.file_read import FileReadTool
 from dream.tools.builtin.file_write import FileWriteTool
 
@@ -47,9 +47,17 @@ def test_write_tool_reports_target_path() -> None:
     assert eff.network_host is None
 
 
-def test_edit_tool_reports_target_path() -> None:
-    eff = FileEditTool().effects_for({"path": "a.py", "old_str": "x", "new_str": "y"})
-    assert eff.target_paths == (Path("a.py"),)
+def test_apply_patch_reports_target_paths() -> None:
+    patch = (
+        "*** Begin Patch\n"
+        "*** Update File: a.py\n"
+        "@@\n"
+        "-x\n"
+        "+y\n"
+        "*** End Patch"
+    )
+    eff = ApplyPatchTool().effects_for({"patch": patch})
+    assert Path("a.py") in eff.target_paths
 
 
 def test_read_tool_reports_target_path() -> None:

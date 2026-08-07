@@ -36,7 +36,7 @@ _EVALUATOR_TOOLS: tuple[str, ...] = (
 
 _WRITERS_DENIED: tuple[str, ...] = (
     "write_file",
-    "edit_file",
+    "apply_patch",
     "bash",
 )
 
@@ -44,7 +44,7 @@ _WRITERS_DENIED: tuple[str, ...] = (
 # subagents are enabled); keep it out of the allow-list via tools= explicit.
 _EVALUATOR_DENIED: tuple[str, ...] = (
     "write_file",
-    "edit_file",
+    "apply_patch",
 )
 
 

@@ -27,6 +27,7 @@ from dream.contracts.governance import (
     GovProposal,
 )
 from dream.contracts.hook import Hook, HookEvent, HookResult, HookSpec
+from dream.contracts.episodic import EpisodicRecord, EpisodicSearchHit, EpisodicStore
 from dream.contracts.memory import (
     MemoryDelta,
     MemoryRecord,
@@ -69,13 +70,17 @@ from dream.contracts.tool import Tool, ToolContext, ToolResult
 # 0.5.0: added LandedPhase / LandedOutcome and outcome.landed fields on OutcomeEvent — additive.
 # 0.6.0: added powered hooks — HookEvent.SUBAGENT_START, HookSpec.allow_continue, HookResult
 # replacement_result / inject_context / continue_message, and the hook payload shapes — additive.
-__contract_version__ = "0.6.0"
+# 0.7.0: added episodic search seam (EpisodicStore / EpisodicRecord / EpisodicSearchHit) — additive.
+__contract_version__ = "0.7.0"
 
 __all__ = [
     "CapacityPort",
     "DelegatedIntakePort",
     "DelegatedWorkRef",
     "DelegatedWorkRequest",
+    "EpisodicRecord",
+    "EpisodicSearchHit",
+    "EpisodicStore",
     "ExecPlan",
     "ExecPlanLedger",
     "ExecPlanStatus",

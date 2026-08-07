@@ -77,7 +77,7 @@ def test_collect_preserves_chronological_order() -> None:
 
 def test_compactable_tools_set_includes_canonical_local_tools() -> None:
     """The frozenset is part of the public contract; regressions on file/bash break here."""
-    for expected in ("read_file", "bash", "grep", "glob", "write_file", "edit_file"):
+    for expected in ("read_file", "bash", "grep", "glob", "write_file", "apply_patch"):
         assert expected in COMPACTABLE_TOOLS
 
 

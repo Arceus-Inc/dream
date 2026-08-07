@@ -8,6 +8,7 @@ todo_write/skill). Everything else is an opt-in pack registered via the
 from __future__ import annotations
 
 from dream.tools._registry import ToolCollisionError, ToolRegistry, ToolSource
+from dream.tools.builtin.apply_patch import ApplyPatchTool
 from dream.tools.builtin.bash import BashTool
 from dream.tools.builtin.browser_run import BrowserRunTool
 from dream.tools.builtin.cron_create import CronCreateTool
@@ -18,7 +19,6 @@ from dream.tools.builtin.cron_toggle import CronToggleTool
 from dream.tools.builtin.enter_worktree import EnterWorktreeTool
 from dream.tools.builtin.execute_code import ExecuteCodeTool
 from dream.tools.builtin.exit_worktree import ExitWorktreeTool
-from dream.tools.builtin.file_edit import FileEditTool
 from dream.tools.builtin.file_read import FileReadTool
 from dream.tools.builtin.file_write import FileWriteTool
 from dream.tools.builtin.git import GitTool
@@ -32,6 +32,7 @@ from dream.tools.builtin.plan_show import PlanShowTool
 from dream.tools.builtin.propose_memory import MemoryProposeTool
 from dream.tools.builtin.read_offloaded import ReadOffloadedTool
 from dream.tools.builtin.remote_trigger import RemoteTriggerTool
+from dream.tools.builtin.session_search import SessionSearchTool
 from dream.tools.builtin.skill import SkillTool
 from dream.tools.builtin.spawn_subagent import SpawnSubagentTool
 from dream.tools.builtin.task_create import TaskCreateTool
@@ -49,10 +50,11 @@ from dream.tools.builtin.working_memory import (
     WorkingMemoryWriteTool,
 )
 
-# Level-2 coding surface: Spec 05 core six + medium coding companions.
+# Level-2 coding surface: Spec 05 core + medium coding companions.
+# ``apply_patch`` supersedes the former ``edit_file`` substring tool.
 LEVEL2_ORDER: tuple[str, ...] = (
     "read_file",
-    "edit_file",
+    "apply_patch",
     "write_file",
     "bash",
     "git",
@@ -69,6 +71,7 @@ _FULL_ORDER: tuple[str, ...] = (
     "lsp",
     "memory_search",
     "memory_get",
+    "session_search",
     "query_logs",
     "query_metrics",
     "task_create",
@@ -119,7 +122,7 @@ def default_registry() -> ToolRegistry:
     """Return a fresh registry with the Level-2 coding tools only."""
     registry = ToolRegistry(default_order=_FULL_ORDER)
     registry.register(FileReadTool(), source=ToolSource.DEFAULT)
-    registry.register(FileEditTool(), source=ToolSource.DEFAULT)
+    registry.register(ApplyPatchTool(), source=ToolSource.DEFAULT)
     registry.register(FileWriteTool(), source=ToolSource.DEFAULT)
     registry.register(BashTool(), source=ToolSource.DEFAULT)
     registry.register(GitTool(), source=ToolSource.DEFAULT)
@@ -132,9 +135,10 @@ def default_registry() -> ToolRegistry:
 
 
 def register_memory_tools(registry: ToolRegistry) -> None:
-    """Register durable workspace memory tools (Spec 11)."""
+    """Register durable workspace memory + episodic session search (Spec 11)."""
     _register(registry, MemorySearchTool())
     _register(registry, MemoryGetTool())
+    _register(registry, SessionSearchTool())
 
 
 def register_task_tools(registry: ToolRegistry) -> None:

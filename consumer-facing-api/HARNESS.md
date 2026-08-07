@@ -117,7 +117,7 @@ medium coding companions every agent uses:
 | Tool | Risk / tier | Use case |
 |---|---|---|
 | `read_file` | safe / 0 | Read a repo file (line-numbered, offset/limit). |
-| `edit_file` | mutating / 1 | Surgical substring replacement in an existing file. |
+| `apply_patch` | mutating / 1 | Codex multi-hunk patch (add/update/delete/move). Replaces former `edit_file`. |
 | `write_file` | mutating / 1 | Create or overwrite a file. |
 | `bash` | mutating / 1 | Run a shell command **through the sandbox adapter**, cwd-confined. |
 | `git` | safe / 0 | Read-only git subcommands (status/diff/log). |
@@ -138,7 +138,7 @@ Former fat-default extras are packs. Defaults: only `memory=True`. Pass
 
 | Flag | Tools |
 |---|---|
-| `memory=True` (default) | `memory_search`, `memory_get` |
+| `memory=True` (default) | `memory_search`, `memory_get`, `session_search` (needs episodic store) |
 | `tasks=True` | `task_create`, `task_get`, `task_output`, `task_stop`, `task_update` |
 | `cron=True` | `cron_*`, `remote_trigger` |
 | `web=True` | `web_search` (find URLs), `web_fetch` (direct GET), `web_extract` (Tavily clean body) |

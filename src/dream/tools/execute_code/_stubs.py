@@ -31,10 +31,10 @@ _STUBS: tuple[_StubSpec, ...] = (
         '{"path": path, "content": content}',
     ),
     _StubSpec(
-        NestedToolName.EDIT_FILE,
-        "path: str, old_str: str, new_str: str, replace_all: bool = False",
-        '"""Replace a substring in an existing file. Returns the tool content string."""',
-        '{"path": path, "old_str": old_str, "new_str": new_str, "replace_all": replace_all}',
+        NestedToolName.APPLY_PATCH,
+        "patch: str",
+        '"""Apply a Codex multi-hunk patch (add/update/delete). Returns the tool content string."""',
+        '{"patch": patch}',
     ),
     _StubSpec(
         NestedToolName.GREP,
