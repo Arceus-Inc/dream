@@ -25,10 +25,9 @@ import asyncio
 import contextlib
 from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from dream.api.response_format import ResponseFormat
-from dream.api.structured import JsonValue
 from dream.engine._events import (
     AssistantTextDelta,
     AssistantTurnComplete,
@@ -62,6 +61,8 @@ from dream.services.session_store import (
     SessionSnapshot,
     cost_snapshot_from_fields,
     extract_tool_calls,
+    is_json_value,
+    json_dict_from_mapping,
     message_to_record,
     messages_from_records,
 )
@@ -78,16 +79,6 @@ def _tool_failed_marker(tool_name: str) -> str:
     model re-reads on resume only ever sees this generic line.
     """
     return f"tool {tool_name!r} failed to execute"
-
-
-def _is_json_value(value: object) -> bool:
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return True
-    if isinstance(value, list):
-        return all(_is_json_value(item) for item in value)
-    if isinstance(value, dict):
-        return all(isinstance(key, str) and _is_json_value(item) for key, item in value.items())
-    return False
 
 
 @dataclass(frozen=True)
@@ -207,10 +198,13 @@ class Session:
         from datetime import UTC, datetime
 
         model = self.options.model or self.model
-        metadata: dict[str, JsonValue] = {}
-        for key, value in self.options.metadata.items():
-            if isinstance(key, str) and _is_json_value(value):
-                metadata[key] = cast(JsonValue, value)
+        metadata = json_dict_from_mapping(
+            {
+                key: value
+                for key, value in self.options.metadata.items()
+                if isinstance(key, str) and is_json_value(value)
+            }
+        )
         return SessionSnapshot(
             schema_version=SCHEMA_VERSION,
             session_id=self.id,

@@ -41,6 +41,8 @@ __all__ = [
     "ToolCallRecord",
     "cost_snapshot_from_fields",
     "extract_tool_calls",
+    "is_json_value",
+    "json_dict_from_mapping",
     "message_to_record",
     "messages_from_records",
     "record_to_message",
@@ -134,23 +136,23 @@ def _checked_session_id(session_id: str) -> str:
     return session_id
 
 
-def _is_json_value(value: object) -> TypeGuard[JsonValue]:
+def is_json_value(value: object) -> TypeGuard[JsonValue]:
     if value is None or isinstance(value, (str, int, float, bool)):
         return True
     if isinstance(value, list):
-        return all(_is_json_value(item) for item in value)
+        return all(is_json_value(item) for item in value)
     if isinstance(value, Mapping):
-        return all(isinstance(key, str) and _is_json_value(item) for key, item in value.items())
+        return all(isinstance(key, str) and is_json_value(item) for key, item in value.items())
     return False
 
 
-def _json_value_from_tool_input(raw: Mapping[str, object]) -> dict[str, JsonValue]:
+def json_dict_from_mapping(raw: Mapping[str, object]) -> dict[str, JsonValue]:
     out: dict[str, JsonValue] = {}
     for key, value in raw.items():
         if not isinstance(key, str):
-            raise ValueError(f"tool input key must be str, got {type(key).__name__}")
-        if not _is_json_value(value):
-            raise ValueError(f"tool input value for {key!r} is not JSON-serializable")
+            raise ValueError(f"JSON object key must be str, got {type(key).__name__}")
+        if not is_json_value(value):
+            raise ValueError(f"value for {key!r} is not a valid JsonValue")
         out[key] = value
     return out
 
@@ -173,7 +175,7 @@ def block_to_record(block: ContentBlock) -> ContentBlockRecord:
             kind="tool_use",
             id=block.id,
             name=block.name,
-            input=_json_value_from_tool_input(block.input),
+            input=json_dict_from_mapping(block.input),
         )
     if isinstance(block, ToolResultBlock):
         return ToolResultBlockRecord(
@@ -225,7 +227,7 @@ def extract_tool_calls(messages: Sequence[ConversationMessage]) -> list[ToolCall
                 ToolCallRecord(
                     tool_use_id=block.id,
                     tool_name=block.name,
-                    input=_json_value_from_tool_input(block.input),
+                    input=json_dict_from_mapping(block.input),
                     result_content=result.content if result is not None else None,
                     is_error=result.is_error if result is not None else None,
                 )
@@ -280,7 +282,7 @@ def snapshot_from_dict(data: Mapping[str, object]) -> SessionSnapshot:
         tool_calls=[_tool_call_from_dict(item) for item in tool_calls_raw],
         saved_at=datetime.fromisoformat(saved_at_raw),
         max_turns=_optional_int(data.get("max_turns")),
-        metadata=_json_dict_from_mapping(_optional_mapping(data.get("metadata"))),
+        metadata=json_dict_from_mapping(_optional_mapping(data.get("metadata"))),
     )
 
 
@@ -390,7 +392,7 @@ def _block_record_from_dict(raw: object) -> ContentBlockRecord:
             kind="tool_use",
             id=_require_str(data, "id"),
             name=_require_str(data, "name"),
-            input=_json_dict_from_mapping(input_raw),
+            input=json_dict_from_mapping(input_raw),
         )
     if kind == "tool_result":
         return ToolResultBlockRecord(
@@ -410,21 +412,10 @@ def _tool_call_from_dict(raw: object) -> ToolCallRecord:
     return ToolCallRecord(
         tool_use_id=_require_str(data, "tool_use_id"),
         tool_name=_require_str(data, "tool_name"),
-        input=_json_dict_from_mapping(input_raw),
+        input=json_dict_from_mapping(input_raw),
         result_content=str(result_content) if result_content is not None else None,
         is_error=bool(is_error) if is_error is not None else None,
     )
-
-
-def _json_dict_from_mapping(raw: Mapping[str, object]) -> dict[str, JsonValue]:
-    out: dict[str, JsonValue] = {}
-    for key, value in raw.items():
-        if not isinstance(key, str):
-            raise ValueError(f"JSON object key must be str, got {type(key).__name__}")
-        if not _is_json_value(value):
-            raise ValueError(f"value for {key!r} is not a valid JsonValue")
-        out[key] = value
-    return out
 
 
 def _as_mapping(value: object, label: str) -> Mapping[str, object]:
