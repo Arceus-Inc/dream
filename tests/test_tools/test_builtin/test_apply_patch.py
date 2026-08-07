@@ -124,6 +124,51 @@ async def test_add_and_delete(
     assert not doomed.exists()
 
 
+async def test_add_existing_file_is_rejected(
+    tool: ApplyPatchTool, ctx: ToolExecutionContext, tmp_path: Path
+) -> None:
+    existing = tmp_path / "existing.txt"
+    existing.write_text("preserve\n", encoding="utf-8")
+    result = await tool.execute(
+        {
+            "patch": (
+                "*** Begin Patch\n"
+                "*** Add File: existing.txt\n"
+                "+overwrite\n"
+                "*** End Patch"
+            )
+        },
+        ctx,
+    )
+    assert result.is_error is True
+    assert existing.read_text(encoding="utf-8") == "preserve\n"
+
+
+async def test_move_existing_destination_is_rejected(
+    tool: ApplyPatchTool, ctx: ToolExecutionContext, tmp_path: Path
+) -> None:
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "destination.txt"
+    source.write_text("source\n", encoding="utf-8")
+    destination.write_text("preserve\n", encoding="utf-8")
+    result = await tool.execute(
+        {
+            "patch": (
+                "*** Begin Patch\n"
+                "*** Update File: source.txt\n"
+                "*** Move to: destination.txt\n"
+                "@@\n"
+                " source\n"
+                "*** End Patch"
+            )
+        },
+        ctx,
+    )
+    assert result.is_error is True
+    assert source.read_text(encoding="utf-8") == "source\n"
+    assert destination.read_text(encoding="utf-8") == "preserve\n"
+
+
 async def test_missing_context_is_error(
     tool: ApplyPatchTool, ctx: ToolExecutionContext, tmp_path: Path
 ) -> None:

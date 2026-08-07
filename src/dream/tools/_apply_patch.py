@@ -8,6 +8,7 @@ atomic writes. No tool/engine imports.
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -94,6 +95,8 @@ class _Parser:
                     raise DiffError(f"Update File Error: Missing File: {path}")
                 action = self.parse_update_file(self.current_files[path])
                 action.move_path = move_to or None
+                if move_to and move_to in self.current_files:
+                    raise DiffError(f"Move File Error: Destination already exists: {move_to}")
                 self.patch.actions[path] = action
                 continue
             path = self.read_str("*** Delete File: ")
@@ -108,6 +111,8 @@ class _Parser:
             if path:
                 if path in self.patch.actions:
                     raise DiffError(f"Add File Error: Duplicate Path: {path}")
+                if path in self.current_files:
+                    raise DiffError(f"Add File Error: File already exists: {path}")
                 self.patch.actions[path] = self.parse_add_file()
                 continue
             raise DiffError(f"Unknown Line: {self.lines[self.index]}")
@@ -404,6 +409,16 @@ def process_patch(
         raise DiffError("Patch must start with *** Begin Patch")
     paths = identify_files_needed(stripped)
     orig = load_files(paths, open_fn)
+    for path in (
+        *identify_files_added(stripped),
+        *(
+            line[len("*** Move to: ") :]
+            for line in stripped.splitlines()
+            if line.startswith("*** Move to: ")
+        ),
+    ):
+        with suppress(FileNotFoundError):
+            orig[path] = open_fn(path)
     patch, fuzz = text_to_patch(stripped, orig)
     commit = patch_to_commit(patch, orig)
     apply_commit(commit, write_fn, remove_fn)
