@@ -11,19 +11,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from dream.contracts.hook import HookEvent, HookResult, HookSpec
+from dream.state.shadow._types import MutatingToolName
 
 
 @dataclass(frozen=True, slots=True)
 class VerifyOnStopConfig:
     """Which tools count as mutations vs verification evidence."""
 
-    require_evidence_for: frozenset[str] = frozenset(
-        {
-            "write_file",
-            "edit_file",
-            "execute_code",
-        }
-    )
+    require_evidence_for: frozenset[str] = frozenset(t.value for t in MutatingToolName)
     evidence_tools: frozenset[str] = frozenset(
         {
             "bash",
@@ -52,34 +47,38 @@ class VerifyOnStopHook:
             priority=50,
             allow_continue=True,
         )
-        self._mutated = False
-        self._has_evidence = False
+        self._state: dict[str, tuple[bool, bool]] = {}
 
-    def _reset(self) -> None:
-        self._mutated = False
-        self._has_evidence = False
+    def _reset(self, session_id: str) -> None:
+        self._state[session_id] = (False, False)
 
     async def __call__(self, event: HookEvent, payload: Mapping[str, object]) -> HookResult:
         if event is HookEvent.SESSION_START:
-            self._reset()
+            self._reset(str(payload.get("session_id", "")))
             return HookResult()
 
         if event is HookEvent.POST_TOOL_USE:
+            session_id = str(payload.get("session_id", ""))
+            mutated, has_evidence = self._state.get(session_id, (False, False))
             tool_name = str(payload.get("tool_name", ""))
             is_error = bool(payload.get("is_error", False))
             if is_error:
                 return HookResult()
             if tool_name in self._config.require_evidence_for:
-                self._mutated = True
+                mutated = True
+                has_evidence = False
             if tool_name in self._config.evidence_tools:
-                self._has_evidence = True
+                has_evidence = True
+            self._state[session_id] = (mutated, has_evidence)
             return HookResult()
 
         if event is HookEvent.STOP:
+            session_id = str(payload.get("session_id", ""))
+            mutated, has_evidence = self._state.get(session_id, (False, False))
             phase = str(payload.get("phase", ""))
             if phase != "pre_seal":
                 return HookResult()
-            if self._mutated and not self._has_evidence:
+            if mutated and not has_evidence:
                 return HookResult(continue_message=self._config.nudge_template)
             return HookResult()
 

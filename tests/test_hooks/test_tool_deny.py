@@ -44,3 +44,18 @@ def test_spec_requires_allow_block() -> None:
     hook = ToolDenyListHook(config=ToolDenyListConfig(denied=frozenset({"x"})))
     assert hook.spec.allow_block is True
     assert HookEvent.PRE_TOOL_USE in hook.spec.events
+
+
+@pytest.mark.asyncio
+async def test_malformed_feedback_template_still_blocks() -> None:
+    hook = ToolDenyListHook(
+        config=ToolDenyListConfig(
+            denied=frozenset({"bash"}),
+            feedback_template="{missing",
+        )
+    )
+    outcome = await HookExecutor(hooks=[hook]).fire(
+        HookEvent.PRE_TOOL_USE,
+        {"tool_name": "bash", "tool_input": {}},
+    )
+    assert outcome.blocked is True

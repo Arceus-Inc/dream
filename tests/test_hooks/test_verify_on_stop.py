@@ -90,6 +90,33 @@ async def test_failed_mutate_does_not_count() -> None:
     assert result.continue_message is None
 
 
+@pytest.mark.asyncio
+async def test_later_mutation_requires_new_evidence() -> None:
+    hook = VerifyOnStopHook()
+    await hook(HookEvent.POST_TOOL_USE, {"session_id": "s1", "tool_name": "write_file"})
+    await hook(HookEvent.POST_TOOL_USE, {"session_id": "s1", "tool_name": "bash"})
+    await hook(HookEvent.POST_TOOL_USE, {"session_id": "s1", "tool_name": "task_create"})
+    result = await hook(
+        HookEvent.STOP,
+        {"session_id": "s1", "phase": "pre_seal"},
+    )
+    assert result.continue_message is not None
+
+
+@pytest.mark.asyncio
+async def test_sessions_do_not_share_verify_state() -> None:
+    hook = VerifyOnStopHook()
+    await hook(
+        HookEvent.POST_TOOL_USE,
+        {"session_id": "s1", "tool_name": "write_file"},
+    )
+    result = await hook(
+        HookEvent.STOP,
+        {"session_id": "s2", "phase": "pre_seal"},
+    )
+    assert result.continue_message is None
+
+
 def test_spec_declares_allow_continue() -> None:
     hook = VerifyOnStopHook()
     assert hook.spec.allow_continue is True

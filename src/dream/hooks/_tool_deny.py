@@ -7,13 +7,15 @@ from dataclasses import dataclass, field
 
 from dream.contracts.hook import HookEvent, HookResult, HookSpec
 
+_DEFAULT_FEEDBACK_TEMPLATE = "tool {tool_name!r} is denied by policy"
+
 
 @dataclass(frozen=True, slots=True)
 class ToolDenyListConfig:
     """Tools that must never execute when this hook is registered."""
 
     denied: frozenset[str] = field(default_factory=frozenset)
-    feedback_template: str = "tool {tool_name!r} is denied by policy"
+    feedback_template: str = _DEFAULT_FEEDBACK_TEMPLATE
 
 
 class ToolDenyListHook:
@@ -21,6 +23,12 @@ class ToolDenyListHook:
 
     def __init__(self, *, config: ToolDenyListConfig | None = None) -> None:
         self._config = config or ToolDenyListConfig()
+        try:
+            self._config.feedback_template.format(tool_name="tool")
+        except (IndexError, KeyError, ValueError):
+            self._feedback_template = _DEFAULT_FEEDBACK_TEMPLATE
+        else:
+            self._feedback_template = self._config.feedback_template
         self.spec = HookSpec(
             events=(HookEvent.PRE_TOOL_USE,),
             priority=100,
@@ -33,7 +41,7 @@ class ToolDenyListHook:
         tool_name = str(payload.get("tool_name", ""))
         if tool_name not in self._config.denied:
             return HookResult()
-        feedback = self._config.feedback_template.format(tool_name=tool_name)
+        feedback = self._feedback_template.format(tool_name=tool_name)
         return HookResult(blocked=True, feedback=feedback)
 
 
