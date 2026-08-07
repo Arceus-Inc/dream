@@ -313,6 +313,11 @@ def identify_files_moved(text: str) -> list[str]:
     return result
 
 
+def identify_files_created(text: str) -> list[str]:
+    """Return add and move destinations that must be loaded before parsing."""
+    return identify_files_added(text) + identify_files_moved(text)
+
+
 def text_to_patch(text: str, orig: dict[str, str]) -> tuple[Patch, int]:
     lines = text.strip().split("\n")
     if (
@@ -417,8 +422,7 @@ def process_patch(
         raise DiffError("Patch must start with *** Begin Patch")
     paths = identify_files_needed(stripped)
     orig = load_files(paths, open_fn)
-    destination_paths = (*identify_files_added(stripped), *identify_files_moved(stripped))
-    for path in destination_paths:
+    for path in identify_files_created(stripped):
         with suppress(FileNotFoundError):
             orig[path] = open_fn(path)
     patch, fuzz = text_to_patch(stripped, orig)
@@ -436,6 +440,7 @@ __all__ = [
     "Patch",
     "PatchAction",
     "identify_files_added",
+    "identify_files_created",
     "identify_files_moved",
     "identify_files_needed",
     "process_patch",
