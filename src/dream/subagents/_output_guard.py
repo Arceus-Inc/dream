@@ -17,6 +17,7 @@ import jsonschema
 from dream.api.response_format import JsonSchema, resolve_structured_output
 from dream.api.structured import JsonValue
 from dream.roles._manifest import RoleManifest
+from dream.runner._role_session import RoleSessionError
 from dream.session import SessionOptions
 
 if TYPE_CHECKING:
@@ -144,11 +145,17 @@ async def enforce_output_schema(
     )
     manifest = _reformat_manifest()
     for _ in range(MAX_OUTPUT_REPAIRS):
-        result = await harness.run_role(
-            manifest,
-            _repair_prompt(text, schema=schema, errors=errors),
-            options=SessionOptions(max_turns=1, response_format=response_format),
-        )
+        try:
+            result = await harness.run_role(
+                manifest,
+                _repair_prompt(text, schema=schema, errors=errors),
+                options=SessionOptions(max_turns=1, response_format=response_format),
+            )
+        except RoleSessionError:
+            # Engine / transport failure on a repair turn — count as a spent
+            # attempt and keep looping (or fall through to fail-open / strict).
+            errors = ["<root>: repair session failed"]
+            continue
         text = result.final_text
         obj = coerce_json(text)
         errors = (

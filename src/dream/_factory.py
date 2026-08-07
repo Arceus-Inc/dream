@@ -465,6 +465,16 @@ def _session_extra_params(
     return extra or None
 
 
+def _tool_advertised_to_model(*, name: str, role_allowed: frozenset[str] | None) -> bool:
+    """Whether ``name`` belongs in the OpenAI ``tools`` wire for this session.
+
+    When a role manifest stamped an allow-list (including empty — tool-less
+    reformatter), only those tools are advertised. Unscoped sessions
+    (``role_allowed is None``) keep the full registry.
+    """
+    return role_allowed is None or name in role_allowed
+
+
 def _build_session_engine(
     session_id: str,
     options: SessionOptions,
@@ -514,12 +524,26 @@ def _build_session_engine(
     # smuggle the schema through ``httpx_chat_completion_stream``'s
     # ``extra_params`` — splatted verbatim into every request body.
     tools = tool_registry.list_tools()
+    # Spec 10-H: when the caller stamped a RoleManifest on
+    # ``options.metadata[ROLE_MANIFEST_METADATA_KEY]`` (the runner does
+    # this in ``open_role_session``), intersect with the active sandbox
+    # tier. Resolve the allow-list *before* rendering ``tools_wire`` so
+    # tool-less roles (output-schema reformatter) do not advertise the
+    # full registry alongside ``response_format``.
+    manifest = options.metadata.get(ROLE_MANIFEST_METADATA_KEY)
+    role_allowed: frozenset[str] | None = None
+    if isinstance(manifest, RoleManifest):
+        role_allowed = compute_session_role_allowlist(
+            tool_registry, paths=paths, cwd=working_dir, manifest=manifest
+        )
     # Effective set for schema enum (depth-2 children may inherit a scoped set).
     _schema_set = options.metadata.get("dream.subagent_set")
     if _schema_set is None:
         _schema_set = subagents
     tools_wire: list[dict[str, Any]] = []
     for t in tools:
+        if not _tool_advertised_to_model(name=t.name, role_allowed=role_allowed):
+            continue
         params = t.input_schema()
         if t.name == "spawn_subagent":
             from dream.tools.builtin.spawn_subagent import build_spawn_parameters
@@ -537,10 +561,13 @@ def _build_session_engine(
         )
     # Built per session too, so the available-tool set the `skill` tool
     # checks ``tools_required`` against includes late (MCP) registrations.
+    advertised = frozenset(
+        t.name for t in tools if _tool_advertised_to_model(name=t.name, role_allowed=role_allowed)
+    )
     skill_context = (
         SkillContext(
             registry=skill_registry,
-            available_tools=frozenset(t.name for t in tools),
+            available_tools=advertised,
             event_sink=skill_event_sink,
         )
         if skill_registry is not None
@@ -584,17 +611,6 @@ def _build_session_engine(
     # Spec 13C: gate every tool call against the sandbox policy assembled
     # from the registry's declared tiers + operator .harness config. Stale
     # promotions etc. surface as warnings (data); not emitted here yet.
-    # Spec 10-H: when the caller stamped a RoleManifest on
-    # ``options.metadata[ROLE_MANIFEST_METADATA_KEY]`` (the runner does
-    # this in ``open_role_session``), intersect with the active sandbox
-    # tier and pass the result to *both* the dispatcher (hard refusal
-    # before the gate) and the gate itself (defensive double-lock).
-    manifest = options.metadata.get(ROLE_MANIFEST_METADATA_KEY)
-    role_allowed: frozenset[str] | None = None
-    if isinstance(manifest, RoleManifest):
-        role_allowed = compute_session_role_allowlist(
-            tool_registry, paths=paths, cwd=working_dir, manifest=manifest
-        )
     # SECURITY: do NOT feed ``role_allowed`` into the gate's ``tool_allow``.
     # ``tool_allow`` is an allow-list override (it lets a tool bypass the
     # tool-deny list), so passing role tools there would *widen* them rather

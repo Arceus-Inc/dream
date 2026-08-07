@@ -168,3 +168,50 @@ async def test_unparseable_output_fails_open_with_original_text() -> None:
     )
     assert warning is not None
     assert out == "not json at all"  # best-effort falls back to the original text
+
+
+class _FailingHarness:
+    """Every repair turn raises RoleSessionError (engine/transport failure)."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def run_role(self, manifest: Any, intent: str, *, options: Any = None) -> _FakeResult:
+        from dream.runner._role_session import RoleSessionError
+
+        self.calls += 1
+        raise RoleSessionError("repair session blew up")
+
+
+@pytest.mark.asyncio
+async def test_role_session_error_on_repair_fails_open() -> None:
+    harness = _FailingHarness()
+    out, warning = await enforce_output_schema(
+        '{"confidence": 0.4}',
+        agent=_agent(),
+        harness=harness,  # type: ignore[arg-type]
+    )
+    assert harness.calls == MAX_OUTPUT_REPAIRS
+    assert warning is not None
+    assert out == '{"confidence": 0.4}'
+
+
+@pytest.mark.asyncio
+async def test_role_session_error_on_repair_strict_raises() -> None:
+    from dream.subagents._output_guard import OutputSchemaError
+
+    harness = _FailingHarness()
+    agent = Subagent(
+        name="web_research",
+        description="d",
+        tools=("web_search",),
+        output_schema=_SCHEMA,
+        strict=True,
+    )
+    with pytest.raises(OutputSchemaError):
+        await enforce_output_schema(
+            '{"confidence": 0.4}',
+            agent=agent,
+            harness=harness,  # type: ignore[arg-type]
+        )
+    assert harness.calls == MAX_OUTPUT_REPAIRS
