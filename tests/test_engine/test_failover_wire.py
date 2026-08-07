@@ -79,6 +79,27 @@ def test_slots_for_session_reads_credentials_toml(tmp_path: Path) -> None:
     assert labels == {"a", "b"}
 
 
+def test_slots_for_session_accepts_openai_without_primary(tmp_path: Path) -> None:
+    """Factory must not require an unrelated ``primary`` pool in credentials.toml."""
+    harness = tmp_path / ".harness"
+    harness.mkdir()
+    creds = harness / "credentials.toml"
+    creds.write_text(
+        '[[openai]]\nkey = "sk-oai"\nlabel = "main"\n',
+        encoding="utf-8",
+    )
+    creds.chmod(0o600)
+
+    slots = slots_for_session(
+        api_key="unused",
+        parts=_parts(),
+        credentials_path=creds,
+    )
+    assert len(slots) == 1
+    assert slots[0].name == "openai"
+    assert slots[0].pool.pick_live().key == "sk-oai"
+
+
 def test_slots_for_session_falls_back_to_env_key(tmp_path: Path) -> None:
     slots = slots_for_session(
         api_key="sk-env",
@@ -87,6 +108,7 @@ def test_slots_for_session_falls_back_to_env_key(tmp_path: Path) -> None:
     )
     assert len(slots) == 1
     assert slots[0].pool.pick_live().key == "sk-env"
+    assert slots[0].name == "primary"
 
 
 def test_empty_api_key_rejected() -> None:

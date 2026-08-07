@@ -40,9 +40,13 @@ class _LargeOutputTool(BaseTool):
 def _system_prompt(harness: Harness) -> str:
     """The system prompt the factory's engine binds for a fresh session."""
     engine = harness.config._engine_factory("s_probe", SessionOptions())  # type: ignore[misc]
-    # The engine's streamer is the failover wrapper; the prompt lives on the primary inside.
-    primary = engine.streamer._by_name["primary"]  # type: ignore[attr-defined]
-    return primary._system_prompt or ""  # type: ignore[attr-defined]
+    # FailoverStreamer → SubstrateSlot → OpenAIChatStreamer holds the prompt.
+    streamer = engine.streamer
+    slots = streamer._slots  # type: ignore[attr-defined]
+    for slot in slots.values():
+        for inner in slot.streamers.values():
+            return inner._system_prompt or ""  # type: ignore[attr-defined]
+    return ""
 
 
 def _build(tmp_path: Path, **overrides: object) -> Harness:
@@ -82,9 +86,7 @@ def test_explicit_skill_registry_wins_over_autowire(tmp_path: Path) -> None:
     assert "weather-lookup" not in _system_prompt(harness)
 
 
-def _write_memory_record(
-    tmp_path: Path, record_id: str, *, description: str, body: str
-) -> None:
+def _write_memory_record(tmp_path: Path, record_id: str, *, description: str, body: str) -> None:
     """Write a markdown memory record into the workspace's project memory dir.
 
     Mirrors ``_build``'s home/working_dir so the factory's
@@ -375,5 +377,3 @@ def test_empty_api_key_rejected(tmp_path: Path) -> None:
 def test_working_dir_recorded_on_config(tmp_path: Path) -> None:
     harness = _build(tmp_path)
     assert harness.config.working_dir == tmp_path / "wt"
-
-

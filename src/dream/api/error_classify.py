@@ -8,12 +8,15 @@ status codes. Overflow stays a compaction problem — never failover.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from enum import Enum
 from typing import Final
 
 import httpx
 
 from dream.api.credentials import AttemptOutcome
+from dream.errors import ProviderError
 from dream.services.compact._overflow import is_context_length_overflow
 
 # Cap provider-requested waits so a multi-hour Retry-After cannot stall failover
@@ -61,6 +64,17 @@ def classify_failure(exc: BaseException) -> ClassifiedFailure:
 
     if isinstance(exc, httpx.HTTPStatusError):
         return _classify_http(exc)
+
+    # Adapter-raised provider faults (e.g. repeated malformed SSE) are transient
+    # at the substrate seam — retry / failover like transport, not UNKNOWN.
+    if isinstance(exc, ProviderError):
+        return ClassifiedFailure(
+            kind=FailureKind.TRANSPORT,
+            outcome=AttemptOutcome.TRANSIENT_EXHAUSTED,
+            retryable=True,
+            should_failover=True,
+            should_compress=False,
+        )
 
     return ClassifiedFailure(
         kind=FailureKind.UNKNOWN,
@@ -149,13 +163,21 @@ def _classify_http(exc: httpx.HTTPStatusError) -> ClassifiedFailure:
 
 
 def _retry_after_seconds(response: httpx.Response) -> float | None:
+    """Parse ``Retry-After`` as delta-seconds or HTTP-date; cap at ``MAX_RETRY_AFTER_SECONDS``."""
     raw = response.headers.get("Retry-After")
     if raw is None:
         return None
+    text = raw.strip()
     try:
-        seconds = float(raw.strip())
+        seconds = float(text)
     except ValueError:
-        return None
+        try:
+            when = parsedate_to_datetime(text)
+        except (TypeError, ValueError, IndexError, OverflowError):
+            return None
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=UTC)
+        seconds = (when - datetime.now(UTC)).total_seconds()
     if seconds < 0:
         return None
     return min(seconds, MAX_RETRY_AFTER_SECONDS)

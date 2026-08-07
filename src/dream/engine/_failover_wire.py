@@ -68,24 +68,36 @@ def slots_for_session(
     api_key: str,
     parts: StreamerParts,
     credentials_path: Path | None = None,
-    active_substrate: str = "primary",
+    active_substrate: str | None = None,
 ) -> tuple[SubstrateSlot, ...]:
-    """Resolve session slots: optional ``credentials.toml``, else single env key."""
+    """Resolve session slots: optional ``credentials.toml``, else single env key.
+
+    When ``credentials.toml`` is present, ``active_substrate`` is optional. If
+    omitted, every non-empty pool in file order is used (so a file with only
+    ``[[openai]]`` / ``[[azure]]`` is valid). If set, that pool is preferred
+    first and ``load_credential_pools`` refuses an empty/missing active pool.
+    """
     if credentials_path is not None and credentials_path.is_file():
         pools = load_credential_pools(credentials_path, active=active_substrate)
-        # Prefer configured active; then remaining pools in file order.
         ordered: list[CredentialPool] = []
-        if active_substrate in pools and not pools[active_substrate].is_empty():
+        if (
+            active_substrate is not None
+            and active_substrate in pools
+            and not pools[active_substrate].is_empty()
+        ):
             ordered.append(pools[active_substrate])
         for name, pool in pools.items():
-            if name == active_substrate or pool.is_empty():
+            if active_substrate is not None and name == active_substrate:
+                continue
+            if pool.is_empty():
                 continue
             ordered.append(pool)
         if not ordered:
             raise ValueError(f"no usable credential pools in {credentials_path}")
         return tuple(slot_from_pool(pool=pool, parts=parts) for pool in ordered)
 
-    pool = single_key_pool(substrate=active_substrate, label="env", api_key=api_key)
+    substrate = active_substrate if active_substrate is not None else "primary"
+    pool = single_key_pool(substrate=substrate, label="env", api_key=api_key)
     return (slot_from_pool(pool=pool, parts=parts),)
 
 

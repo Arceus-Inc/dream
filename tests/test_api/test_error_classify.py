@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import httpx
 import pytest
 
@@ -126,6 +128,34 @@ def test_retry_after_capped_at_max() -> None:
 def test_retry_after_missing_is_none() -> None:
     got = classify_failure(_status(429))
     assert got.backoff_seconds is None
+
+
+def test_retry_after_http_date_is_parsed() -> None:
+    from datetime import timedelta
+    from email.utils import format_datetime
+
+    when = datetime.now(UTC) + timedelta(seconds=45)
+    got = classify_failure(_status(429, retry_after=format_datetime(when, usegmt=True)))
+    assert got.backoff_seconds is not None
+    assert 0 < got.backoff_seconds <= MAX_RETRY_AFTER_SECONDS
+
+
+def test_retry_after_past_http_date_is_none() -> None:
+    from datetime import timedelta
+    from email.utils import format_datetime
+
+    when = datetime.now(UTC) - timedelta(seconds=30)
+    got = classify_failure(_status(429, retry_after=format_datetime(when, usegmt=True)))
+    assert got.backoff_seconds is None
+
+
+def test_provider_error_is_retryable_transport() -> None:
+    from dream.errors import ProviderError
+
+    got = classify_failure(ProviderError("malformed SSE", code="dream.provider.malformed_stream"))
+    assert got.kind is FailureKind.TRANSPORT
+    assert got.retryable is True
+    assert got.should_failover is True
 
 
 def test_unknown_exception_is_hard() -> None:
