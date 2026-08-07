@@ -226,10 +226,6 @@ def _load_declaration(path: Path) -> tuple[_PerRepoDeclaration, dict[str, object
         raise PerRepoToolError(
             (f"tool declaration {decl.name!r}: parameters must be a JSON object schema",)
         )
-    if properties is not None and not isinstance(properties, Mapping):
-        raise PerRepoToolError(
-            (f"tool declaration {decl.name!r}: parameters.properties must be a mapping",)
-        )
     if "type" not in parameters:
         parameters = {"type": "object", **parameters}
     properties = parameters.get("properties", {})
@@ -239,9 +235,12 @@ def _load_declaration(path: Path) -> tuple[_PerRepoDeclaration, dict[str, object
         )
     unknown = _command_placeholders(decl.command) - {str(name) for name in properties}
     if unknown:
-        names = ", ".join(sorted(unknown))
+        unknown_names = ", ".join(sorted(unknown))
         raise PerRepoToolError(
-            (f"tool declaration {decl.name!r}: unknown command placeholder(s): {names}",)
+            (
+                f"tool declaration {decl.name!r}: "
+                f"unknown command placeholder(s): {unknown_names}",
+            )
         )
     return decl, parameters
 
