@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>dream — session layer plan</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0e1418;
+      --ink: #e8eee9;
+      --muted: #8a9a92;
+      --line: #2a3a34;
+      --accent: #3dcf9a;
+      --warn: #e8b84a;
+      --bad: #e07a5f;
+      --card: #121a1f;
+      --info: #6ab0e8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Outfit", system-ui, sans-serif;
+      background:
+        radial-gradient(1100px 520px at 8% -8%, #1a3a30 0%, transparent 55%),
+        radial-gradient(800px 420px at 100% 0%, #1c2830 0%, transparent 50%),
+        var(--bg);
+      color: var(--ink);
+      line-height: 1.55;
+    }
+    .wrap { max-width: 1080px; margin: 0 auto; padding: 3rem 1.5rem 5rem; }
+    .brand {
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.78rem;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+    h1 {
+      font-size: clamp(2rem, 4vw, 2.85rem);
+      letter-spacing: -0.03em;
+      margin: 0.75rem 0 0.85rem;
+      max-width: 18ch;
+      line-height: 1.08;
+    }
+    .lede { color: var(--muted); max-width: 42rem; font-size: 1.1rem; }
+    section { margin: 2.75rem 0; }
+    h2 {
+      font-size: 1.35rem;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 0.55rem;
+      margin: 0 0 1rem;
+    }
+    h3 { font-size: 1.05rem; margin: 1.4rem 0 0.5rem; color: var(--accent); }
+    p, li { color: var(--ink); }
+    .muted { color: var(--muted); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.92rem;
+    }
+    th, td {
+      text-align: left;
+      padding: 0.65rem 0.55rem;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }
+    th {
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.72rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .tag {
+      display: inline-block;
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.7rem;
+      padding: 0.15rem 0.45rem;
+      border: 1px solid var(--line);
+      border-radius: 2px;
+    }
+    .tag.ok { color: var(--accent); border-color: #1a4a38; }
+    .tag.partial { color: var(--warn); border-color: #3a3218; }
+    .tag.gap { color: var(--bad); border-color: #3a221c; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      padding: 1rem 1.1rem;
+      margin: 0.75rem 0;
+    }
+    code, pre {
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.82rem;
+    }
+    pre {
+      background: #0a1014;
+      border: 1px solid var(--line);
+      padding: 0.9rem 1rem;
+      overflow-x: auto;
+    }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.85rem; }
+    @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
+    a { color: var(--info); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <p class="brand">Arceus · dream + chorus</p>
+      <h1>Session layer plan</h1>
+      <p class="lede">
+        Close the Level-1 session gaps versus Hermes and Paperclip:
+        durable conversation + tool-call history, save/resume, and tool-call secret proxies.
+        Middleware is mostly covered by dream hooks already.
+      </p>
+    </header>
+
+    <section>
+      <h2>1. Definitions</h2>
+      <div class="grid">
+        <div class="card">
+          <h3>Conversation history</h3>
+          <p class="muted">Typed message list the model re-reads: user / assistant / tool_result atoms.</p>
+        </div>
+        <div class="card">
+          <h3>Tool-call history</h3>
+          <p class="muted">Queryable records of each invocation: id, name, args, result, error, timing.</p>
+        </div>
+        <div class="card">
+          <h3>Tool-call middleware</h3>
+          <p class="muted">Rewrite args before policy, or wrap execution (<code>next_call</code>). Distinct from observer hooks.</p>
+        </div>
+        <div class="card">
+          <h3>Save &amp; resume</h3>
+          <p class="muted">Persist harness+convo state; continue after process death without re-orientation.</p>
+        </div>
+        <div class="card">
+          <h3>Secret proxies</h3>
+          <p class="muted">Model sees placeholders only; trusted runtime resolves at egress and redacts returns.</p>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>2. Comparative matrix</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Capability</th>
+            <th>Hermes</th>
+            <th>Paperclip</th>
+            <th>Dream</th>
+            <th>Chorus</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Conversation history</td>
+            <td>SQLite + FTS5</td>
+            <td>Adapter session + logs</td>
+            <td>In-memory <code>Session._transcript</code></td>
+            <td>Beat brief / TODO, not full convo</td>
+            <td><span class="tag partial">partial</span></td>
+          </tr>
+          <tr>
+            <td>Tool-call history</td>
+            <td>DB columns + FTS</td>
+            <td>Transcript tool_call entries</td>
+            <td>Live events + ephemeral DispatchRecord</td>
+            <td>Observer only</td>
+            <td><span class="tag partial">partial</span></td>
+          </tr>
+          <tr>
+            <td>Tool-call middleware</td>
+            <td><code>tool_request</code> / <code>tool_execution</code></td>
+            <td>Adapter/plugin edge</td>
+            <td>PRE/POST hooks + <code>replacement_input</code></td>
+            <td>Dream hooks (destruct / forge)</td>
+            <td><span class="tag ok">have</span></td>
+          </tr>
+          <tr>
+            <td>Save &amp; resume</td>
+            <td><code>/resume</code> + state.db</td>
+            <td><code>agent_runtime_state.sessionId</code></td>
+            <td>In-process <code>resume_messages</code> only</td>
+            <td>Cross-beat skills; fresh dream session</td>
+            <td><span class="tag gap">gap</span></td>
+          </tr>
+          <tr>
+            <td>Secret proxies</td>
+            <td>Output redact (not proxy)</td>
+            <td>Vault → env inject</td>
+            <td>Deny guard + error scrub</td>
+            <td><code>secret_scan</code> tool</td>
+            <td><span class="tag gap">gap</span></td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="muted" style="margin-top:1rem">
+        Note: <code>DreamPaths.sessions_dir</code> already points at <code>~/.dream/data/sessions</code> but nothing writes there.
+        A typed <code>CredentialBrokerPort</code> (with <code>proxy()</code>) exists on branch <code>feat/credential-brokerage</code> — contract only.
+      </p>
+    </section>
+
+    <section>
+      <h2>3. Build order (TDD + eval each step)</h2>
+      <div class="card">
+        <h3>PR1 — Durable SessionStore</h3>
+        <p><span class="tag gap">gap</span> File-backed snapshot under <code>sessions_dir</code>.</p>
+        <ul>
+          <li><code>SessionSnapshot</code> + <code>ToolCallRecord</code> (typed <code>JsonValue</code> inputs)</li>
+          <li><code>FileSessionStore.save/load</code> (atomic)</li>
+          <li><code>Session.snapshot</code> / <code>restore_from_snapshot</code></li>
+          <li><code>Harness.save_session</code> / <code>resume_session</code></li>
+          <li>Eval: roundtrip transcript + cost; no dangling tool_use</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>PR2 — Append-only tool-call history</h3>
+        <p><span class="tag partial">partial</span> Durable index beside the snapshot.</p>
+        <ul>
+          <li><code>tool_calls.jsonl</code> written from dispatcher observer</li>
+          <li>Backfill from transcript on save</li>
+          <li>Eval: N tool calls → N durable records with matching ids</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>PR3 — SecretProxy runtime</h3>
+        <p><span class="tag gap">gap</span> Placeholder → resolve-at-dispatch → redact-on-result.</p>
+        <ul>
+          <li>Align with <code>CredentialBrokerPort</code> when merged</li>
+          <li>Wire into <code>EngineToolDispatcher</code></li>
+          <li>Eval: raw secret never appears in saved transcript / events content</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>PR4 (defer) — Formal middleware kinds</h3>
+        <p><span class="tag ok">have</span> Hooks already rewrite args/results. Defer Hermes-style nested <code>tool_execution(next_call)</code> and <code>llm_request</code> until a consumer needs wrap semantics.</p>
+      </div>
+    </section>
+
+    <section>
+      <h2>4. Chorus boundary</h2>
+      <p>
+        Chorus keeps <strong>work</strong> continuity (ledger, TODO.md, cross-beat resume skills).
+        Dream must own <strong>conversation</strong> continuity. Chorus should call
+        <code>harness.save_session</code> at beat end and <code>resume_session</code> when a role
+        re-enters the same task thread — without stuffing secrets into briefs.
+      </p>
+    </section>
+
+    <section>
+      <h2>5. Coding invariants for this work</h2>
+      <pre>no Any / no dict[str, Any] / no getattr|setattr
+TDD first; eval per PR step
+public API expansion only when required (prefer services.* imports)
+sanitize_conversation_messages on every restore
+tool-call atom never broken across save/load</pre>
+    </section>
+  </div>
+</body>
+</html>

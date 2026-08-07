@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Durable session save/resume: `FileSessionStore` under `DreamPaths.sessions_dir`,
+  `Session.snapshot` / `restore_from_snapshot`, and `Harness.save_session` /
+  `resume_session` so a process restart continues the same transcript (tool-call
+  atom intact) with extracted `ToolCallRecord` history.
 - Powered hooks: `HookSpec.allow_continue`, `HookResult.continue_message` /
   `replacement_result` / `inject_context`, `HookEvent.SUBAGENT_START`.
   `HookExecutor` honors `allow_block` and `allow_continue` (first-wins continue;

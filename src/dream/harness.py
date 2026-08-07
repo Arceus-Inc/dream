@@ -19,6 +19,7 @@ from dream.contracts.hook import Hook
 from dream.contracts.plugin import Plugin
 from dream.contracts.provider import Provider
 from dream.contracts.tool import Tool
+from dream.services.session_store import FileSessionStore
 from dream.session import Session, SessionOptions
 
 if TYPE_CHECKING:
@@ -80,6 +81,7 @@ class HarnessConfig:
     # so the runtime reuses the exact same roots (DREAM_HOME honoured) rather
     # than re-resolving and risking divergence.
     paths: DreamPaths | None = None
+    session_store: FileSessionStore | None = None
     extra: dict[str, Any] = field(default_factory=dict)
     _engine_factory: EngineFactory | None = None
     # Async setup run once before the first session — MCP connect + plugin
@@ -174,6 +176,53 @@ class Harness:
         if self.config._engine_factory is not None:
             engine = self.config._engine_factory(session_id, opts)
         return Session(id=session_id, options=opts, _engine=engine)
+
+    def _resolve_session_store(
+        self, store: FileSessionStore | None
+    ) -> FileSessionStore:
+        if store is not None:
+            return store
+        if self.config.session_store is not None:
+            return self.config.session_store
+        if self.config.paths is not None:
+            return FileSessionStore(self.config.paths.sessions_dir)
+        raise ValueError(
+            "save_session/resume_session requires store=..., "
+            "HarnessConfig.session_store, or HarnessConfig.paths"
+        )
+
+    async def save_session(
+        self,
+        session: Session,
+        *,
+        store: FileSessionStore | None = None,
+    ) -> Path:
+        """Persist a session snapshot to disk; return the written path."""
+        resolved = self._resolve_session_store(store)
+        snapshot = session.snapshot()
+        return resolved.save(snapshot)
+
+    async def resume_session(
+        self,
+        session_id: str,
+        *,
+        options: SessionOptions | None = None,
+        store: FileSessionStore | None = None,
+    ) -> Session:
+        """Load a saved snapshot and bind a fresh engine (process restart)."""
+        resolved = self._resolve_session_store(store)
+        snapshot = resolved.load(session_id)
+        await self._ensure_open()
+        opts = options or SessionOptions(
+            model=snapshot.model,
+            system_prompt=snapshot.system_prompt,
+        )
+        engine = None
+        if self.config._engine_factory is not None:
+            engine = self.config._engine_factory(session_id, opts)
+        session = Session(id=session_id, options=opts, _engine=engine)
+        session.restore_from_snapshot(snapshot)
+        return session
 
     async def run_role(
         self,

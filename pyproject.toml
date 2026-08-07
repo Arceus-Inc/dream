@@ -100,3 +100,6 @@ ignore_missing_imports = true
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = ["-q", "--strict-markers"]
+markers = [
+    "eval: correctness evals for durable behaviour",
+]

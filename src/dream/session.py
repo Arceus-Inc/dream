@@ -43,6 +43,7 @@ from dream.engine._messages import (
     TextBlock,
     ToolResultBlock,
     ToolUseBlock,
+    sanitize_conversation_messages,
 )
 from dream.engine._session import run_session
 from dream.events import (
@@ -53,6 +54,15 @@ from dream.events import (
     ToolUseResult,
     ToolUseStart,
     TurnComplete,
+)
+from dream.services.session_store import (
+    SCHEMA_VERSION,
+    SessionCostFields,
+    SessionSnapshot,
+    cost_snapshot_from_fields,
+    extract_tool_calls,
+    message_to_record,
+    messages_from_records,
 )
 
 if TYPE_CHECKING:
@@ -176,6 +186,40 @@ class Session:
         ``_transcript`` private attribute directly.
         """
         return self._transcript
+
+    def snapshot(self) -> SessionSnapshot:
+        """Build a durable snapshot of this session's transcript and cost."""
+        from datetime import UTC, datetime
+
+        model = self.options.model or self.model
+        return SessionSnapshot(
+            schema_version=SCHEMA_VERSION,
+            session_id=self.id,
+            model=model,
+            system_prompt=self.options.system_prompt,
+            cost=cost_snapshot_from_fields(
+                SessionCostFields(
+                    input_tokens=self.cost.input_tokens,
+                    output_tokens=self.cost.output_tokens,
+                    cache_read_tokens=self.cost.cache_read_tokens,
+                    cache_write_tokens=self.cost.cache_write_tokens,
+                    cost_usd=self.cost.cost_usd,
+                )
+            ),
+            messages=[message_to_record(m) for m in self._transcript],
+            tool_calls=extract_tool_calls(self._transcript),
+            saved_at=datetime.now(tz=UTC),
+        )
+
+    def restore_from_snapshot(self, snapshot: SessionSnapshot) -> None:
+        """Replace transcript and cost counters from a saved snapshot."""
+        restored = messages_from_records(snapshot.messages)
+        self._transcript[:] = sanitize_conversation_messages(restored)
+        self.cost.input_tokens = snapshot.cost.input_tokens
+        self.cost.output_tokens = snapshot.cost.output_tokens
+        self.cost.cache_read_tokens = snapshot.cost.cache_read_tokens
+        self.cost.cache_write_tokens = snapshot.cost.cache_write_tokens
+        self.cost.cost_usd = snapshot.cost.cost_usd
 
     async def send(self, prompt: str) -> AsyncIterator[Event]:
         """Submit a user prompt and stream typed events back.
