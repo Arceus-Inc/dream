@@ -63,6 +63,7 @@ from dream.skills import (
     render_skill_catalogue,
 )
 from dream.state.shadow import (
+    ShadowCheckpointConfig,
     ShadowCheckpointHook,
     ShadowCheckpointManager,
     ShadowCheckpointStore,
@@ -112,6 +113,7 @@ def build_harness(
     env: Mapping[str, str] | None = None,
     wake_model: str | None = None,
     shadow_checkpoints: bool = True,
+    shadow_checkpoint_config: ShadowCheckpointConfig | None = None,
 ) -> Harness:
     """Build a Harness whose engine factory produces a real, tool-wired engine.
 
@@ -131,7 +133,10 @@ def build_harness(
 
     ``shadow_checkpoints`` (default True) registers Hermes-style pre-mutate
     filesystem snapshots and exposes :meth:`~dream.session.Session.restore_checkpoint`
-    for operator rewind (FS + transcript).
+    for operator rewind (FS + transcript). Worktrees over the checkpoint
+    manager's ``max_files`` threshold (10,000 by default) are skipped to keep
+    per-turn overhead bounded; pass a custom ``ShadowCheckpointConfig`` to
+    override that threshold.
 
     Workspace memory (the durable per-project record store under
     :func:`~dream.memory.project_memory_dir`) is wired by default: its
@@ -238,6 +243,7 @@ def build_harness(
     if shadow_checkpoints:
         checkpoint_manager = ShadowCheckpointManager(
             store=ShadowCheckpointStore(base_dir=paths.checkpoints_dir),
+            config=shadow_checkpoint_config,
         )
     config = HarnessConfig(
         working_dir=working_dir,

@@ -115,6 +115,57 @@ def test_no_changes_skips(mgr: ShadowCheckpointManager, work_dir: Path) -> None:
     assert skipped.outcome is CheckpointOutcome.NO_CHANGES
 
 
+def test_small_worktree_checkpoints_normally(tmp_path: Path) -> None:
+    work_dir = tmp_path / "small"
+    work_dir.mkdir()
+    (work_dir / "README.md").write_text("hello\n", encoding="utf-8")
+    mgr = ShadowCheckpointManager(
+        store=ShadowCheckpointStore(base_dir=tmp_path / "checkpoints"),
+        config=ShadowCheckpointConfig(max_files=1),
+    )
+    result = mgr.ensure(work_dir, reason=CheckpointReason.BEFORE_WRITE_FILE)
+    assert result.outcome is CheckpointOutcome.TAKEN
+
+
+def test_large_worktree_skips_without_creating_store(tmp_path: Path) -> None:
+    work_dir = tmp_path / "large"
+    work_dir.mkdir()
+    for index in range(3):
+        (work_dir / f"file-{index}.txt").write_text("x\n", encoding="utf-8")
+    store_root = tmp_path / "checkpoints"
+    mgr = ShadowCheckpointManager(
+        store=ShadowCheckpointStore(base_dir=store_root),
+        config=ShadowCheckpointConfig(max_files=2),
+    )
+    result = mgr.ensure(work_dir, reason=CheckpointReason.BEFORE_WRITE_FILE)
+    assert result.outcome is CheckpointOutcome.DIRECTORY_TOO_LARGE
+    assert not store_root.exists()
+
+
+def test_worktree_size_probe_runs_once_per_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work_dir = tmp_path / "large"
+    work_dir.mkdir()
+    (work_dir / "file.txt").write_text("x\n", encoding="utf-8")
+    mgr = ShadowCheckpointManager(
+        store=ShadowCheckpointStore(base_dir=tmp_path / "checkpoints"),
+        config=ShadowCheckpointConfig(max_files=0),
+    )
+    calls = 0
+    original = mgr._probe_worktree_size
+
+    def probe_once(path: Path) -> bool:
+        nonlocal calls
+        calls += 1
+        return original(path)
+
+    monkeypatch.setattr(mgr, "_probe_worktree_size", probe_once)
+    mgr.ensure(work_dir, reason=CheckpointReason.BEFORE_WRITE_FILE)
+    mgr.ensure(work_dir, reason=CheckpointReason.BEFORE_BASH)
+    assert calls == 1
+
+
 def test_skips_home_and_root(mgr: ShadowCheckpointManager) -> None:
     assert (
         mgr.ensure(Path("/"), reason=CheckpointReason.BEFORE_BASH).outcome

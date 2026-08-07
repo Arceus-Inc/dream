@@ -29,8 +29,6 @@ def rewind_transcript(
 
     if turns > len(prompt_indices):
         raise ValueError("requested rewind boundary is unavailable")
-    if not prompt_indices:
-        return list(messages), 0
 
     drop_from = prompt_indices[-turns]
     kept = list(messages[:drop_from])

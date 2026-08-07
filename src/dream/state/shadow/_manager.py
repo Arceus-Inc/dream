@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import shutil
 from collections import OrderedDict
 from collections.abc import Sequence
@@ -21,6 +22,7 @@ from dream.state.shadow._types import (
     RestoreResult,
     ShadowCheckpointConfig,
 )
+from dream.utils.git import run_git
 
 # Safety snap outcomes that still allow restore to proceed.
 _SAFETY_OK = frozenset(
@@ -29,6 +31,7 @@ _SAFETY_OK = frozenset(
         CheckpointOutcome.NO_CHANGES,
     }
 )
+_MAX_SESSION_STATES = 64
 
 
 class ShadowCheckpointManager:
@@ -44,6 +47,7 @@ class ShadowCheckpointManager:
         self._config = config or ShadowCheckpointConfig()
         self._checkpointed_dirs: OrderedDict[str | None, set[Path]] = OrderedDict()
         self._git_available: bool | None = None
+        self._worktree_size_ok: dict[Path, bool] = {}
 
     @property
     def config(self) -> ShadowCheckpointConfig:
@@ -77,9 +81,16 @@ class ShadowCheckpointManager:
         if abs_dir == Path("/").resolve() or abs_dir == Path.home().resolve():
             return EnsureResult(outcome=CheckpointOutcome.DIRECTORY_TOO_BROAD)
 
+        size_ok = self._worktree_size_ok.get(abs_dir)
+        if size_ok is None:
+            size_ok = self._probe_worktree_size(abs_dir)
+            self._worktree_size_ok[abs_dir] = size_ok
+        if not size_ok:
+            return EnsureResult(outcome=CheckpointOutcome.DIRECTORY_TOO_LARGE)
+
         checkpointed_dirs = self._checkpointed_dirs.setdefault(session_id, set())
         self._checkpointed_dirs.move_to_end(session_id)
-        while len(self._checkpointed_dirs) > 64:
+        while len(self._checkpointed_dirs) > _MAX_SESSION_STATES:
             self._checkpointed_dirs.popitem(last=False)
         if abs_dir in checkpointed_dirs:
             return EnsureResult(outcome=CheckpointOutcome.ALREADY_THIS_TURN)
@@ -94,6 +105,27 @@ class ShadowCheckpointManager:
         if result.outcome is not CheckpointOutcome.FAILED:
             checkpointed_dirs.add(abs_dir)
         return result
+
+    def _probe_worktree_size(self, working_dir: Path) -> bool:
+        """Return whether the worktree is cheap enough to snapshot."""
+        limit = self._config.max_files
+        if limit < 1:
+            return True
+        rc, stdout, _err = run_git(
+            ["ls-files", "-co", "--exclude-standard", "-z"],
+            cwd=working_dir,
+            timeout=self._config.timeout_seconds,
+        )
+        if rc == 0:
+            return len([path for path in stdout.split("\0") if path]) <= limit
+
+        count = 0
+        for _root, dirs, files in os.walk(working_dir):
+            dirs[:] = [name for name in dirs if name != ".git"]
+            count += len(files)
+            if count > limit:
+                return False
+        return True
 
     def list_for(self, working_dir: Path) -> list[CheckpointSnapshot]:
         """List retained checkpoints for ``working_dir`` (newest first)."""

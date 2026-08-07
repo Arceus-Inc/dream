@@ -39,6 +39,7 @@ class CheckpointOutcome(Enum):
     ALREADY_THIS_TURN = "already_this_turn"
     NO_CHANGES = "no_changes"
     DIRECTORY_TOO_BROAD = "directory_too_broad"
+    DIRECTORY_TOO_LARGE = "directory_too_large"
     GIT_UNAVAILABLE = "git_unavailable"
     FAILED = "failed"
 
@@ -59,6 +60,7 @@ class ShadowCheckpointConfig:
     enabled: bool = True
     max_snapshots: int = 20
     timeout_seconds: float = 30.0
+    max_files: int = 10_000
 
 
 @dataclass(frozen=True, slots=True)
