@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Breaking:** `default_registry()` is now the Level-2 coding surface only
+  (`read_file`, `edit_file`, `write_file`, `bash`, `git`, `read_offloaded`,
+  `glob`, `grep`, `todo_write`, `skill`). Former extras moved to opt-in packs
+  via `register_*_tools` / `build_harness` flags (`tasks`, `cron`, `web`,
+  `browser`, `observability`, `worktree`, `code_intel`, `plan`). Pass
+  `legacy_surface=True` to restore the previous fat default. Memory tools
+  register only when `memory=True` (still the default).
+- Planner/evaluator default manifests read via `grep`/`glob` instead of the
+  pack-only `query_logs` tool.
+
 ### Added
 - Powered hooks: `HookSpec.allow_continue`, `HookResult.continue_message` /
   `replacement_result` / `inject_context`, `HookEvent.SUBAGENT_START`.

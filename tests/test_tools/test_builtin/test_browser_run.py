@@ -165,9 +165,11 @@ async def test_timeout_kills_process(tool: BrowserRunTool, ctx: ToolExecutionCon
     assert result.structured["status"] == BrowserRunStatus.TIMEOUT.value
 
 
-def test_default_registry_includes_browser_run() -> None:
-    from dream.tools.builtin import default_registry
+def test_browser_pack_registers_browser_run() -> None:
+    from dream.tools.builtin import default_registry, register_browser_tools
 
     reg = default_registry()
+    assert reg.get("browser_run") is None
+    register_browser_tools(reg)
     assert reg.get("browser_run") is not None
     assert reg.get("browser_run").name == "browser_run"

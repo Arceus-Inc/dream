@@ -72,12 +72,64 @@ from dream.tasks import (
 from dream.tasks._cron import CRON_MANIFEST_DIR, load_cron_manifests
 from dream.tools._base import BaseTool
 from dream.tools._registry import ToolRegistry, ToolSource
-from dream.tools.builtin import default_registry, register_task_memory_tools
+from dream.tools.builtin import (
+    default_registry,
+    register_browser_tools,
+    register_code_intel_tools,
+    register_cron_tools,
+    register_legacy_surface,
+    register_memory_tools,
+    register_observability_tools,
+    register_plan_tools,
+    register_task_memory_tools,
+    register_task_tools,
+    register_web_tools,
+    register_worktree_tools,
+)
 from dream.tools.builtin.spawn_subagent import SpawnSubagentTool
 
 __all__ = ["PolicyWarningSink", "SkillEventSink", "build_harness"]
 
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
+
+
+def _apply_tool_packs(
+    registry: ToolRegistry,
+    *,
+    memory: bool,
+    tasks: bool,
+    cron: bool,
+    web: bool,
+    browser: bool,
+    observability: bool,
+    worktree: bool,
+    code_intel: bool,
+    plan: bool,
+    legacy_surface: bool,
+) -> None:
+    """Register opt-in tool packs onto ``registry`` (idempotent)."""
+    if legacy_surface:
+        register_legacy_surface(registry)
+        return
+    if memory:
+        register_memory_tools(registry)
+    if tasks:
+        register_task_tools(registry)
+    if cron:
+        register_cron_tools(registry)
+    if web:
+        register_web_tools(registry)
+    if browser:
+        register_browser_tools(registry)
+    if observability:
+        register_observability_tools(registry)
+    if worktree:
+        register_worktree_tools(registry)
+    if code_intel:
+        register_code_intel_tools(registry)
+    if plan:
+        register_plan_tools(registry)
+
 
 # A context-event sink the skill registry calls when a body loads.
 SkillEventSink = Callable[[ContextEvent], None]
@@ -99,6 +151,15 @@ def build_harness(
     skills: bool = True,
     memory: bool = True,
     working_memory: bool = False,
+    tasks: bool = False,
+    cron: bool = False,
+    web: bool = False,
+    browser: bool = False,
+    observability: bool = False,
+    worktree: bool = False,
+    code_intel: bool = False,
+    plan: bool = False,
+    legacy_surface: bool = False,
     mcp: bool = True,
     plugins: bool = True,
     subagents: SubagentSet | None = None,
@@ -117,6 +178,15 @@ def build_harness(
     *before* the first session starts — the tool wire-schema and the skill
     available-tool set are computed lazily per session, so late registrations
     are reflected.
+
+    The default tool surface is the Level-2 coding set (read/edit/write/bash/
+    git/read_offloaded/glob/grep/todo_write/skill). Opt-in packs:
+
+    - ``memory`` (default on) — ``memory_search`` / ``memory_get``
+    - ``tasks`` / ``cron`` / ``web`` / ``browser`` / ``observability`` /
+      ``worktree`` / ``code_intel`` / ``plan`` — each off by default
+    - ``legacy_surface=True`` — registers every former default-registry pack
+      (migration escape hatch; ignores the individual pack flags)
 
     Skills are auto-discovered from the workspace (bundled + user + project
     ``SKILL.md`` dirs) by default so the whole action surface is wired with
@@ -156,6 +226,19 @@ def build_harness(
         raise ValueError("api_key must be a non-empty string")
     resolved_env: Mapping[str, str] = env if env is not None else os.environ
     tool_registry = registry if registry is not None else default_registry()
+    _apply_tool_packs(
+        tool_registry,
+        memory=memory,
+        tasks=tasks,
+        cron=cron,
+        web=web,
+        browser=browser,
+        observability=observability,
+        worktree=worktree,
+        code_intel=code_intel,
+        plan=plan,
+        legacy_surface=legacy_surface,
+    )
     # Task memory (spec 11a) is opt-in: only register its tools when asked so
     # the default tool surface stays unchanged. The per-session context is
     # wired below in ``_build_session_engine`` (it needs the session id).

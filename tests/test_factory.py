@@ -129,12 +129,55 @@ def test_memory_can_be_disabled(tmp_path: Path) -> None:
     assert "naming-convention" not in prompt
 
 
-def test_memory_tools_in_default_registry() -> None:
+def test_memory_tools_registered_when_memory_enabled(tmp_path: Path) -> None:
     from dream.tools.builtin import default_registry
 
-    names = {t.name for t in default_registry().list_tools()}
+    registry = default_registry()
+    assert "memory_search" not in {t.name for t in registry.list_tools()}
+    _build(tmp_path, registry=registry, memory=True)
+    names = {t.name for t in registry.list_tools()}
     assert "memory_search" in names
     assert "memory_get" in names
+
+
+def test_memory_tools_omitted_when_memory_disabled(tmp_path: Path) -> None:
+    from dream.tools.builtin import default_registry
+
+    registry = default_registry()
+    _build(tmp_path, registry=registry, memory=False)
+    names = {t.name for t in registry.list_tools()}
+    assert "memory_search" not in names
+    assert "memory_get" not in names
+
+
+def test_build_harness_omits_pack_tools_by_default(tmp_path: Path) -> None:
+    from dream.tools.builtin import default_registry
+
+    registry = default_registry()
+    _build(tmp_path, registry=registry, memory=False)
+    names = {t.name for t in registry.list_tools()}
+    for pack_tool in ("task_create", "web_search", "browser_run", "execute_code", "plan_show"):
+        assert pack_tool not in names
+
+
+def test_build_harness_legacy_surface_registers_packs(tmp_path: Path) -> None:
+    from dream.tools.builtin import default_registry
+
+    registry = default_registry()
+    _build(tmp_path, registry=registry, legacy_surface=True)
+    names = {t.name for t in registry.list_tools()}
+    assert {"memory_search", "task_create", "web_search", "execute_code"} <= names
+
+
+def test_build_harness_individual_pack_flags(tmp_path: Path) -> None:
+    from dream.tools.builtin import default_registry
+
+    registry = default_registry()
+    _build(tmp_path, registry=registry, memory=False, web=True, plan=True)
+    names = {t.name for t in registry.list_tools()}
+    assert {"web_search", "web_fetch", "plan_show"} <= names
+    assert "task_create" not in names
+    assert "browser_run" not in names
 
 
 _TASK_MEMORY_TOOLS = {
