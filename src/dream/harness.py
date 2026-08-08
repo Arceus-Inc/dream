@@ -36,6 +36,7 @@ if TYPE_CHECKING:
         SprintGoalProvider,
     )
     from dream.sprint import EvaluatorPropose, GeneratorRespond
+    from dream.state.shadow import ShadowCheckpointManager
     from dream.subagents._async_delegation import AsyncDelegationManager
     from dream.tasks import BackgroundTaskManager
 
@@ -80,6 +81,8 @@ class HarnessConfig:
     # so the runtime reuses the exact same roots (DREAM_HOME honoured) rather
     # than re-resolving and risking divergence.
     paths: DreamPaths | None = None
+    # Shared Hermes-style shadow checkpoint manager (FS snaps + human rewind).
+    checkpoint_manager: ShadowCheckpointManager | None = None
     extra: dict[str, Any] = field(default_factory=dict)
     _engine_factory: EngineFactory | None = None
     # Async setup run once before the first session — MCP connect + plugin

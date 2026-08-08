@@ -3,19 +3,26 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import shutil
+from collections import OrderedDict
+from collections.abc import Sequence
 from pathlib import Path
 
+from dream.engine._messages import ConversationMessage
+from dream.state.shadow._rewind import rewind_transcript
 from dream.state.shadow._store import ShadowCheckpointStore
 from dream.state.shadow._types import (
     CheckpointOutcome,
     CheckpointReason,
     CheckpointSnapshot,
+    CombinedRestoreResult,
     EnsureResult,
     RestoreOutcome,
     RestoreResult,
     ShadowCheckpointConfig,
 )
+from dream.utils.git import run_git
 
 # Safety snap outcomes that still allow restore to proceed.
 _SAFETY_OK = frozenset(
@@ -24,6 +31,7 @@ _SAFETY_OK = frozenset(
         CheckpointOutcome.NO_CHANGES,
     }
 )
+_MAX_SESSION_STATES = 64
 
 
 class ShadowCheckpointManager:
@@ -37,18 +45,25 @@ class ShadowCheckpointManager:
     ) -> None:
         self._store = store
         self._config = config or ShadowCheckpointConfig()
-        self._checkpointed_dirs: set[Path] = set()
+        self._checkpointed_dirs: OrderedDict[str | None, set[Path]] = OrderedDict()
         self._git_available: bool | None = None
+        self._worktree_size_ok: dict[Path, bool] = {}
 
     @property
     def config(self) -> ShadowCheckpointConfig:
         return self._config
 
-    def begin_turn(self) -> None:
+    def begin_turn(self, session_id: str | None = None) -> None:
         """Reset per-turn dedup (call on each USER_PROMPT_SUBMIT / agent turn)."""
-        self._checkpointed_dirs.clear()
+        self._checkpointed_dirs.pop(session_id, None)
 
-    def ensure(self, working_dir: Path, *, reason: CheckpointReason) -> EnsureResult:
+    def ensure(
+        self,
+        working_dir: Path,
+        *,
+        reason: CheckpointReason,
+        session_id: str | None = None,
+    ) -> EnsureResult:
         """Take a checkpoint if enabled and not already done this turn."""
         if not self._config.enabled:
             return EnsureResult(outcome=CheckpointOutcome.DISABLED)
@@ -66,7 +81,18 @@ class ShadowCheckpointManager:
         if abs_dir == Path("/").resolve() or abs_dir == Path.home().resolve():
             return EnsureResult(outcome=CheckpointOutcome.DIRECTORY_TOO_BROAD)
 
-        if abs_dir in self._checkpointed_dirs:
+        size_ok = self._worktree_size_ok.get(abs_dir)
+        if size_ok is None:
+            size_ok = self._probe_worktree_size(abs_dir)
+            self._worktree_size_ok[abs_dir] = size_ok
+        if not size_ok:
+            return EnsureResult(outcome=CheckpointOutcome.DIRECTORY_TOO_LARGE)
+
+        checkpointed_dirs = self._checkpointed_dirs.setdefault(session_id, set())
+        self._checkpointed_dirs.move_to_end(session_id)
+        while len(self._checkpointed_dirs) > _MAX_SESSION_STATES:
+            self._checkpointed_dirs.popitem(last=False)
+        if abs_dir in checkpointed_dirs:
             return EnsureResult(outcome=CheckpointOutcome.ALREADY_THIS_TURN)
 
         try:
@@ -77,8 +103,29 @@ class ShadowCheckpointManager:
         # Only suppress retries after a conclusive snap (or no-op). Transient
         # FAILED must leave the turn open so a later mutate can try again.
         if result.outcome is not CheckpointOutcome.FAILED:
-            self._checkpointed_dirs.add(abs_dir)
+            checkpointed_dirs.add(abs_dir)
         return result
+
+    def _probe_worktree_size(self, working_dir: Path) -> bool:
+        """Return whether the worktree is cheap enough to snapshot."""
+        limit = self._config.max_files
+        if limit < 1:
+            return True
+        rc, stdout, _err = run_git(
+            ["ls-files", "-co", "--exclude-standard", "-z"],
+            cwd=working_dir,
+            timeout=self._config.timeout_seconds,
+        )
+        if rc == 0:
+            return len([path for path in stdout.split("\0") if path]) <= limit
+
+        count = 0
+        for _root, dirs, files in os.walk(working_dir):
+            dirs[:] = [name for name in dirs if name != ".git"]
+            count += len(files)
+            if count > limit:
+                return False
+        return True
 
     def list_for(self, working_dir: Path) -> list[CheckpointSnapshot]:
         """List retained checkpoints for ``working_dir`` (newest first)."""
@@ -157,6 +204,56 @@ class ShadowCheckpointManager:
             return RestoreResult(outcome=RestoreOutcome.FAILED, detail=err)
 
         return RestoreResult(outcome=RestoreOutcome.RESTORED, restored_to=commit_sha[:8])
+
+    def restore_and_rewind(
+        self,
+        working_dir: Path,
+        *,
+        commit_sha: str,
+        messages: Sequence[ConversationMessage],
+        prompt_indices: Sequence[int],
+        rewind_turns: int = 1,
+    ) -> CombinedRestoreResult:
+        """Restore the worktree and truncate the conversation (Hermes ``/rollback``).
+
+        Transcript rewind runs only after a successful filesystem restore so a
+        failed snap never desyncs chat from disk. ``rewind_turns=0`` keeps the
+        transcript unchanged (FS-only restore).
+        """
+        if rewind_turns < 0:
+            return CombinedRestoreResult(
+                fs=RestoreResult(
+                    outcome=RestoreOutcome.FAILED,
+                    detail=f"turns must be >= 0; got {rewind_turns}",
+                ),
+                messages=tuple(messages),
+                transcript_removed=0,
+            )
+        if rewind_turns > 0 and rewind_turns > len(prompt_indices):
+            return CombinedRestoreResult(
+                fs=RestoreResult(
+                    outcome=RestoreOutcome.FAILED,
+                    detail=(
+                        "requested rewind boundary is unavailable "
+                        f"for {rewind_turns} turn(s)"
+                    ),
+                ),
+                messages=tuple(messages),
+                transcript_removed=0,
+            )
+        fs = self.restore(working_dir, commit_sha=commit_sha)
+        if fs.outcome is not RestoreOutcome.RESTORED:
+            return CombinedRestoreResult(fs=fs, messages=tuple(messages), transcript_removed=0)
+        kept, removed = rewind_transcript(
+            messages,
+            prompt_indices=prompt_indices,
+            turns=rewind_turns,
+        )
+        return CombinedRestoreResult(
+            fs=fs,
+            messages=tuple(kept),
+            transcript_removed=removed,
+        )
 
     def _take(self, working_dir: Path, reason: CheckpointReason) -> EnsureResult:
         err = self._store.ensure_initialized(working_dir)

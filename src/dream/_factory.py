@@ -62,6 +62,12 @@ from dream.skills import (
     build_session_skill_registry,
     render_skill_catalogue,
 )
+from dream.state.shadow import (
+    ShadowCheckpointConfig,
+    ShadowCheckpointHook,
+    ShadowCheckpointManager,
+    ShadowCheckpointStore,
+)
 from dream.subagents._async_delegation import AsyncDelegationManager
 from dream.subagents._declaration import SubagentSet
 from dream.tasks import (
@@ -168,6 +174,8 @@ def build_harness(
     policy_warning_sink: PolicyWarningSink | None = None,
     env: Mapping[str, str] | None = None,
     wake_model: str | None = None,
+    shadow_checkpoints: bool = True,
+    shadow_checkpoint_config: ShadowCheckpointConfig | None = None,
 ) -> Harness:
     """Build a Harness whose engine factory produces a real, tool-wired engine.
 
@@ -195,6 +203,13 @@ def build_harness(
     ``SKILL.md`` dirs) by default so the whole action surface is wired with
     no caller effort. Pass ``skill_registry`` to supply your own (it wins);
     pass ``skills=False`` to disable discovery entirely.
+
+    ``shadow_checkpoints`` (default True) registers Hermes-style pre-mutate
+    filesystem snapshots and exposes :meth:`~dream.session.Session.restore_checkpoint`
+    for operator rewind (FS + transcript). Worktrees over the checkpoint
+    manager's ``max_files`` threshold (10,000 by default) are skipped to keep
+    per-turn overhead bounded; pass a custom ``ShadowCheckpointConfig`` to
+    override that threshold.
 
     Workspace memory (the durable per-project record store under
     :func:`~dream.memory.project_memory_dir`) is wired by default: its
@@ -319,12 +334,19 @@ def build_harness(
     # so a scheduler tick loop knows where to poll, and `paths` carries the
     # env-resolved roots.
     del wake_model  # ponytail: compat no-op — the wake runtime is gone
+    checkpoint_manager: ShadowCheckpointManager | None = None
+    if shadow_checkpoints:
+        checkpoint_manager = ShadowCheckpointManager(
+            store=ShadowCheckpointStore(base_dir=paths.checkpoints_dir),
+            config=shadow_checkpoint_config,
+        )
     config = HarnessConfig(
         working_dir=working_dir,
         task_manager=task_manager,
         delegations=AsyncDelegationManager(),
         cron_registry_path=task_context.cron_registry_path,
         paths=paths,
+        checkpoint_manager=checkpoint_manager,
         # MCP connect + plugin import are async/IO, so they hang off the
         # async-open chokepoint (``Harness._ensure_open``) rather than running
         # in this sync factory. ``None`` when both surfaces are disabled so the
@@ -342,6 +364,10 @@ def build_harness(
         ),
     )
     harness = Harness(config)
+    if checkpoint_manager is not None:
+        harness.register_hook(
+            ShadowCheckpointHook(manager=checkpoint_manager, working_dir=working_dir)
+        )
 
     # The engine factory closes over ``harness`` (not a hooks snapshot) so the
     # spec-13 lifecycle executor is assembled lazily at session construction
@@ -813,4 +839,5 @@ def _build_session_engine(
         model=options.model or model,
         hook_executor=hook_executor,
         delegations=harness.config.delegations,
+        checkpoint_manager=harness.config.checkpoint_manager,
     )
