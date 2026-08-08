@@ -42,7 +42,6 @@ if TYPE_CHECKING:
         RunTaskResult,
         SprintGoalProvider,
     )
-    from dream.sprint import EvaluatorPropose, GeneratorRespond
     from dream.subagents._async_delegation import AsyncDelegationManager
     from dream.tasks import BackgroundTaskManager
 
@@ -354,8 +353,6 @@ class Harness:
         intent: str,
         planner: PlannerCallable | None = None,
         generator_execute: GeneratorExecute | None = None,
-        evaluator_propose: EvaluatorPropose | None = None,
-        generator_respond: GeneratorRespond | None = None,
         evaluator_run: EvaluatorRun | None = None,
         worktree_root: Path | None = None,
         harness_dir: Path | None = None,
@@ -404,19 +401,15 @@ class Harness:
         # so the caller's observer still sees every event it expects.
         meter = UsageMeter(observer)
 
-        planner, generator_execute, evaluator_propose, generator_respond, evaluator_run = (
-            self._resolve_heads(
-                planner=planner,
-                generator_execute=generator_execute,
-                evaluator_propose=evaluator_propose,
-                generator_respond=generator_respond,
-                evaluator_run=evaluator_run,
-                intent=intent,
-                harness_dir=harness_dir,
-                observer=meter,
-                worktree_root=root,
-                session_scope=session_scope,
-            )
+        planner, generator_execute, evaluator_run = self._resolve_heads(
+            planner=planner,
+            generator_execute=generator_execute,
+            evaluator_run=evaluator_run,
+            intent=intent,
+            harness_dir=harness_dir,
+            observer=meter,
+            worktree_root=root,
+            session_scope=session_scope,
         )
 
         # ``kwargs`` is hand-built (rather than passing real keyword args) so the
@@ -430,8 +423,6 @@ class Harness:
             "worktree_root": root,
             "planner": planner,
             "generator_execute": generator_execute,
-            "evaluator_propose": evaluator_propose,
-            "generator_respond": generator_respond,
             "evaluator_run": evaluator_run,
             "observer": meter,
         }
@@ -453,26 +444,18 @@ class Harness:
         *,
         planner: PlannerCallable | None,
         generator_execute: GeneratorExecute | None,
-        evaluator_propose: EvaluatorPropose | None,
-        generator_respond: GeneratorRespond | None,
         evaluator_run: EvaluatorRun | None,
         intent: str,
         harness_dir: Path | None,
         observer: RunTaskObserver | None,
         worktree_root: Path | None = None,
         session_scope: str | None = None,
-    ) -> tuple[
-        PlannerCallable,
-        GeneratorExecute,
-        EvaluatorPropose,
-        GeneratorRespond,
-        EvaluatorRun,
-    ]:
+    ) -> tuple[PlannerCallable, GeneratorExecute, EvaluatorRun]:
         """Fill any ``None`` head with its production factory (10-I autowire).
 
         A one-liner ``await harness.run_task(intent=...)`` wires every LLM head
         from the configured engine; explicitly supplied heads pass through
-        untouched. Returns the five resolved heads in run_task argument order.
+        untouched. Returns the three resolved heads in run_task argument order.
 
         ``session_scope`` is forwarded to each factory so its role runs in a
         resumable thread under that scope.
@@ -480,23 +463,13 @@ class Harness:
         if (
             planner is not None
             and generator_execute is not None
-            and evaluator_propose is not None
-            and generator_respond is not None
             and evaluator_run is not None
         ):
-            return (
-                planner,
-                generator_execute,
-                evaluator_propose,
-                generator_respond,
-                evaluator_run,
-            )
+            return (planner, generator_execute, evaluator_run)
 
         from dream.runner import (
             make_evaluator_head,
-            make_evaluator_propose_head,
             make_generator_head,
-            make_generator_respond_head,
             make_planner_head,
         )
 
@@ -515,22 +488,6 @@ class Harness:
                 observer=observer,
                 session_scope=session_scope,
             )
-        if evaluator_propose is None:
-            evaluator_propose = make_evaluator_propose_head(
-                self,
-                intent=intent,
-                harness_dir=harness_dir,
-                observer=observer,
-                session_scope=session_scope,
-            )
-        if generator_respond is None:
-            generator_respond = make_generator_respond_head(
-                self,
-                intent=intent,
-                harness_dir=harness_dir,
-                observer=observer,
-                session_scope=session_scope,
-            )
         if evaluator_run is None:
             evaluator_run = make_evaluator_head(
                 self,
@@ -541,13 +498,7 @@ class Harness:
                 # worktree_root kept for API compat; evaluator verifies in-session via bash.
                 worktree_root=worktree_root,
             )
-        return (
-            planner,
-            generator_execute,
-            evaluator_propose,
-            generator_respond,
-            evaluator_run,
-        )
+        return (planner, generator_execute, evaluator_run)
 
     # -- lifecycle --------------------------------------------------------
 

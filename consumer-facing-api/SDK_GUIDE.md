@@ -98,8 +98,7 @@ result = await harness.run_task(
     max_sprints=10,
     observer=StdioObserver(sys.stdout),
     # every LLM head is overridable (see §8):
-    planner=None, generator_execute=None,
-    evaluator_propose=None, generator_respond=None, evaluator_run=None,
+    planner=None, generator_execute=None, evaluator_run=None,
 )
 ```
 
@@ -107,10 +106,12 @@ result = await harness.run_task(
 
 1. **Planner** runs once and commits two artifacts to the workspace: a spec
    (markdown) and a ledger (JSON step list) under `docs/exec-plans/active/`.
+   Every step carries its own acceptance criteria — the planner names the work
+   and the bar for it in one pass.
 2. **Sprint loop**, bounded by `max_sprints`. Each sprint:
    - claims the next `pending` step (or resumes a `needs-changes` one);
-   - if the evaluator is enabled, **negotiates a sprint contract** (goal,
-     acceptance criteria, verification steps) — committed to disk;
+   - if the evaluator is enabled, commits a **sprint contract** built from the
+     step's criteria plus anything the last evaluation left unresolved;
    - the **generator** executes the step with real tools;
    - the **evaluator** judges the work against the contract and the outcome
      maps onto the ledger: `pass` → `done`, `fail` → `blocked`,
@@ -443,12 +444,10 @@ await harness.run_task(intent=intent, session_scope=f"task-{task_id}")
 # threads: task-42:planner, task-42:generator, task-42:evaluator
 ```
 
-Call it again with the same scope and those conversations continue. Roles never
-share a thread, but heads bound to the same role do: the generator negotiates
-the sprint contract and then builds against terms it remembers agreeing to, and
-the evaluator judges against criteria it proposed itself. Use
-`dream.runner.role_session_id(scope, role)` to address one thread directly —
-for example to `reset_session` just the generator.
+Call it again with the same scope and those conversations continue. Each role
+has one thread — a planner and an evaluator are different conversations and
+never share. Use `dream.runner.role_session_id(scope, role)` to address one
+thread directly, for example to `reset_session` just the generator.
 
 Keep only the handle, not a second copy of the transcript. `usage_delta`
 covers the work since the previous save, so you never have to difference
@@ -479,8 +478,8 @@ async with Runtime(harness, RuntimeConfig(...)) as rt:
 
 - Cost accounting (`SessionCost`) is not wired for all gateways; no per-task
   token/$ budgets yet.
-- Sprint-contract negotiation runs even for trivial tasks unless the planner
-  disables the evaluator.
+- A step's acceptance criteria are fixed at plan time; only a `needs-changes`
+  verdict can add to them.
 - Plugin-contributed *skills* don't join the prompt catalogue yet (their
   tools/hooks/providers do).
 - Docker sandbox backend is a refusing seam — subprocess only today.

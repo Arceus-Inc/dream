@@ -4,11 +4,8 @@ A control plane runs a task in short windows and needs the roles to pick up
 where they left off. One scope key names the whole task; each role thread hangs
 off it, so the caller keeps a single key instead of one per role.
 
-Roles do not share a thread — a planner and an evaluator are different
-conversations. The two generator heads (execute, negotiation response) *are* the
-same conversation, as are the two evaluator heads, so each pair shares its
-role's thread: the generator remembers what it agreed to, and the evaluator
-judges against criteria it proposed itself.
+Each role has exactly one head, so the mapping is direct: planner, generator
+and evaluator each get a thread named after the scope.
 """
 
 from __future__ import annotations
@@ -21,20 +18,13 @@ import pytest
 from dream.harness import Harness, HarnessConfig
 from dream.planner import LedgerStep
 from dream.roles import RoleName
-from dream.runner import (
-    RunRoleResult,
-    make_evaluator_propose_head,
-    make_generator_head,
-    make_generator_respond_head,
-)
+from dream.runner import RunRoleResult, make_generator_head
 from dream.runner._role_session import role_session_id
 from dream.session import SessionCost, SessionOptions
 
 HEAD_FACTORIES = (
     "make_planner_head",
     "make_generator_head",
-    "make_evaluator_propose_head",
-    "make_generator_respond_head",
     "make_evaluator_head",
 )
 
@@ -142,26 +132,6 @@ async def test_generator_head_stays_unnamed_without_a_scope() -> None:
     await head("task-42", 1, None, LedgerStep(id="s1", description="do thing"))
 
     assert stub.calls == [("generator", None)]
-
-
-async def test_both_generator_heads_share_one_thread() -> None:
-    stub = _RecordingHarness(reply='<response>{"accept": true}</response>')
-    execute = make_generator_head(_as_harness(stub), session_scope="task-42")
-    respond = make_generator_respond_head(_as_harness(stub), session_scope="task-42")
-
-    await execute("task-42", 1, None, LedgerStep(id="s1", description="do thing"))
-    await respond(1, [], ["criterion"])
-
-    assert {session_id for _, session_id in stub.calls} == {"task-42:generator"}
-
-
-async def test_evaluator_propose_runs_in_the_scoped_evaluator_thread() -> None:
-    stub = _RecordingHarness(reply='<proposal>["criterion"]</proposal>')
-    propose = make_evaluator_propose_head(_as_harness(stub), session_scope="task-42")
-
-    await propose(1, [])
-
-    assert stub.calls == [("evaluator", "task-42:evaluator")]
 
 
 def _minimal_result() -> Any:

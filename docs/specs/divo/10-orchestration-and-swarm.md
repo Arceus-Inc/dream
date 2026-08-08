@@ -1,10 +1,10 @@
 # 10 — Orchestration, Swarm & Bridge
 
 **One-liner:** A long task is not one undifferentiated stream of LLM calls — it is a small graph of
-*roles* with explicit, file-mediated handoffs. A **planner** turns intent into a spec + ledger, a
-**generator** does one sprint at a time, a conditional **evaluator** gates each sprint via a
-negotiated contract, and every subagent talks to every other subagent through the repo — never an
-in-memory bus. This spec defines the three roles, the sprint contract, capability minimisation, the
+*roles* with explicit, file-mediated handoffs. A **planner** turns intent into a spec + ledger and
+names the acceptance criteria for every step, a **generator** does one sprint at a time, a
+conditional **evaluator** gates each sprint against the contract those criteria produce, and every
+subagent talks to every other subagent through the repo — never an in-memory bus. This spec defines the three roles, the sprint contract, capability minimisation, the
 depth cap, the concurrency floor, and the swarm *substrate* (teams, teammate spawn, the leader's
 notification inbox) that carries them — plus the **bridge** seam for the deferred remote-execution
 case.
@@ -12,8 +12,8 @@ case.
 **Sources (source of truth):** `docs/specs/new-specs/06-orchestration-and-subagents.md` — the three
 canonical roles (`planner` / `generator` / `evaluator`), planner-runs-once producing the Markdown
 spec + JSON ledger under `docs/exec-plans/active/`, the **sprint contract** (`goal` / `scope_includes`
-/ `scope_excludes` / `acceptance_criteria` (MUST/SHOULD) / `verification_steps` / `evaluator_enabled`
-/ `negotiation_log`) written *before* any sprint code, the conditional evaluator (disable-able at task
+/ `scope_excludes` / `acceptance_criteria` (MUST/SHOULD) / `verification_steps` / `evaluator_enabled`)
+written *before* any sprint code, the conditional evaluator (disable-able at task
 and sprint level; reviewer-loop in `#03` is a *separate* always-on mechanism), the
 `pass | needs-changes | fail` outcome→ledger mapping (`done` / `in_progress` / `blocked` + tech-debt
 entry), **repo-only communication** (decision #9 — no in-memory message bus; handoffs are committed
@@ -115,7 +115,7 @@ repo-as-record invariant, not a global home dir.
 **In:**
 - The three canonical roles (planner / generator / evaluator), what each owns, its minimum toolset,
   and how it hands off.
-- The sprint contract: shape, when it is written, the bounded negotiation, the `imposed` fallback.
+- The sprint contract: shape, when it is written, and how it is assembled from the plan.
 - The outcome→ledger mapping (`pass`/`needs-changes`/`fail`) and the tech-debt escalation on `fail`.
 - Repo-only communication: the handoff event shape, the in-worktree mailbox, the rule that no
   in-memory bus exists.
@@ -155,18 +155,22 @@ repo-as-record invariant, not a global home dir.
    prior plan's state.
 3. **Generator works in sprints.** A sprint is the smallest deliverable unit — typically one ledger
    step / one feature. It transitions exactly one step out of `pending` per sprint.
-4. **Before each sprint where the evaluator is enabled, generator + evaluator negotiate a sprint
-   contract,** written to `docs/exec-plans/active/{task-id}-sprint-{n}.json` *before any sprint code
-   is committed*. Negotiation is bounded to **≤ 3 rounds**.
+4. **Acceptance criteria are decided at plan time.** The planner writes them onto each ledger step,
+   and before each sprint where the evaluator is enabled the runner assembles them into a sprint
+   contract at `docs/exec-plans/active/{task-id}-sprint-{n}.json`, *before any sprint code is
+   committed*. Nothing is negotiated: naming the work and naming its bar is one judgement, and
+   splitting it across two roles costs LLM sessions before a line of code exists. The only thing that
+   moves a contract after planning is a `needs-changes` verdict, whose unresolved items are folded
+   into the next contract for that step.
 5. **Evaluator is conditional, not mandatory.** Disable-able at task level (flag on the exec-plan
    JSON) and sprint level (flag on the contract). Default policy: **enable when task complexity is
    near or above the model's comfort zone; disable for routine work** — the heuristic is conservative
    (when in doubt, leave it on). The `#03` reviewer loop is a *different*, always-on, session-close
    mechanism and is **not** governed by `evaluator_enabled`.
 6. **Outcome → ledger mapping is fixed:** `pass` → step `done`, loop continues; `needs-changes` →
-   step stays `in_progress`, items carried into the next sprint contract's `negotiation_log`; `fail`
-   → step `blocked` **and** a tech-debt entry appended to `docs/exec-plans/tech-debt-tracker.md`
-   (`#07`). The evaluator renders judgement and stops — it does **not** negotiate after the verdict.
+   step stays `in_progress`, items folded into the next sprint contract's `acceptance_criteria`;
+   `fail` → step `blocked` **and** a tech-debt entry appended to
+   `docs/exec-plans/tech-debt-tracker.md` (`#07`). The evaluator renders judgement and stops.
 7. **Communication is repo-only.** No in-memory message bus between subagents. Every handoff is (a) a
    file committed to the worktree and (b) a jsonl event carrying `from`-role, `to`-role, and an
    artefact pointer (file path or ref). The leader's *notification inbox* (worker-result delivery)
@@ -241,13 +245,12 @@ scope_excludes   : [bullet, …]
 acceptance_criteria : [ "MUST …", "SHOULD …", … ]
 verification_steps  : ordered [ { kind: "test"|"lint"|"eval", ref } ]   (#12 / #07)
 evaluator_enabled : bool
-imposed          : bool        (true ⇒ negotiation hit the 3-round cap; evaluator's last proposal taken)
-negotiation_log  : append-only [ { ts, from, to, message } ]
+rubric            : string
 ```
 
 Written **before** any source file in the worktree is modified for that sprint (acceptance criterion
-#7). The `negotiation_log` is the durable record of how the contract was reached — including
-disagreement when `imposed: true`.
+#7). `acceptance_criteria` is the ledger step's plan-time criteria, extended by any items a prior
+`needs-changes` verdict on that step left unresolved.
 
 ### Handoff event (jsonl, on the session/run stream)
 
@@ -308,7 +311,7 @@ This is the *runtime* spawn handle; the durable record is the ledger + contract 
 1. Runner allocates `task-id`, creates the worktree (`#02`), claims it (`#08`), starts a `planner`
    session (`#03`) with the read-only minimum set.
 2. Planner reads intent + repo state + `core-beliefs.md` + product specs; drafts the narrative spec
-   and the JSON ledger.
+   and the JSON ledger, naming the acceptance criteria for each step as it goes.
 3. Planner commits both files into the worktree.
 4. Session ends; runner emits `handoff.planner_to_generator` with pointers to *both* files. The
    planner emits exactly one `planner.run.completed`.
@@ -317,21 +320,20 @@ This is the *runtime* spawn handle; the durable record is the ledger + contract 
 
 1. Runner starts a `generator` session in a fresh worktree built on the current state.
 2. Generator picks the next `pending` ledger step.
-3. **If the evaluator is enabled** for this task: runner spawns a short `evaluator` session whose only
-   job is to *propose* acceptance criteria for the upcoming sprint. Generator and evaluator exchange
-   proposals via the `negotiation_log` (≤ 3 rounds). The final contract is committed.
+3. **If the evaluator is enabled** for this task: the runner builds the contract from the step's
+   acceptance criteria plus any carry-over items and commits it. No LLM session runs for this.
 4. Generator executes the sprint and commits. (No source file is touched before the contract exists —
    criterion #7.)
 5. **If the evaluator is enabled:** the evaluator runs the contract's `verification_steps`, then
    writes exactly one evaluation record under `docs/evals/{task-id}/sprint-{n}.json`
    (`pass | needs-changes | fail` + score + notes — rubric per `#12`).
 6. Outcome → ledger (decision #6): `pass` → `done`, advance; `needs-changes` → stays `in_progress`,
-   items into next contract's log; `fail` → `blocked` + tech-debt entry.
+   items into the next contract's criteria; `fail` → `blocked` + tech-debt entry.
 
 ### Disabling the evaluator
 
 - Task-level: a flag on the exec-plan JSON. Sprint-level: a flag on the sprint contract.
-- When disabled, the generator skips negotiation entirely and proceeds directly to execution; **no**
+- When disabled, no contract is written and the generator proceeds directly to execution; **no**
   evaluation record is written.
 - The `#03` reviewer loop still runs at session close regardless — it is a separate, lightweight,
   always-on mechanism.
@@ -387,7 +389,8 @@ This is the *runtime* spawn handle; the durable record is the ledger + contract 
 ### Planner (MUST)
 
 1. **MUST** run exactly once at task start.
-2. **MUST** produce both the Markdown spec and the JSON ledger.
+2. **MUST** produce both the Markdown spec and the JSON ledger, with at least one acceptance
+   criterion on every ledger step.
 3. **MUST** be restricted to read-only access outside the exec-plan folder.
 4. **MUST** emit a `handoff.planner_to_generator` event at end of run.
 
@@ -401,10 +404,10 @@ This is the *runtime* spawn handle; the durable record is the ledger + contract 
 
 ### Evaluator (MUST/SHOULD)
 
-9. **MUST** participate in contract negotiation when enabled, bounded to ≤ 3 rounds.
+9. **MUST** judge against the committed contract, which it did not author and cannot amend.
 10. **MUST** produce exactly one evaluation record per sprint when enabled.
-11. **MUST NOT** negotiate after rendering judgement — its output is `pass | needs-changes | fail`
-    with notes, full stop.
+11. **MUST NOT** reopen the contract after rendering judgement — its output is
+    `pass | needs-changes | fail` with notes, full stop.
 12. **SHOULD** be disabled by default for explicitly "routine" tasks; enabled otherwise.
 
 ### Concurrency & isolation (MUST)
@@ -460,7 +463,7 @@ Scenario: Sprint contract precedes generator code
 Scenario: Evaluator can be disabled at task level
   Given the exec-plan JSON sets evaluator_enabled = false
   When generator begins a sprint
-  Then no contract negotiation occurs
+  Then no contract is written
   And generator proceeds directly to execution
   And no evaluation record is written.
 
@@ -474,7 +477,7 @@ Scenario: Sprint needs-changes keeps step in progress
   Given evaluator returns "needs-changes" with two items
   When the runner records the evaluation
   Then the step remains in_progress
-  And the items appear in the next sprint contract's negotiation_log.
+  And the items appear in the next sprint contract's acceptance_criteria.
 
 Scenario: Sprint fail marks step blocked and files tech debt
   Given evaluator returns "fail" with a reason
@@ -482,12 +485,11 @@ Scenario: Sprint fail marks step blocked and files tech debt
   Then the step transitions to "blocked"
   And a tech-debt entry is appended to docs/exec-plans/tech-debt-tracker.md.
 
-Scenario: Negotiation hits the cap and the evaluator's proposal is imposed
-  Given generator and evaluator have exchanged 3 rounds without agreement
-  When the runner closes negotiation
-  Then the committed contract uses the evaluator's last proposal
-  And the contract has imposed = true
-  And a warning event records the disagreement.
+Scenario: Contract criteria come from the plan
+  Given ledger step s1 lists two acceptance criteria
+  When generator begins the sprint for s1
+  Then the committed contract's acceptance_criteria are those two criteria
+  And no LLM session ran between claiming the step and committing the contract.
 
 Scenario: Subagent depth capped at 3
   Given a reviewer at depth 2 spawns a remediation subagent at depth 3
@@ -563,17 +565,16 @@ Scenario: Remote agent refused without the bridge enabled
 - `test_generator_transitions_step_exactly_once_per_sprint`
 - `test_sprint_contract_written_before_sprint_code`
 - `test_generator_cannot_write_outside_worktree`
-- `test_evaluator_negotiation_bounded_at_3_rounds`
+- `test_contract_takes_its_criteria_from_the_step`
 - `test_evaluator_writes_exactly_one_evaluation_record`
-- `test_evaluator_does_not_negotiate_after_judgement`
 - `test_evaluator_can_be_disabled_at_task_level`
 - `test_evaluator_can_be_disabled_at_sprint_level`
-- `test_disabled_evaluator_skips_negotiation_and_record`
+- `test_disabled_evaluator_skips_contract_and_record`
 - `test_pass_outcome_marks_step_done`
 - `test_needs_changes_keeps_step_in_progress`
+- `test_carry_items_are_folded_into_the_retry_contract`
 - `test_fail_outcome_marks_step_blocked`
 - `test_fail_outcome_files_tech_debt_entry`
-- `test_negotiation_cap_imposes_evaluator_proposal` — `imposed: true` + warning event.
 - `test_subagent_depth_capped_at_3`
 - `test_subagent_depth_violation_emits_info_event`
 - `test_role_starts_with_minimum_toolset`
@@ -602,12 +603,14 @@ Scenario: Remote agent refused without the bridge enabled
 
 - **Operator wants to re-plan mid-task.** Not supported in v1; the operator opens a *new task* whose
   exec-plan supersedes the prior one. Keeps the planner-runs-once rule simple.
-- **Generator and evaluator can't agree after 3 rounds.** Runner takes the *evaluator's* last
-  proposal, commits the contract with `imposed: true`, and emits a warning event; the
-  `negotiation_log` preserves the disagreement for later review.
-- **A step's verification needs a tool the evaluator's minimum set lacks.** Contract negotiation may
-  expand the evaluator's toolset *for that sprint only* (the verifiers named in `verification_steps`);
-  the expansion is scoped to the contract, never persisted to the role manifest.
+- **The planner leaves a step's criteria empty.** The runner falls back to the step description as
+  the single criterion. A weak bar beats failing the sprint over a missing field.
+- **The generator disagrees with a criterion.** It has no seam to argue — the bar was set at plan
+  time by a role that saw the whole task. If the bar is genuinely wrong the sprint returns
+  `needs-changes` and the operator re-plans.
+- **A step's verification needs a tool the evaluator's minimum set lacks.** The contract may expand
+  the evaluator's toolset *for that sprint only* (the verifiers named in `verification_steps`); the
+  expansion is scoped to the contract, never persisted to the role manifest.
 - **Evaluator becomes flaky** (frequent `fail` on actually-correct sprints). Detected by the eval
   tuning loop (`#12`), which patches the evaluator's prompt — not handled here.
 - **A subagent crashes mid-sprint.** The contract + ledger are already committed; the next runner
@@ -628,7 +631,8 @@ Scenario: Remote agent refused without the bridge enabled
 - Whether the depth cap should be 3 or 4 (current default 3; review after the first month of real
   use — same open question as new-spec 06).
 - Whether to allow a "second evaluator" pattern (two rubrics, operator tie-break).
-- Whether contract negotiation should be capped *below* 3 rounds for routine sprints.
+- Whether a step whose criteria prove wrong mid-task should be re-plannable in isolation, rather than
+  forcing a whole new task.
 - Whether the leader inbox should be pruned automatically or left for the memory GC (`#11`).
 - Whether `in_process_teammate` and `subprocess` should share one minimum-set enforcement path or
   diverge (in-process teammates share the event loop — tighter coupling, easier leakage).

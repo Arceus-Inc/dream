@@ -29,16 +29,13 @@ from dream.runner._observer import RunTaskObserver
 from dream.runner._plan_admission import PlanAdmission
 from dream.sprint import (
     EvaluationOutcome,
-    EvaluatorPropose,
-    GeneratorRespond,
     SprintContract,
     acquire_role_lock,
     append_tech_debt,
     apply_outcome,
-    build_contract_from_negotiation,
+    build_contract_from_step,
     is_evaluator_enabled_for_sprint,
     load_pending_carry_items,
-    negotiate_contract_async,
     next_sprint_number,
     pick_next_pending_step,
     record_evaluation,
@@ -160,16 +157,15 @@ async def _run_generator_phase(
     ledger_path: Path,
     sprint_number: int,
     ledger: PlannerLedger,
-    evaluator_propose: EvaluatorPropose,
-    generator_respond: GeneratorRespond,
     generator_execute: GeneratorExecute,
     verification_steps: tuple[dict[str, str], ...],
     goal_provider: SprintGoalProvider,
     emit: Callable[[dict[str, Any]], None],
     rubric: str = "",
 ) -> _GeneratorPhaseResult:
-    """Phase 2a+2b: claim a step under the generator lock, negotiate (if the
-    evaluator is enabled), commit the contract, and run the generator seam.
+    """Phase 2a+2b: claim a step under the generator lock, commit the contract
+    the plan already implies (if the evaluator is enabled), and run the
+    generator seam.
 
     Selection + claim of the next step happen *inside* the lock on a freshly
     re-loaded ledger (criterion #14), so two overlapping ``run_task`` calls
@@ -206,28 +202,15 @@ async def _run_generator_phase(
             ledger.save(ledger_path)
 
         if enabled:
-            carry = load_pending_carry_items(root, task_id=task_id, step_id=step.id)
-            negotiation = await negotiate_contract_async(
-                evaluator_propose=evaluator_propose,
-                generator_respond=generator_respond,
-                carry_items=carry,
-            )
-            if negotiation.warning_event is not None:
-                events.append(negotiation.warning_event)
-                emit(
-                    {
-                        "kind": "negotiation.imposed",
-                        "sprint_number": sprint_number,
-                        "rounds": negotiation.warning_event.get("rounds"),
-                    }
-                )
-
-            contract = build_contract_from_negotiation(
-                negotiation,
+            contract = build_contract_from_step(
+                step,
                 task_id=task_id,
                 sprint_number=sprint_number,
                 goal=goal_provider(step, sprint_number),
                 verification_steps=verification_steps,
+                carry_items=load_pending_carry_items(
+                    root, task_id=task_id, step_id=step.id
+                ),
                 evaluator_enabled=True,
                 rubric=rubric,
             )
@@ -381,8 +364,6 @@ async def run_task(
     worktree_root: str | Path,
     planner: PlannerCallable,
     generator_execute: GeneratorExecute,
-    evaluator_propose: EvaluatorPropose,
-    generator_respond: GeneratorRespond,
     evaluator_run: EvaluatorRun,
     max_sprints: int = 10,
     verification_steps: tuple[dict[str, str], ...] = (),
@@ -396,8 +377,8 @@ async def run_task(
     See module docstring for the per-sprint algorithm. When ``observer``
     is supplied, a progress event is dispatched at every boundary
     (planner start/end, sprint start/end, contract written, generator /
-    evaluator start/end, negotiation cap, role-session opened/closed +
-    streamed text & tool calls). See :mod:`dream.runner._observer`.
+    evaluator start/end, role-session opened/closed + streamed text & tool
+    calls). See :mod:`dream.runner._observer`.
 
     ``plan_admission`` controls whether the planner may run:
 
@@ -484,8 +465,6 @@ async def run_task(
                 ledger_path=ledger_path,
                 sprint_number=sprint_number,
                 ledger=ledger,
-                evaluator_propose=evaluator_propose,
-                generator_respond=generator_respond,
                 generator_execute=generator_execute,
                 verification_steps=verification_steps,
                 goal_provider=goal_provider,

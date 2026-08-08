@@ -9,8 +9,8 @@ Spec 10 acceptance criteria exercised here:
 
 - #1/#2 planner runs once and writes both artefacts (delegated to slice E).
 - #5/#6 generator picks next pending step and transitions it once per sprint.
-- #7 contract written **before** the generator touches sources for a sprint.
-- #9 negotiation bounded at 3 rounds; imposed proposal surfaces a warning.
+- #7 contract written **before** the generator touches sources for a sprint,
+  assembled from the step's plan-time acceptance criteria.
 - #10 evaluator writes exactly one record per sprint.
 - #14 generator + evaluator lock-protected per task.
 - #20 cross-role handoff events emitted with artefact pointers.
@@ -41,7 +41,11 @@ def _make_planner(*, steps: int, evaluator_enabled: bool = True):
                 intent=intent,
                 created_at=1.0,
                 steps=tuple(
-                    LedgerStep(id=f"s{i}", description=f"do step {i}")
+                    LedgerStep(
+                        id=f"s{i}",
+                        description=f"do step {i}",
+                        acceptance_criteria=(f"step {i} is done",),
+                    )
                     for i in range(1, steps + 1)
                 ),
                 evaluator_enabled=evaluator_enabled,
@@ -49,20 +53,6 @@ def _make_planner(*, steps: int, evaluator_enabled: bool = True):
         )
 
     return planner
-
-
-def _accept_first_proposal_propose(criteria: list[str]):
-    """Evaluator proposes ``criteria`` on round 1 and never moves."""
-    def propose(round_num, log):
-        return list(criteria)
-    return propose
-
-
-def _accept_first_proposal_respond():
-    """Generator accepts whatever the evaluator proposes on round 1."""
-    def respond(round_num, log, proposal):
-        return True, None
-    return respond
 
 
 def _make_evaluator_run(*, outcome: str, items: tuple[str, ...] = ()):
@@ -99,8 +89,6 @@ async def test_run_task_writes_planner_artefacts_then_completes(tmp_path: Path) 
         worktree_root=tmp_path,
         planner=_make_planner(steps=1),
         generator_execute=_noop_execute,
-        evaluator_propose=_accept_first_proposal_propose(["criterion-A"]),
-        generator_respond=_accept_first_proposal_respond(),
         evaluator_run=_make_evaluator_run(outcome="pass"),
     )
 
@@ -122,8 +110,6 @@ async def test_run_task_event_stream_starts_with_planner_events(tmp_path: Path) 
         worktree_root=tmp_path,
         planner=_make_planner(steps=1),
         generator_execute=_noop_execute,
-        evaluator_propose=_accept_first_proposal_propose(["c"]),
-        generator_respond=_accept_first_proposal_respond(),
         evaluator_run=_make_evaluator_run(outcome="pass"),
     )
 
@@ -152,8 +138,6 @@ async def test_run_task_writes_contract_before_generator_executes(tmp_path: Path
         worktree_root=tmp_path,
         planner=_make_planner(steps=1),
         generator_execute=execute,
-        evaluator_propose=_accept_first_proposal_propose(["c"]),
-        generator_respond=_accept_first_proposal_respond(),
         evaluator_run=_make_evaluator_run(outcome="pass"),
     )
 
@@ -174,8 +158,6 @@ async def test_run_task_emits_generator_then_evaluator_handoffs_per_sprint(
         worktree_root=tmp_path,
         planner=_make_planner(steps=1),
         generator_execute=_noop_execute,
-        evaluator_propose=_accept_first_proposal_propose(["c"]),
-        generator_respond=_accept_first_proposal_respond(),
         evaluator_run=_make_evaluator_run(outcome="pass"),
     )
 
@@ -194,8 +176,6 @@ async def test_run_task_handoff_events_carry_artefact_pointers(tmp_path: Path) -
         worktree_root=tmp_path,
         planner=_make_planner(steps=1),
         generator_execute=_noop_execute,
-        evaluator_propose=_accept_first_proposal_propose(["c"]),
-        generator_respond=_accept_first_proposal_respond(),
         evaluator_run=_make_evaluator_run(outcome="pass"),
     )
     for e in result.events:
@@ -216,8 +196,6 @@ async def test_run_task_pass_marks_step_done_and_advances(tmp_path: Path) -> Non
         worktree_root=tmp_path,
         planner=_make_planner(steps=2),
         generator_execute=_noop_execute,
-        evaluator_propose=_accept_first_proposal_propose(["c"]),
-        generator_respond=_accept_first_proposal_respond(),
         evaluator_run=_make_evaluator_run(outcome="pass"),
     )
 
@@ -239,8 +217,6 @@ async def test_run_task_fail_blocks_step_and_appends_tech_debt(tmp_path: Path) -
         worktree_root=tmp_path,
         planner=_make_planner(steps=1),
         generator_execute=_noop_execute,
-        evaluator_propose=_accept_first_proposal_propose(["c"]),
-        generator_respond=_accept_first_proposal_respond(),
         evaluator_run=_make_evaluator_run(outcome="fail", items=("redo X",)),
     )
 
@@ -255,22 +231,16 @@ async def test_run_task_fail_blocks_step_and_appends_tech_debt(tmp_path: Path) -
 async def test_run_task_needs_changes_resumes_same_step_with_carry_items(
     tmp_path: Path,
 ) -> None:
-    """The next sprint MUST re-attempt the same in_progress step and the
-    new negotiation MUST see the prior eval's items as carry-overs."""
+    """The next sprint MUST re-attempt the same in_progress step, and the
+    contract it builds MUST carry the prior eval's unresolved items."""
     from dream.runner import run_task
     from dream.sprint import EvaluationRecord
 
-    sprint_carry_log: list[tuple[int, list[Any]]] = []
-
-    def propose(round_num, log):
-        sprint_carry_log.append((round_num, list(log)))
-        # On the second sprint, the log will already contain carry entries —
-        # we just keep proposing the same criterion.
-        return ["c"]
-
+    seen_criteria: list[tuple[str, ...]] = []
     outcomes = iter(["needs-changes", "pass"])
 
     async def evaluator_run(task_id, sprint_n, contract, step):
+        seen_criteria.append(contract.acceptance_criteria)
         return EvaluationRecord(
             task_id=task_id,
             sprint_number=sprint_n,
@@ -285,8 +255,6 @@ async def test_run_task_needs_changes_resumes_same_step_with_carry_items(
         worktree_root=tmp_path,
         planner=_make_planner(steps=1),
         generator_execute=_noop_execute,
-        evaluator_propose=propose,
-        generator_respond=_accept_first_proposal_respond(),
         evaluator_run=evaluator_run,
         max_sprints=5,
     )
@@ -295,13 +263,11 @@ async def test_run_task_needs_changes_resumes_same_step_with_carry_items(
     assert [sp.step_id for sp in result.sprints] == ["s1", "s1"]
     assert [sp.outcome for sp in result.sprints] == ["needs-changes", "pass"]
 
-    # Second sprint's first-round negotiation log must contain the carry
-    # entry produced from sprint 1's needs-changes items.
-    second_sprint_first_round_log = sprint_carry_log[1][1]
-    messages = [entry.message for entry in second_sprint_first_round_log]
-    assert any("carry-item-A" in m for m in messages), (
-        f"carry items missing from second negotiation log: {messages}"
-    )
+    # The retry's contract is the plan's bar plus what sprint 1 left open.
+    assert seen_criteria == [
+        ("step 1 is done",),
+        ("step 1 is done", "carry-item-A"),
+    ]
 
 
 # --- evaluator disabling ------------------------------------------------
@@ -314,14 +280,7 @@ async def test_run_task_evaluator_disabled_skips_contract_and_record(
     from dream.runner import run_task
     from dream.sprint import evaluation_record_path, sprint_contract_path
 
-    called: dict[str, int] = {"propose": 0, "evaluate": 0}
-
-    def propose(round_num, log):
-        called["propose"] += 1
-        return ["c"]
-
     async def evaluator_run(task_id, sprint_n, contract, step):
-        called["evaluate"] += 1
         raise AssertionError("evaluator should not run when disabled")
 
     result = await run_task(
@@ -330,12 +289,9 @@ async def test_run_task_evaluator_disabled_skips_contract_and_record(
         worktree_root=tmp_path,
         planner=_make_planner(steps=1, evaluator_enabled=False),
         generator_execute=_noop_execute,
-        evaluator_propose=propose,
-        generator_respond=_accept_first_proposal_respond(),
         evaluator_run=evaluator_run,
     )
 
-    assert called == {"propose": 0, "evaluate": 0}
     assert not sprint_contract_path(tmp_path, task_id="t1", sprint_number=1).exists()
     assert not evaluation_record_path(tmp_path, task_id="t1", sprint_number=1).exists()
 
@@ -361,8 +317,6 @@ async def test_run_task_stops_when_no_more_pending_steps(tmp_path: Path) -> None
         worktree_root=tmp_path,
         planner=_make_planner(steps=0),
         generator_execute=_noop_execute,
-        evaluator_propose=_accept_first_proposal_propose(["c"]),
-        generator_respond=_accept_first_proposal_respond(),
         evaluator_run=_make_evaluator_run(outcome="pass"),
     )
     assert result.sprints == ()
@@ -377,8 +331,6 @@ async def test_run_task_respects_max_sprints_cap(tmp_path: Path) -> None:
         worktree_root=tmp_path,
         planner=_make_planner(steps=10),
         generator_execute=_noop_execute,
-        evaluator_propose=_accept_first_proposal_propose(["c"]),
-        generator_respond=_accept_first_proposal_respond(),
         evaluator_run=_make_evaluator_run(outcome="pass"),
         max_sprints=2,
     )
@@ -409,8 +361,6 @@ async def test_run_task_holds_generator_lock_during_execute(tmp_path: Path) -> N
         worktree_root=tmp_path,
         planner=_make_planner(steps=1),
         generator_execute=execute,
-        evaluator_propose=_accept_first_proposal_propose(["c"]),
-        generator_respond=_accept_first_proposal_respond(),
         evaluator_run=_make_evaluator_run(outcome="pass"),
     )
     assert contention == [RoleAlreadyActive]
@@ -462,8 +412,6 @@ async def test_run_task_selects_step_after_acquiring_generator_lock(
         worktree_root=tmp_path,
         planner=_make_planner(steps=2),
         generator_execute=_noop_execute,
-        evaluator_propose=_accept_first_proposal_propose(["c"]),
-        generator_respond=_accept_first_proposal_respond(),
         evaluator_run=_make_evaluator_run(outcome="pass"),
     )
 
@@ -474,43 +422,12 @@ async def test_run_task_selects_step_after_acquiring_generator_lock(
     assert any(loads_under_lock)
 
 
-# --- criterion #9: imposed negotiation surfaces warning ----------------
-
-
-async def test_run_task_imposed_negotiation_emits_warning_event(tmp_path: Path) -> None:
-    """When negotiation caps without agreement the evaluator's last proposal
-    is committed with ``imposed: true`` and a warning event is emitted."""
-    from dream.runner import run_task
-
-    def propose(round_num, log):
-        return [f"r{round_num}-criteria"]
-
-    def respond(round_num, log, proposal):
-        return False, ["counter"]  # never accept
-
-    result = await run_task(
-        task_id="t1",
-        intent="x",
-        worktree_root=tmp_path,
-        planner=_make_planner(steps=1),
-        generator_execute=_noop_execute,
-        evaluator_propose=propose,
-        generator_respond=respond,
-        evaluator_run=_make_evaluator_run(outcome="pass"),
-    )
-
-    warnings = [e for e in result.events if e.get("type") == "sprint.negotiation_imposed"]
-    assert len(warnings) == 1
-    assert warnings[0]["level"] == "warning"
-    assert warnings[0]["rounds"] == 3
-
-
 # --- 10-I: observer dispatch -------------------------------------------
 
 
 async def test_run_task_dispatches_macro_events_in_order(tmp_path: Path) -> None:
     """A capturing observer sees task/planner/sprint/contract/generator/
-    evaluator/negotiation lifecycle events in the order they fire."""
+    evaluator lifecycle events in the order they fire."""
     from dream.runner import run_task
     from dream.runner._observer import _CapturingObserver
 
@@ -522,8 +439,6 @@ async def test_run_task_dispatches_macro_events_in_order(tmp_path: Path) -> None
         worktree_root=tmp_path,
         planner=_make_planner(steps=1),
         generator_execute=_noop_execute,
-        evaluator_propose=_accept_first_proposal_propose(["c"]),
-        generator_respond=_accept_first_proposal_respond(),
         evaluator_run=_make_evaluator_run(outcome="pass"),
         observer=observer,
     )
@@ -556,8 +471,6 @@ async def test_run_task_observer_carries_payloads(tmp_path: Path) -> None:
         worktree_root=tmp_path,
         planner=_make_planner(steps=1),
         generator_execute=_noop_execute,
-        evaluator_propose=_accept_first_proposal_propose(["c"]),
-        generator_respond=_accept_first_proposal_respond(),
         evaluator_run=_make_evaluator_run(outcome="pass"),
         observer=observer,
     )
@@ -589,8 +502,6 @@ async def test_run_task_observer_marks_generator_without_contract_when_eval_off(
         worktree_root=tmp_path,
         planner=_make_planner(steps=1, evaluator_enabled=False),
         generator_execute=_noop_execute,
-        evaluator_propose=_accept_first_proposal_propose(["c"]),
-        generator_respond=_accept_first_proposal_respond(),
         evaluator_run=_make_evaluator_run(outcome="pass"),
         observer=observer,
     )
@@ -603,37 +514,6 @@ async def test_run_task_observer_marks_generator_without_contract_when_eval_off(
     assert gen_start["has_contract"] is False
 
 
-async def test_run_task_observer_emits_negotiation_imposed_at_cap(
-    tmp_path: Path,
-) -> None:
-    from dream.runner import run_task
-    from dream.runner._observer import _CapturingObserver
-
-    def propose(round_num, log):
-        return [f"r{round_num}"]
-
-    def respond(round_num, log, proposal):
-        return False, ["counter"]
-
-    observer = _CapturingObserver()
-    await run_task(
-        task_id="t1",
-        intent="x",
-        worktree_root=tmp_path,
-        planner=_make_planner(steps=1),
-        generator_execute=_noop_execute,
-        evaluator_propose=propose,
-        generator_respond=respond,
-        evaluator_run=_make_evaluator_run(outcome="pass"),
-        observer=observer,
-    )
-
-    imposed = [e for e in observer.events if e["kind"] == "negotiation.imposed"]
-    assert len(imposed) == 1
-    assert imposed[0]["sprint_number"] == 1
-    assert imposed[0]["rounds"] == 3
-
-
 async def test_run_task_with_no_observer_does_not_break(tmp_path: Path) -> None:
     """observer=None is the default — runner stays silent and works."""
     from dream.runner import run_task
@@ -644,8 +524,6 @@ async def test_run_task_with_no_observer_does_not_break(tmp_path: Path) -> None:
         worktree_root=tmp_path,
         planner=_make_planner(steps=1),
         generator_execute=_noop_execute,
-        evaluator_propose=_accept_first_proposal_propose(["c"]),
-        generator_respond=_accept_first_proposal_respond(),
         evaluator_run=_make_evaluator_run(outcome="pass"),
     )
 
@@ -685,8 +563,6 @@ async def test_two_needs_changes_stops_run_without_burning_max_sprints(
         worktree_root=tmp_path,
         planner=_make_planner(steps=1),
         generator_execute=_noop_execute,
-        evaluator_propose=_accept_first_proposal_propose(["c"]),
-        generator_respond=_accept_first_proposal_respond(),
         evaluator_run=_make_evaluator_run_with_notes(
             outcome="needs-changes", notes="structural issue"
         ),
@@ -714,8 +590,6 @@ async def test_two_needs_changes_emits_sprint_escalated_event(
         worktree_root=tmp_path,
         planner=_make_planner(steps=1),
         generator_execute=_noop_execute,
-        evaluator_propose=_accept_first_proposal_propose(["c"]),
-        generator_respond=_accept_first_proposal_respond(),
         evaluator_run=_make_evaluator_run_with_notes(
             outcome="needs-changes", notes="bad"
         ),
@@ -757,8 +631,6 @@ async def test_sprint_escalated_not_emitted_on_first_needs_changes(
         worktree_root=tmp_path,
         planner=_make_planner(steps=1),
         generator_execute=_noop_execute,
-        evaluator_propose=_accept_first_proposal_propose(["c"]),
-        generator_respond=_accept_first_proposal_respond(),
         evaluator_run=evaluator_run,
         max_sprints=10,
         observer=observer,
@@ -799,8 +671,6 @@ async def test_resume_skips_planner_and_continues_in_progress_step(
         worktree_root=tmp_path,
         planner=_make_planner(steps=1),
         generator_execute=_noop_execute,
-        evaluator_propose=_accept_first_proposal_propose(["c"]),
-        generator_respond=_accept_first_proposal_respond(),
         evaluator_run=evaluator_run,
         max_sprints=1,
         plan_admission=PlanAdmission.FRESH,
@@ -815,8 +685,6 @@ async def test_resume_skips_planner_and_continues_in_progress_step(
         worktree_root=tmp_path,
         planner=_make_planner(steps=1),
         generator_execute=_noop_execute,
-        evaluator_propose=_accept_first_proposal_propose(["c"]),
-        generator_respond=_accept_first_proposal_respond(),
         evaluator_run=evaluator_run,
         max_sprints=3,
         plan_admission=PlanAdmission.RESUME,
@@ -843,8 +711,6 @@ async def test_resume_after_strike_limit_continues_naturally(
         worktree_root=tmp_path,
         planner=_make_planner(steps=1),
         generator_execute=_noop_execute,
-        evaluator_propose=_accept_first_proposal_propose(["c"]),
-        generator_respond=_accept_first_proposal_respond(),
         evaluator_run=_make_evaluator_run_with_notes(
             outcome="needs-changes", notes="stdlib queue shim"
         ),
@@ -860,8 +726,6 @@ async def test_resume_after_strike_limit_continues_naturally(
         worktree_root=tmp_path,
         planner=_make_planner(steps=1),
         generator_execute=_noop_execute,
-        evaluator_propose=_accept_first_proposal_propose(["c"]),
-        generator_respond=_accept_first_proposal_respond(),
         evaluator_run=_make_evaluator_run(outcome="pass"),
         max_sprints=3,
         plan_admission=PlanAdmission.RESUME,
@@ -882,8 +746,6 @@ async def test_resume_without_ledger_plans_fresh(tmp_path: Path) -> None:
         worktree_root=tmp_path,
         planner=_make_planner(steps=1),
         generator_execute=_noop_execute,
-        evaluator_propose=_accept_first_proposal_propose(["c"]),
-        generator_respond=_accept_first_proposal_respond(),
         evaluator_run=_make_evaluator_run(outcome="pass"),
         plan_admission=PlanAdmission.RESUME,
     )
@@ -900,8 +762,6 @@ async def test_plan_admission_rejects_stringly_values(tmp_path: Path) -> None:
             worktree_root=tmp_path,
             planner=_make_planner(steps=1),
             generator_execute=_noop_execute,
-            evaluator_propose=_accept_first_proposal_propose(["c"]),
-            generator_respond=_accept_first_proposal_respond(),
             evaluator_run=_make_evaluator_run(outcome="pass"),
             plan_admission="resume",  # type: ignore[arg-type]
         )

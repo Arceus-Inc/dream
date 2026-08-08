@@ -10,10 +10,15 @@ The model emits one JSON object matching :class:`PlannerResponse`::
     {
       "spec_markdown": "# narrative ...",
       "ledger": {
-        "steps": [{"id": "...", "description": "..."}],
+        "steps": [
+          {"id": "...", "description": "...", "acceptance_criteria": ["..."]}
+        ],
         "evaluator_enabled": true
       }
     }
+
+Each step names its own acceptance criteria: the sprint contract is built
+straight from them, so nothing is negotiated once planning is done.
 
 :func:`ask_until_parsed` remains the outer retry when local validation fails.
 """
@@ -58,6 +63,7 @@ _LEDGER_EXAMPLE = """\
   "ledger": {
     "steps": [
       {"id": "<unique-slug>", "description": "<one sentence>",
+       "acceptance_criteria": ["<checkable statement>", "..."],
        "sprint_target": null, "notes": ""}
     ],
     "evaluator_enabled": true
@@ -81,10 +87,20 @@ PLANNER_INSTRUCTION_TEMPLATE = (
     "Requirements:\n"
     '- "spec_markdown" must be non-empty markdown.\n'
     '- "ledger.steps" must contain at least one step.\n'
-    '- Each step needs "id" (string) and "description" (string).\n'
+    '- Each step needs "id" (string), "description" (string), and\n'
+    '  "acceptance_criteria" (at least one string).\n'
     '- "sprint_target" (int|null) and "notes" (string) are optional.\n'
     '- Set "evaluator_enabled": false only when verifier signal is\n'
     "  unavailable or actively misleading; default true.\n"
+    "\n"
+    "ACCEPTANCE CRITERIA\n"
+    "-------------------\n"
+    "- These are the bar a separate evaluator will judge the step against,\n"
+    "  with no chance to renegotiate. Write what must be observably true\n"
+    "  when the step is done, not how to do it.\n"
+    "- Prefer criteria something can check: a command that passes, a\n"
+    "  behaviour that holds, a file that exists with named content.\n"
+    "- Two or three per step is usually right. One is fine for a small step.\n"
     "\n"
     "DECOMPOSITION\n"
     "-------------\n"
@@ -124,6 +140,7 @@ def parse_planner_response(reply: str, *, task_id: str, intent: str) -> PlannerO
         LedgerStep(
             id=step.id,
             description=step.description,
+            acceptance_criteria=tuple(step.acceptance_criteria),
             sprint_target=step.sprint_target,
             notes=step.notes,
         )

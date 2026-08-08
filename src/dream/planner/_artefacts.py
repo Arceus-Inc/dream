@@ -43,6 +43,13 @@ class LedgerStep:
     status: StepStatus = "pending"
     sprint_target: int | None = None
     notes: str = ""
+    acceptance_criteria: tuple[str, ...] = ()
+    """What "done" means for this step, decided at plan time.
+
+    The planner names the bar in the same judgement that names the work, so
+    the sprint reads it off the ledger instead of negotiating it. The
+    evaluator judges against these.
+    """
     needs_changes_count: int = 0
     """Lifetime cumulative ``needs-changes`` evaluations on this step.
 
@@ -67,6 +74,8 @@ class LedgerStep:
         }
         if self.sprint_target is not None:
             out["sprint_target"] = self.sprint_target
+        if self.acceptance_criteria:
+            out["acceptance_criteria"] = list(self.acceptance_criteria)
         # Omit when zero — follows sprint_target precedent; keeps existing
         # ledger JSON diffs minimal for steps that have never needed changes.
         if self.needs_changes_count:
@@ -81,6 +90,7 @@ class LedgerStep:
             status=data.get("status", "pending"),
             sprint_target=data.get("sprint_target"),
             notes=data.get("notes", ""),
+            acceptance_criteria=tuple(data.get("acceptance_criteria", ())),
             needs_changes_count=int(data.get("needs_changes_count", 0)),
         )
 
