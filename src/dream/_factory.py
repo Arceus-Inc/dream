@@ -156,7 +156,7 @@ def build_harness(
     cron: bool = False,
     web: bool = False,
     browser: bool = False,
-    observability: bool = False,
+    observability: bool = True,
     worktree: bool = False,
     code_intel: bool = False,
     plan: bool = False,
@@ -184,8 +184,10 @@ def build_harness(
     git/read_offloaded/glob/grep/todo_write/skill). Opt-in packs:
 
     - ``memory`` (default on) — ``memory_search`` / ``memory_get``
-    - ``tasks`` / ``cron`` / ``web`` / ``browser`` / ``observability`` /
-      ``worktree`` / ``code_intel`` / ``plan`` — each off by default
+    - ``observability`` (default on) — ``query_logs`` / ``query_metrics``
+      (evaluator default tools include ``query_logs``)
+    - ``tasks`` / ``cron`` / ``web`` / ``browser`` / ``worktree`` /
+      ``code_intel`` / ``plan`` — each off by default
     - ``legacy_surface=True`` — registers every former default-registry pack
       (migration escape hatch; ignores the individual pack flags)
 

@@ -94,7 +94,7 @@ def check_execute_code_guard(code: str) -> str | None:
 def _refuse(what: str) -> str:
     return (
         f"execute_code refused: blocked use of {what}. "
-        "Use dream_tools.bash / web_search / web_extract for shell and network I/O "
+        "Use dream_tools.bash / web_search / web_fetch for shell and network I/O "
         "so nested calls stay on the allowlist + permission gate."
     )
 

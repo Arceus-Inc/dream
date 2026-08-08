@@ -31,7 +31,7 @@ class NestedToolName(StrEnum):
     GLOB = "glob"
     BASH = "bash"
     WEB_SEARCH = "web_search"
-    WEB_EXTRACT = "web_extract"
+    WEB_FETCH = "web_fetch"
 
 
 class ExecuteCodeStatus(StrEnum):

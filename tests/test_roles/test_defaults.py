@@ -76,6 +76,7 @@ def test_evaluator_default_tools_include_bash_for_in_session_verify() -> None:
     tools = set(m.tools)
     assert "read_file" in tools
     assert "bash" in tools
+    assert "query_logs" in tools
     assert "write_file" not in tools
     assert "apply_patch" not in tools
     assert "spawn_subagent" not in tools
@@ -103,10 +104,13 @@ def test_default_manifest_tool_names_exist_in_default_registry() -> None:
     # drops unknown names, so planner/evaluator lost file reading entirely and
     # collapsed to ``{git, query_logs}``. Every name a default manifest lists
     # (tools + disallowed_tools) must be a real registered tool name.
+    # Evaluator needs ``query_logs`` from the observability pack (default-on in
+    # ``build_harness``); register that pack before asserting name alignment.
     from dream.roles import compute_minimum_toolset
-    from dream.tools.builtin import default_registry
+    from dream.tools.builtin import default_registry, register_observability_tools
 
     registry = default_registry()
+    register_observability_tools(registry)
     registered = {t.name for t in registry.list_tools()}
     declarations = {t.name: t.declaration for t in registry.list_tools()}
 
@@ -126,3 +130,6 @@ def test_default_manifest_tool_names_exist_in_default_registry() -> None:
         assert "read_file" in effective, f"{role} cannot read files: {sorted(effective)}"
         if role == "evaluator":
             assert "bash" in effective, f"evaluator cannot verify via bash: {sorted(effective)}"
+            assert "query_logs" in effective, (
+                f"evaluator cannot query session traces: {sorted(effective)}"
+            )

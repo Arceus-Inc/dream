@@ -7,8 +7,9 @@ Operators override per-field via ``.harness/roles/{role}.toml`` (see
   so any accidental side effect is deflected to an explicit plan output.
 - generator: ``tools=None`` (= all registered tools, intersected with the
   active sandbox tier at #13); ``permission_mode="default"``.
-- evaluator: reads + ``bash`` for in-session verify (Hermes/CC shape); no
-  writers and no ``spawn_subagent``. No harness oracle sidecar.
+- evaluator: reads + ``bash`` for in-session verify (Hermes/CC shape) plus
+  ``query_logs`` over session traces; no writers and no ``spawn_subagent``.
+  No harness oracle sidecar.
 """
 
 from __future__ import annotations
@@ -25,13 +26,15 @@ _READ_ONLY_TRIPLET: tuple[str, ...] = (
     "glob",
 )
 
-# Evaluator: same reads + bash so verification runs inside the judge session.
+# Evaluator: reads + bash verify + session-trace query (Spec 12b). ``query_logs``
+# lives in the observability pack, which ``build_harness`` enables by default.
 _EVALUATOR_TOOLS: tuple[str, ...] = (
     "read_file",
     "git",
     "grep",
     "glob",
     "bash",
+    "query_logs",
 )
 
 _WRITERS_DENIED: tuple[str, ...] = (

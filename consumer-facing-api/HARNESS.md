@@ -139,11 +139,11 @@ Former fat-default extras are packs. Defaults: only `memory=True`. Pass
 | Flag | Tools |
 |---|---|
 | `memory=True` (default) | `memory_search`, `memory_get` |
+| `observability=True` (default) | `query_logs`, `query_metrics` (evaluator includes `query_logs`) |
 | `tasks=True` | `task_create`, `task_get`, `task_output`, `task_stop`, `task_update` |
 | `cron=True` | `cron_*`, `remote_trigger` |
-| `web=True` | `web_search` (find URLs), `web_fetch` (direct GET), `web_extract` (Tavily clean body) |
+| `web=True` | `web_search` (find URLs), `web_fetch` (direct GET of a page) |
 | `browser=True` | `browser_run` (CDP / JS rendering) |
-| `observability=True` | `query_logs`, `query_metrics` |
 | `worktree=True` | `enter_worktree`, `exit_worktree` |
 | `code_intel=True` | `lsp`, `execute_code` |
 | `plan=True` | `plan_show` |

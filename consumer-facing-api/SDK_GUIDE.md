@@ -50,9 +50,9 @@ def build_harness(
     working_memory: bool = False,    # opt-in task scratchpad + memory_propose seam
     tasks: bool = False,             # background task_* tools
     cron: bool = False,              # cron_* + remote_trigger
-    web: bool = False,               # web_search / web_fetch / web_extract
+    web: bool = False,               # web_search / web_fetch
     browser: bool = False,           # browser_run (CDP)
-    observability: bool = False,     # query_logs / query_metrics
+    observability: bool = True,      # query_logs / query_metrics (default on)
     worktree: bool = False,          # enter/exit_worktree
     code_intel: bool = False,        # lsp + execute_code
     plan: bool = False,              # plan_show

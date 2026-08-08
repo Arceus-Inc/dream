@@ -154,10 +154,26 @@ def test_build_harness_omits_pack_tools_by_default(tmp_path: Path) -> None:
     from dream.tools.builtin import default_registry
 
     registry = default_registry()
+    _build(tmp_path, registry=registry, memory=False, observability=False)
+    names = {t.name for t in registry.list_tools()}
+    for pack_tool in (
+        "task_create",
+        "web_search",
+        "browser_run",
+        "execute_code",
+        "plan_show",
+        "query_logs",
+    ):
+        assert pack_tool not in names
+
+
+def test_build_harness_registers_observability_by_default(tmp_path: Path) -> None:
+    from dream.tools.builtin import default_registry
+
+    registry = default_registry()
     _build(tmp_path, registry=registry, memory=False)
     names = {t.name for t in registry.list_tools()}
-    for pack_tool in ("task_create", "web_search", "browser_run", "execute_code", "plan_show"):
-        assert pack_tool not in names
+    assert {"query_logs", "query_metrics"} <= names
 
 
 def test_build_harness_legacy_surface_registers_packs(tmp_path: Path) -> None:
@@ -167,18 +183,27 @@ def test_build_harness_legacy_surface_registers_packs(tmp_path: Path) -> None:
     _build(tmp_path, registry=registry, legacy_surface=True)
     names = {t.name for t in registry.list_tools()}
     assert {"memory_search", "task_create", "web_search", "execute_code"} <= names
+    assert "web_extract" not in names
 
 
 def test_build_harness_individual_pack_flags(tmp_path: Path) -> None:
     from dream.tools.builtin import default_registry
 
     registry = default_registry()
-    _build(tmp_path, registry=registry, memory=False, web=True, plan=True)
+    _build(
+        tmp_path,
+        registry=registry,
+        memory=False,
+        observability=False,
+        web=True,
+        plan=True,
+    )
     names = {t.name for t in registry.list_tools()}
     assert {"web_search", "web_fetch", "plan_show"} <= names
+    assert "web_extract" not in names
     assert "task_create" not in names
     assert "browser_run" not in names
-
+    assert "query_logs" not in names
 
 _TASK_MEMORY_TOOLS = {
     "working_memory_read",

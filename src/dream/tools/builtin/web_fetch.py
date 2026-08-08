@@ -1,8 +1,7 @@
 """Default ``web_fetch`` tool -- direct, dependency-free HTTP fetch.
 
-The lean sibling of the Tavily-backed ``web_search`` / ``web_extract``: where
-those need an API key and a browser needs CDP, ``web_fetch`` fetches an
-arbitrary ``http(s)://`` URL over ``httpx`` (egress already in the SDK) and
+The lean sibling of Tavily-backed ``web_search``: where search *finds* URLs,
+``web_fetch`` *reads* them over ``httpx`` (egress already in the SDK) and
 returns the page body as readable text -- no key, no headless browser, no
 external renderer.
 
@@ -102,11 +101,10 @@ class WebFetchTool(BaseTool):
     name = "web_fetch"
     description = (
         "Fetch one http(s) URL with a direct SSRF-guarded GET (no API key, no "
-        "browser). Prefer this for simple static/HTML pages. Use web_extract for "
-        "Tavily-cleaned multi-URL extraction (requires key); use browser_run "
-        "(requires browser=True in build_harness) only when the page needs "
-        "JavaScript rendering or interactive/authenticated flows such as forms "
-        "or logins."
+        "browser). Prefer this for static/HTML page bodies after web_search. "
+        "Use browser_run (requires browser=True in build_harness) only when the "
+        "page needs JavaScript rendering or interactive/authenticated flows such "
+        "as forms or logins."
     )
     declaration = ToolDeclaration(
         risk="external", tier_required=2, timeout_seconds=_DEFAULT_TIMEOUT

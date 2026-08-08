@@ -158,7 +158,7 @@ Registered by [`default_registry()`](src/dream/tools/builtin/__init__.py):
 - **Knowledge:** `skill`, `memory_search`, `memory_get`
 - **Tasks & schedule:** `task_create/get/output/stop/update`, `cron_list/show/create/delete/toggle`, `plan_show`, `todo_write`, `remote_trigger`
 - **Isolation:** `enter_worktree`, `exit_worktree`
-- **Web (tier-2):** `web_search`, `web_extract` (Tavily; needs API key)
+- **Web (tier-2):** `web_search` (Tavily; needs API key), `web_fetch` (direct GET)
 - **Self-observability:** `query_logs`, `query_metrics`
 
 **Opt-in surfaces:** `working_memory_*` + `memory_propose` (`working_memory=True`); `spawn_subagent` (`subagents=SubagentSet(...)`); dynamic `mcp__*` tools after MCP connect.

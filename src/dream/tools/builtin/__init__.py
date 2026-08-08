@@ -40,7 +40,6 @@ from dream.tools.builtin.task_output import TaskOutputTool
 from dream.tools.builtin.task_stop import TaskStopTool
 from dream.tools.builtin.task_update import TaskUpdateTool
 from dream.tools.builtin.todo_write import TodoWriteTool
-from dream.tools.builtin.web_extract import WebExtractTool
 from dream.tools.builtin.web_fetch import WebFetchTool
 from dream.tools.builtin.web_search import WebSearchTool
 from dream.tools.builtin.working_memory import (
@@ -87,7 +86,6 @@ _FULL_ORDER: tuple[str, ...] = (
     "exit_worktree",
     "plan_show",
     "web_search",
-    "web_extract",
     "web_fetch",
     "browser_run",
     "execute_code",
@@ -158,9 +156,8 @@ def register_cron_tools(registry: ToolRegistry) -> None:
 
 
 def register_web_tools(registry: ToolRegistry) -> None:
-    """Register web search / extract / fetch tools."""
+    """Register web search / fetch tools."""
     _register(registry, WebSearchTool())
-    _register(registry, WebExtractTool())
     _register(registry, WebFetchTool())
 
 

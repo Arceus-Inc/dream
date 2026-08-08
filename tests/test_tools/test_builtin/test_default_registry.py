@@ -52,7 +52,6 @@ _PACK_NAMES: frozenset[str] = frozenset(
         "exit_worktree",
         "plan_show",
         "web_search",
-        "web_extract",
         "web_fetch",
         "browser_run",
         "execute_code",
@@ -105,7 +104,6 @@ def test_pack_registration_is_idempotent() -> None:
         "memory_search",
         "memory_get",
         "web_search",
-        "web_extract",
         "web_fetch",
     }
 
@@ -199,7 +197,7 @@ def test_register_helpers_cover_all_pack_names() -> None:
                 "remote_trigger",
             },
         ),
-        (register_web_tools, {"web_search", "web_extract", "web_fetch"}),
+        (register_web_tools, {"web_search", "web_fetch"}),
         (register_browser_tools, {"browser_run"}),
         (register_observability_tools, {"query_logs", "query_metrics"}),
         (register_worktree_tools, {"enter_worktree", "exit_worktree"}),
