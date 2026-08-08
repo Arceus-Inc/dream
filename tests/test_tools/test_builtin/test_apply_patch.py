@@ -281,6 +281,38 @@ async def test_duplicate_destination_is_rejected(
     assert source.read_text(encoding="utf-8") == "source\n"
 
 
+async def test_partial_move_remove_failure_is_rolled_back(
+    tool: ApplyPatchTool, ctx: ToolExecutionContext, tmp_path: Path
+) -> None:
+    source = tmp_path / "source.txt"
+    destination = tmp_path / "dest.txt"
+    source.write_text("source\n", encoding="utf-8")
+    real_unlink = Path.unlink
+
+    def flaky_unlink(self: Path, missing_ok: bool = False) -> None:
+        if self.name == "source.txt":
+            raise OSError("simulated unlink failure")
+        real_unlink(self, missing_ok=missing_ok)
+
+    with patch.object(Path, "unlink", flaky_unlink):
+        result = await tool.execute(
+            {
+                "patch": (
+                    "*** Begin Patch\n"
+                    "*** Update File: source.txt\n"
+                    "*** Move to: dest.txt\n"
+                    "@@\n"
+                    " source\n"
+                    "*** End Patch"
+                )
+            },
+            ctx,
+        )
+    assert result.is_error is True
+    assert source.read_text(encoding="utf-8") == "source\n"
+    assert not destination.exists()
+
+
 async def test_partial_apply_is_rolled_back(
     tool: ApplyPatchTool, ctx: ToolExecutionContext, tmp_path: Path
 ) -> None:

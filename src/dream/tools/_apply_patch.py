@@ -433,7 +433,11 @@ def _apply_file_change(
             raise DiffError(f"Update File missing content: {path}")
         if change.move_path:
             write_fn(change.move_path, change.new_content)
-            remove_fn(path)
+            try:
+                remove_fn(path)
+            except Exception:
+                remove_fn(change.move_path)
+                raise
         else:
             write_fn(path, change.new_content)
 
