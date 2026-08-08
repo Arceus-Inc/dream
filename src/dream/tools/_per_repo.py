@@ -24,12 +24,11 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 from dream.contracts.tool import ToolResult
 from dream.tools._base import BaseTool, RiskClass, ToolDeclaration, ToolEffects
 from dream.tools._context import ToolExecutionContext
-from dream.tools._registry import ToolRegistry, ToolSource
+from dream.tools._registry import ToolCollisionError, ToolRegistry, ToolSource
 from dream.tools.builtin._errors import tool_error
 from dream.tools.builtin.mcp_tool import input_model_from_schema
 
 _NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
-_PLACEHOLDER_RE = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
 
 
 class PerRepoToolError(ValueError):
@@ -185,6 +184,9 @@ def load_per_repo_tools(registry: ToolRegistry, tools_dir: Path) -> PerRepoLoadR
     if findings:
         raise PerRepoToolError(tuple(findings))
 
+    for _path, decl, _tool in declarations:
+        _preflight_per_repo_registration(registry, decl.name)
+
     for path, decl, tool in declarations:
         # Stem should match declared name (operator ergonomics); mismatch warns.
         if path.stem != decl.name:
@@ -245,6 +247,17 @@ def _load_declaration(path: Path) -> tuple[_PerRepoDeclaration, dict[str, object
     return decl, parameters
 
 
+def _preflight_per_repo_registration(registry: ToolRegistry, name: str) -> None:
+    """Fail before mutating ``registry`` when a per-repo name cannot register."""
+    prior_source = registry.source_for(name)
+    if prior_source is None or prior_source is ToolSource.DEFAULT:
+        return
+    raise ToolCollisionError(
+        f"tool name {name!r} already registered "
+        f"(prior source: {prior_source.value}, new source: {ToolSource.PER_REPO.value})"
+    )
+
+
 def _command_placeholders(command: str) -> set[str]:
     """Return field names referenced by a command template."""
     fields: set[str] = set()
@@ -280,8 +293,10 @@ def _resolve_parameters(
 
 def _format_command(template: str, args: Mapping[str, object]) -> str:
     """Substitute ``{name}`` placeholders; shell-quote every substituted value."""
-    # Reject attribute/index formats so ``{foo.bar}`` cannot escape quoting.
-    for _, field_name, format_spec, conversion in Formatter().parse(template):
+    parts: list[str] = []
+    for literal, field_name, format_spec, conversion in Formatter().parse(template):
+        if literal:
+            parts.append(literal)
         if field_name is None:
             continue
         if format_spec or conversion or "." in field_name or "[" in field_name:
@@ -290,12 +305,8 @@ def _format_command(template: str, args: Mapping[str, object]) -> str:
             )
         if field_name not in args or args[field_name] is None:
             raise KeyError(field_name)
-
-    def _replace(match: re.Match[str]) -> str:
-        key = match.group(1)
-        return shlex.quote(str(args[key]))
-
-    return _PLACEHOLDER_RE.sub(_replace, template)
+        parts.append(shlex.quote(str(args[field_name])))
+    return "".join(parts)
 
 
 __all__ = [

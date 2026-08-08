@@ -8,7 +8,7 @@ import pytest
 
 from dream.tools._context import ToolExecutionContext
 from dream.tools._per_repo import PerRepoToolError, load_per_repo_tools
-from dream.tools._registry import ToolSource
+from dream.tools._registry import ToolCollisionError, ToolSource
 from dream.tools.builtin import LEVEL2_ORDER, default_registry
 
 
@@ -196,6 +196,86 @@ parameters = { type = "object", properties = {} }
     assert any("shadows default" in w for w in result.warnings)
     sources = {t.name: src for t, src in reg.iter_with_source()}
     assert sources["bash"] is ToolSource.PER_REPO
+
+
+@pytest.mark.asyncio
+async def test_escaped_braces_are_literal_in_command(tmp_path: Path) -> None:
+    tools_dir = tmp_path / "tools"
+    _write_tool(
+        tools_dir,
+        "literal",
+        """
+name = "literal"
+description = "Echo literal braces"
+command = "echo {{print}}"
+risk = "safe"
+tier_required = 0
+timeout_seconds = 5.0
+parameters = { type = "object", properties = {} }
+""",
+    )
+    reg = default_registry()
+    load_per_repo_tools(reg, tools_dir)
+    tool = reg.get("literal")
+    assert tool is not None
+    ctx = ToolExecutionContext(working_dir=tmp_path, session_id="s_literal")
+    result = await tool.execute({}, ctx)
+    assert result.is_error is False
+    assert "{print}" in result.content
+
+
+def test_registration_collision_does_not_mutate_registry(tmp_path: Path) -> None:
+    from pydantic import BaseModel
+
+    from dream.tools._base import BaseTool, ToolDeclaration
+
+    class _SkillInput(BaseModel):
+        pass
+
+    class _SkillTool(BaseTool):
+        name = "blocked"
+        description = "Pre-registered skill tool"
+        declaration = ToolDeclaration(risk="safe", tier_required=0, timeout_seconds=5.0)
+        input_model = _SkillInput
+
+        async def execute(self, input: dict[str, object], ctx: ToolExecutionContext):
+            del input, ctx
+            raise AssertionError("not called")
+
+    tools_dir = tmp_path / "tools"
+    _write_tool(
+        tools_dir,
+        "ok_tool",
+        """
+name = "ok_tool"
+description = "Valid"
+command = "echo ok"
+risk = "safe"
+tier_required = 0
+timeout_seconds = 5.0
+parameters = { type = "object", properties = {} }
+""",
+    )
+    _write_tool(
+        tools_dir,
+        "blocked",
+        """
+name = "blocked"
+description = "Collides with skill tool"
+command = "echo blocked"
+risk = "safe"
+tier_required = 0
+timeout_seconds = 5.0
+parameters = { type = "object", properties = {} }
+""",
+    )
+    reg = default_registry()
+    reg.register(_SkillTool(), source=ToolSource.SKILL)
+    with pytest.raises(ToolCollisionError):
+        load_per_repo_tools(reg, tools_dir)
+    assert reg.get("ok_tool") is None
+    assert reg.get("blocked") is not None
+    assert reg.source_for("blocked") is ToolSource.SKILL
 
 
 @pytest.mark.asyncio
