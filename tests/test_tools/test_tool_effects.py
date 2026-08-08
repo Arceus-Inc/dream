@@ -16,8 +16,8 @@ from pydantic import BaseModel
 from dream.contracts.tool import ToolResult
 from dream.tools._base import BaseTool, ToolDeclaration, ToolEffects
 from dream.tools._context import ToolExecutionContext
-from dream.tools.builtin.bash import BashTool
 from dream.tools.builtin.apply_patch import ApplyPatchTool
+from dream.tools.builtin.bash import BashTool
 from dream.tools.builtin.file_read import FileReadTool
 from dream.tools.builtin.file_write import FileWriteTool
 

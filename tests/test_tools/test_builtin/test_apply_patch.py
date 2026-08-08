@@ -254,3 +254,67 @@ async def test_empty_patch_refused(tool: ApplyPatchTool, ctx: ToolExecutionConte
     result = await tool.execute({"patch": "   "}, ctx)
     assert result.is_error is True
     assert "empty" in result.metadata["root_cause"].lower()
+
+
+async def test_duplicate_destination_is_rejected(
+    tool: ApplyPatchTool, ctx: ToolExecutionContext, tmp_path: Path
+) -> None:
+    source = tmp_path / "source.txt"
+    source.write_text("source\n", encoding="utf-8")
+    result = await tool.execute(
+        {
+            "patch": (
+                "*** Begin Patch\n"
+                "*** Add File: target.txt\n"
+                "+added\n"
+                "*** Update File: source.txt\n"
+                "*** Move to: target.txt\n"
+                "@@\n"
+                " source\n"
+                "*** End Patch"
+            )
+        },
+        ctx,
+    )
+    assert result.is_error is True
+    assert not (tmp_path / "target.txt").exists()
+    assert source.read_text(encoding="utf-8") == "source\n"
+
+
+async def test_partial_apply_is_rolled_back(
+    tool: ApplyPatchTool, ctx: ToolExecutionContext, tmp_path: Path
+) -> None:
+    first = tmp_path / "first.txt"
+    second = tmp_path / "second.txt"
+    first.write_text("first\n", encoding="utf-8")
+    second.write_text("second\n", encoding="utf-8")
+    real_write = apply_patch_mod.atomic_write_text
+    calls = {"n": 0}
+
+    def flaky_write(path: Path, content: str) -> None:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError("simulated write failure")
+        real_write(path, content)
+
+    with patch.object(apply_patch_mod, "atomic_write_text", side_effect=flaky_write):
+        result = await tool.execute(
+            {
+                "patch": (
+                    "*** Begin Patch\n"
+                    "*** Update File: first.txt\n"
+                    "@@\n"
+                    "-first\n"
+                    "+FIRST\n"
+                    "*** Update File: second.txt\n"
+                    "@@\n"
+                    "-second\n"
+                    "+SECOND\n"
+                    "*** End Patch"
+                )
+            },
+            ctx,
+        )
+    assert result.is_error is True
+    assert first.read_text(encoding="utf-8") == "first\n"
+    assert second.read_text(encoding="utf-8") == "second\n"

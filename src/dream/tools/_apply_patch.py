@@ -119,6 +119,7 @@ class _Parser:
         if not self.startswith(("*** End Patch",)):
             raise DiffError("Missing End Patch")
         self.index += 1
+        _validate_patch_destinations(self.patch)
 
     def parse_update_file(self, text: str) -> PatchAction:
         action = PatchAction(type=ActionType.UPDATE)
@@ -318,6 +319,18 @@ def identify_files_created(text: str) -> list[str]:
     return identify_files_added(text) + identify_files_moved(text)
 
 
+def _validate_patch_destinations(patch: Patch) -> None:
+    """Reject patches where multiple actions target the same destination path."""
+    destinations: list[str] = []
+    for path, action in patch.actions.items():
+        if action.type == ActionType.ADD:
+            destinations.append(path)
+        elif action.type == ActionType.UPDATE and action.move_path:
+            destinations.append(action.move_path)
+    if len(destinations) != len(set(destinations)):
+        raise DiffError("Patch Error: Duplicate destination path")
+
+
 def text_to_patch(text: str, orig: dict[str, str]) -> tuple[Patch, int]:
     lines = text.strip().split("\n")
     if (
@@ -393,21 +406,56 @@ def apply_commit(
     write_fn: Callable[[str, str], None],
     remove_fn: Callable[[str], None],
 ) -> None:
-    for path, change in commit.changes.items():
-        if change.type == ActionType.DELETE:
+    applied: list[tuple[str, FileChange]] = []
+    try:
+        for path, change in commit.changes.items():
+            _apply_file_change(path, change, write_fn, remove_fn)
+            applied.append((path, change))
+    except Exception:
+        _rollback_commit(applied, write_fn, remove_fn)
+        raise
+
+
+def _apply_file_change(
+    path: str,
+    change: FileChange,
+    write_fn: Callable[[str, str], None],
+    remove_fn: Callable[[str], None],
+) -> None:
+    if change.type == ActionType.DELETE:
+        remove_fn(path)
+    elif change.type == ActionType.ADD:
+        if change.new_content is None:
+            raise DiffError(f"Add File missing content: {path}")
+        write_fn(path, change.new_content)
+    elif change.type == ActionType.UPDATE:
+        if change.new_content is None:
+            raise DiffError(f"Update File missing content: {path}")
+        if change.move_path:
+            write_fn(change.move_path, change.new_content)
             remove_fn(path)
-        elif change.type == ActionType.ADD:
-            if change.new_content is None:
-                raise DiffError(f"Add File missing content: {path}")
+        else:
             write_fn(path, change.new_content)
+
+
+def _rollback_commit(
+    applied: list[tuple[str, FileChange]],
+    write_fn: Callable[[str, str], None],
+    remove_fn: Callable[[str], None],
+) -> None:
+    for path, change in reversed(applied):
+        if change.type == ActionType.ADD:
+            remove_fn(path)
+        elif change.type == ActionType.DELETE:
+            if change.old_content is not None:
+                write_fn(path, change.old_content)
         elif change.type == ActionType.UPDATE:
-            if change.new_content is None:
-                raise DiffError(f"Update File missing content: {path}")
             if change.move_path:
-                write_fn(change.move_path, change.new_content)
-                remove_fn(path)
-            else:
-                write_fn(path, change.new_content)
+                remove_fn(change.move_path)
+                if change.old_content is not None:
+                    write_fn(path, change.old_content)
+            elif change.old_content is not None:
+                write_fn(path, change.old_content)
 
 
 def process_patch(
