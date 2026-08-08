@@ -77,7 +77,8 @@ class WebExtractTool(BaseTool):
         "Read page bodies via Tavily extract (needs API key): cleaned article text "
         "with nav/ads stripped, for one or more known URLs. Prefer web_fetch when "
         "you have no key or need a single cheap SSRF-guarded GET. If a result sets "
-        "needs_render=true (JS shell / thin content), escalate to browser_run."
+        "needs_render=true (JS shell / thin content), escalate to browser_run "
+        "(requires browser=True in build_harness)."
     )
     declaration = ToolDeclaration(
         risk="external", tier_required=2, timeout_seconds=_TIMEOUT_SECONDS
