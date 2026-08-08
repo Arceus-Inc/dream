@@ -43,6 +43,7 @@ from dream.engine._messages import (
     TextBlock,
     ToolResultBlock,
     ToolUseBlock,
+    sanitize_conversation_messages,
 )
 from dream.engine._session import run_session
 from dream.events import (
@@ -53,6 +54,17 @@ from dream.events import (
     ToolUseResult,
     ToolUseStart,
     TurnComplete,
+)
+from dream.services.session_store import (
+    SCHEMA_VERSION,
+    SessionCostFields,
+    SessionSnapshot,
+    cost_snapshot_from_fields,
+    extract_tool_calls,
+    is_json_value,
+    json_dict_from_mapping,
+    message_to_record,
+    messages_from_records,
 )
 
 if TYPE_CHECKING:
@@ -176,6 +188,72 @@ class Session:
         ``_transcript`` private attribute directly.
         """
         return self._transcript
+
+    def _effective_max_turns(self) -> int | None:
+        """Resolved turn budget for durable snapshots.
+
+        When ``SessionOptions.max_turns`` is unset, fall back to the bound
+        engine's limit so resume does not inherit a different harness default.
+        """
+        if self.options.max_turns is not None:
+            return self.options.max_turns
+        engine = self._engine
+        if engine is not None:
+            return engine.max_turns
+        return None
+
+    def snapshot(self) -> SessionSnapshot:
+        """Build a durable snapshot of this session's transcript, cost, and options.
+
+        ``max_turns`` and JSON-compatible metadata are persisted. Response
+        formats and non-JSON metadata must be supplied again when resuming.
+
+        Raises ``RuntimeError`` when a ``send`` is in flight — the transcript
+        and cost counters are not stable until the call finishes.
+        """
+        if self._active:
+            raise RuntimeError("cannot snapshot while a send is in flight")
+        from datetime import UTC, datetime
+
+        model = self.options.model or self.model
+        metadata = json_dict_from_mapping(
+            {
+                key: value
+                for key, value in self.options.metadata.items()
+                if isinstance(key, str) and is_json_value(value)
+            }
+        )
+        consistent = sanitize_conversation_messages(list(self._transcript))
+        return SessionSnapshot(
+            schema_version=SCHEMA_VERSION,
+            session_id=self.id,
+            model=model,
+            system_prompt=self.options.system_prompt,
+            cost=cost_snapshot_from_fields(
+                SessionCostFields(
+                    input_tokens=self.cost.input_tokens,
+                    output_tokens=self.cost.output_tokens,
+                    cache_read_tokens=self.cost.cache_read_tokens,
+                    cache_write_tokens=self.cost.cache_write_tokens,
+                    cost_usd=self.cost.cost_usd,
+                )
+            ),
+            messages=[message_to_record(m) for m in consistent],
+            tool_calls=extract_tool_calls(consistent),
+            saved_at=datetime.now(tz=UTC),
+            max_turns=self._effective_max_turns(),
+            metadata=metadata,
+        )
+
+    def restore_from_snapshot(self, snapshot: SessionSnapshot) -> None:
+        """Replace transcript and cost counters from a saved snapshot."""
+        restored = messages_from_records(snapshot.messages)
+        self._transcript[:] = sanitize_conversation_messages(restored)
+        self.cost.input_tokens = snapshot.cost.input_tokens
+        self.cost.output_tokens = snapshot.cost.output_tokens
+        self.cost.cache_read_tokens = snapshot.cost.cache_read_tokens
+        self.cost.cache_write_tokens = snapshot.cost.cache_write_tokens
+        self.cost.cost_usd = snapshot.cost.cost_usd
 
     async def send(self, prompt: str) -> AsyncIterator[Event]:
         """Submit a user prompt and stream typed events back.
