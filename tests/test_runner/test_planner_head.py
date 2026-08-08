@@ -110,7 +110,15 @@ def _valid_reply(
     evaluator_enabled: bool | None = None,
 ) -> str:
     if steps is None:
-        steps = [PlannerStepBody(id="s1", description="do thing one", sprint_target=None, notes="")]
+        steps = [
+            PlannerStepBody(
+                id="s1",
+                description="do thing one",
+                acceptance_criteria=["thing one is done"],
+                sprint_target=None,
+                notes="",
+            )
+        ]
     enabled = True if evaluator_enabled is None else evaluator_enabled
     return PlannerResponse(
         spec_markdown=spec,
@@ -135,7 +143,13 @@ async def test_planner_head_parses_valid_json_reply() -> None:
     assert out.spec_markdown == "# Plan\n\nDo the thing."
     assert out.ledger.task_id == "task-001"
     assert out.ledger.intent == "ship it"
-    assert out.ledger.steps == (LedgerStep(id="s1", description="do thing one"),)
+    assert out.ledger.steps == (
+        LedgerStep(
+            id="s1",
+            description="do thing one",
+            acceptance_criteria=("thing one is done",),
+        ),
+    )
     assert out.ledger.evaluator_enabled is True
 
 
@@ -183,14 +197,26 @@ async def test_planner_head_intent_documents_json_contract() -> None:
 @pytest.mark.asyncio
 async def test_planner_head_strips_json_code_fence() -> None:
     body = _valid_reply(
-        steps=[PlannerStepBody(id="s1", description="first", sprint_target=None, notes="")]
+        steps=[
+            PlannerStepBody(
+                id="s1",
+                description="first",
+                acceptance_criteria=["first is done"],
+                sprint_target=None,
+                notes="",
+            )
+        ]
     )
     harness, _ = _harness_with_reply(f"```json\n{body}\n```")
     head = make_planner_head(harness)
 
     out = await head("task-001", "ship it")
 
-    assert out.ledger.steps == (LedgerStep(id="s1", description="first"),)
+    assert out.ledger.steps == (
+        LedgerStep(
+            id="s1", description="first", acceptance_criteria=("first is done",)
+        ),
+    )
 
 
 @pytest.mark.asyncio

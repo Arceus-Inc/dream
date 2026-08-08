@@ -29,7 +29,11 @@ def _make_planner(*, steps: int = 1, evaluator_enabled: bool = True):
                 intent=intent,
                 created_at=1.0,
                 steps=tuple(
-                    LedgerStep(id=f"s{i}", description=f"do step {i}")
+                    LedgerStep(
+                        id=f"s{i}",
+                        description=f"do step {i}",
+                        acceptance_criteria=(f"step {i} is done",),
+                    )
                     for i in range(1, steps + 1)
                 ),
                 evaluator_enabled=evaluator_enabled,
@@ -37,20 +41,6 @@ def _make_planner(*, steps: int = 1, evaluator_enabled: bool = True):
         )
 
     return planner
-
-
-def _propose(criteria: list[str]):
-    def propose(round_num, log):
-        return list(criteria)
-
-    return propose
-
-
-def _respond():
-    def respond(round_num, log, proposal):
-        return True, None
-
-    return respond
 
 
 def _evaluator_run(*, outcome: str = "pass"):
@@ -79,8 +69,6 @@ def _run(tmp_path: Path, **overrides):
         "worktree_root": tmp_path,
         "planner": _make_planner(),
         "generator_execute": _noop_execute,
-        "evaluator_propose": _propose(["c"]),
-        "generator_respond": _respond(),
         "evaluator_run": _evaluator_run(),
     }
     kwargs.update(overrides)

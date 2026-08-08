@@ -22,6 +22,8 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from dream.runner._role_session import role_session_id
+
 if TYPE_CHECKING:
     from dream.harness import Harness
     from dream.planner import LedgerStep
@@ -151,6 +153,7 @@ def make_generator_head(
     task_intent: str = "",
     harness_dir: Path | None = None,
     observer: RunTaskObserver | None = None,
+    session_scope: str | None = None,
 ) -> Callable[
     [str, int, SprintContract | None, LedgerStep],
     Awaitable[None],
@@ -169,7 +172,14 @@ def make_generator_head(
     ``harness_dir`` is forwarded so per-task role overlays in
     ``{harness_dir}/roles/generator.toml`` are honoured. ``observer``
     is forwarded so the generator's text and tool calls stream live.
+
+    ``session_scope`` names the generator's resumable thread within the task,
+    so successive sprints continue one conversation instead of re-deriving
+    context from the prompt each time.
     """
+    session_id = (
+        None if session_scope is None else role_session_id(session_scope, "generator")
+    )
 
     async def generator(
         task_id: str,
@@ -185,7 +195,11 @@ def make_generator_head(
             task_intent=task_intent,
         )
         await harness.run_role(
-            "generator", prompt, harness_dir=harness_dir, observer=observer
+            "generator",
+            prompt,
+            harness_dir=harness_dir,
+            observer=observer,
+            session_id=session_id,
         )
 
     return generator

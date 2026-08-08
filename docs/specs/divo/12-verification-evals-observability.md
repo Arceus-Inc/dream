@@ -95,8 +95,8 @@ carries that, and is honest that there is no shipped precedent for those parts.
 - The rolling pass-rate metric (per axis / task / session) surfaced to the dream phase (`#11`).
 
 **Out:**
-- The evaluator subagent's *orchestration* — when it spawns, its concurrency, the negotiation
-  (→ `#10`).
+- The evaluator subagent's *orchestration* — when it spawns, its concurrency, and how the contract
+  it judges against is assembled (→ `#10`).
 - The reviewer-loop *mechanics* at session close (→ `#03`; it runs a lightweight version of this).
 - Per-project rubric *content/authoring guidelines* (governance; deferred).
 - OTel **exporter wiring** to external backends (Honeycomb / Tempo / etc.) — deferred; v1 emits
@@ -222,7 +222,7 @@ fixture for the import wizard") · `evidence` (pointer to the failing run's arte
   + verification report + the rubric, **not** the generator's working memory or reasoning.
 - It scores each axis 0–5 with notes, computes `weighted_total` from the per-task weights, and writes
   exactly one evaluation record. It renders `pass | needs-changes | fail` and **stops** — it does not
-  negotiate after the verdict (`#10` criterion #11).
+  reopen the contract after the verdict (`#10` criterion #11).
 
 ### Evaluator calibration
 
@@ -467,7 +467,7 @@ Scenario: Conservative matcher leaves unrecognised failures alone
 
 ## Out of scope
 
-- The evaluator subagent's orchestration / concurrency / negotiation (→ `#10`).
+- The evaluator subagent's orchestration / concurrency / contract assembly (→ `#10`).
 - The reviewer loop's lightweight verification at session close (→ `#03`).
 - Per-project rubric authoring guidelines (governance; deferred).
 - OTel exporter wiring to external backends (Honeycomb / Tempo) — v1 emits OTel-shaped JSONL only.

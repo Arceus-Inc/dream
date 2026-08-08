@@ -15,7 +15,7 @@ import pytest
 
 
 def test_sprint_contract_round_trips_via_to_dict_from_dict() -> None:
-    from dream.sprint import NegotiationEntry, SprintContract
+    from dream.sprint import SprintContract
 
     c = SprintContract(
         task_id="t1",
@@ -29,11 +29,7 @@ def test_sprint_contract_round_trips_via_to_dict_from_dict() -> None:
             {"kind": "lint", "ref": "ruff check src/foo.py"},
         ),
         evaluator_enabled=True,
-        imposed=False,
-        negotiation_log=(
-            NegotiationEntry(ts="2026-01-01T00:00:00", from_role="evaluator", to_role="generator", message="propose: MUST x"),
-            NegotiationEntry(ts="2026-01-01T00:00:01", from_role="generator", to_role="evaluator", message="accept"),
-        ),
+        rubric="be strict",
     )
     rt = SprintContract.from_dict(c.to_dict())
     assert rt == c
@@ -80,7 +76,6 @@ def test_sprint_contract_save_writes_json_atomically(tmp_path: Path) -> None:
     data = json.loads(p.read_text(encoding="utf-8"))
     assert data["task_id"] == "t1"
     assert data["sprint_number"] == 1
-    assert data["imposed"] is False
     assert data["evaluator_enabled"] is True
 
 
@@ -138,23 +133,20 @@ def _minimal_contract_dict() -> dict:
     }
 
 
-@pytest.mark.parametrize("field", ["evaluator_enabled", "imposed"])
-def test_from_dict_parses_real_booleans(field: str) -> None:
+def test_from_dict_parses_real_booleans() -> None:
     from dream.sprint import SprintContract
 
     data = _minimal_contract_dict()
-    data[field] = False
-    contract = SprintContract.from_dict(data)
-    assert getattr(contract, field) is False
+    data["evaluator_enabled"] = False
+    assert SprintContract.from_dict(data).evaluator_enabled is False
 
 
-@pytest.mark.parametrize("field", ["evaluator_enabled", "imposed"])
-def test_from_dict_does_not_coerce_string_false_to_true(field: str) -> None:
+def test_from_dict_does_not_coerce_string_false_to_true() -> None:
     """``bool("false")`` is ``True`` — a malformed contract must not silently
     flip the flag. Strict parsing rejects non-bool values instead."""
     from dream.sprint import SprintContract
 
     data = _minimal_contract_dict()
-    data[field] = "false"
+    data["evaluator_enabled"] = "false"
     with pytest.raises((TypeError, ValueError)):
         SprintContract.from_dict(data)

@@ -361,8 +361,8 @@ when built — they're recorded here so the remaining-work surface isn't lost.
 
 ### `#12d` — Evaluator (rubric-based sprint verdict)
 
-The separate-context **evaluator** that grades a generator's sprint against a
-negotiated rubric and renders `pass | needs-changes | fail`, mapped to the
+The separate-context **evaluator** that grades a generator's sprint against the
+committed contract and renders `pass | needs-changes | fail`, mapped to the
 ledger by `#10` (`pass` → `done`, `needs-changes` → `in_progress`, `fail` →
 `blocked` + tech-debt entry). Writes one **evaluation record** per sprint
 (`docs/evals/{task-id}/sprint-{n}.json`) — the score + rubric outcome.

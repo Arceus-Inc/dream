@@ -11,6 +11,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Session.snapshot` / `restore_from_snapshot`, and `Harness.save_session` /
   `resume_session` so a process restart continues the same transcript (tool-call
   atom intact) with extracted `ToolCallRecord` history.
+- Session handle contract for control planes driving the harness across process
+  boundaries: `Harness.save_session` returns a `SessionHandle` (session id,
+  path, working dir, plus `usage_delta` for the work since the previous save and
+  `usage_total`),   `start_session(session_id=...)` accepts a caller-minted id so
+  a scheduler's task-keyed record and the harness agree without a round-trip,
+  and `Harness.reset_session` drops a spent snapshot. An id that already names
+  a saved snapshot is refused, so two callers landing on the same key get an
+  error rather than saving over each other; `resume_session` continues it and
+  `reset_session` discards it. The transcript stays in dream's own store — a
+  caller persists only the handle.
+- `SessionResumeError` with a typed `reason` (`missing` / `corrupt` /
+  `schema_mismatch` / `working_dir_mismatch`) and `should_clear_handle`, so a
+  failed resume can be recovered (start fresh, clear the handle) without parsing
+  messages. `resume_session` refuses a snapshot taken under another working
+  directory unless `allow_working_dir_change=True`; snapshots record
+  `working_dir` at schema version 2, and a version-1 file — written before the
+  field existed, so with no directory to check — is refused as a
+  `schema_mismatch` rather than resumed anywhere.
+- `SessionHandle`, `SessionSnapshot`, `FileSessionStore`, and
+  `SessionResumeError` are public exports.
+- `Harness.run_role(session_id=...)` names a role thread so it survives the
+  process: the session resumes that snapshot when one is readable and
+  `RunRoleResult.session_handle` carries the pointer plus the run's usage delta.
+  A spent snapshot (never written, or corrupt) starts the thread over under the
+  same name instead of failing the run. A snapshot taken under another working
+  directory is left alone — the run gets a fresh unnamed session and no handle,
+  so the transcript stays resumable from the workspace that wrote it. Omitting
+  `session_id` persists nothing, as before.
+- `Harness.run_task(session_scope=...)` makes a whole task resumable off one
+  key: each autowired head runs in its own thread under that scope
+  (`{scope}:planner`, `{scope}:generator`, `{scope}:evaluator`), so a later
+  call with the same scope continues those conversations instead of restarting
+  them. Explicitly supplied heads are untouched.
+- `LedgerStep.acceptance_criteria`: the planner names what "done" means for each
+  step alongside the step itself, and the planner response schema now requires
+  at least one criterion per step.
 - Level-2 ``apply_patch`` (Codex multi-hunk add/update/delete/move) — the sole
   surgical edit tool; former ``edit_file`` removed.
 - Spec 05 per-repo tools: discover ``.harness/tools/{name}.toml``, validate
@@ -77,8 +113,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The default `evaluator` role ships with `bash` and `permission_mode="default"`
   so verification runs inside the judging session; the harness-side oracle is
   gone from the evaluator head.
+- **Breaking:** the sprint contract is built from the plan instead of being
+  negotiated. `run_task` takes three heads (`planner`, `generator_execute`,
+  `evaluator_run`) rather than five; the contract for a sprint is assembled from
+  the ledger step's `acceptance_criteria` plus any items a prior
+  `needs-changes` verdict left unresolved. This removes two to six LLM role
+  sessions per sprint that ran before any code was written — a typical sprint
+  costs two sessions instead of four. `SprintContract` drops `imposed` and
+  `negotiation_log`; older contract files still load, those fields are ignored.
 
 ### Removed
+- `dream.sprint.negotiate_contract` / `negotiate_contract_async` /
+  `build_contract_from_negotiation` / `NegotiationResult` / `NegotiationEntry` /
+  `EvaluatorPropose` / `GeneratorRespond`, and the
+  `make_evaluator_propose_head` / `make_generator_respond_head` factories with
+  their parse errors. Use `dream.sprint.build_contract_from_step`.
 - ``edit_file`` / ``FileEditTool`` — use ``apply_patch`` for all surgical edits.
 - ``web_extract`` / ``WebExtractTool`` — redundant with ``web_fetch``; use
   ``web_fetch`` for page bodies (and ``browser_run`` when JS is required).

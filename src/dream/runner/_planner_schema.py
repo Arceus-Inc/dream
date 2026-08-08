@@ -30,6 +30,12 @@ class PlannerStepBody(BaseModel):
 
     id: str = Field(min_length=1)
     description: str = Field(min_length=1)
+    acceptance_criteria: list[str] = Field(min_length=1)
+    """What the evaluator will check for this step.
+
+    Required: naming the work and naming its bar is one judgement, and asking
+    for both here is what removes the propose/respond exchange from the sprint.
+    """
     sprint_target: int | None
     notes: str
 

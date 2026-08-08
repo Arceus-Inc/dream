@@ -10,10 +10,15 @@ The model emits one JSON object matching :class:`PlannerResponse`::
     {
       "spec_markdown": "# narrative ...",
       "ledger": {
-        "steps": [{"id": "...", "description": "..."}],
+        "steps": [
+          {"id": "...", "description": "...", "acceptance_criteria": ["..."]}
+        ],
         "evaluator_enabled": true
       }
     }
+
+Each step names its own acceptance criteria: the sprint contract is built
+straight from them, so nothing is negotiated once planning is done.
 
 :func:`ask_until_parsed` remains the outer retry when local validation fails.
 """
@@ -31,6 +36,7 @@ from dream.api.response_format import ResponseFormat
 from dream.planner import LedgerStep, PlannerLedger, PlannerOutput
 from dream.runner._head_retry import ask_until_parsed
 from dream.runner._planner_schema import PLANNER_RESPONSE_SCHEMA, PlannerResponse
+from dream.runner._role_session import role_session_id
 from dream.session import SessionOptions
 
 if TYPE_CHECKING:
@@ -57,6 +63,7 @@ _LEDGER_EXAMPLE = """\
   "ledger": {
     "steps": [
       {"id": "<unique-slug>", "description": "<one sentence>",
+       "acceptance_criteria": ["<checkable statement>", "..."],
        "sprint_target": null, "notes": ""}
     ],
     "evaluator_enabled": true
@@ -80,10 +87,20 @@ PLANNER_INSTRUCTION_TEMPLATE = (
     "Requirements:\n"
     '- "spec_markdown" must be non-empty markdown.\n'
     '- "ledger.steps" must contain at least one step.\n'
-    '- Each step needs "id" (string) and "description" (string).\n'
+    '- Each step needs "id" (string), "description" (string), and\n'
+    '  "acceptance_criteria" (at least one string).\n'
     '- "sprint_target" (int|null) and "notes" (string) are optional.\n'
     '- Set "evaluator_enabled": false only when verifier signal is\n'
     "  unavailable or actively misleading; default true.\n"
+    "\n"
+    "ACCEPTANCE CRITERIA\n"
+    "-------------------\n"
+    "- These are the bar a separate evaluator will judge the step against,\n"
+    "  with no chance to renegotiate. Write what must be observably true\n"
+    "  when the step is done, not how to do it.\n"
+    "- Prefer criteria something can check: a command that passes, a\n"
+    "  behaviour that holds, a file that exists with named content.\n"
+    "- Two or three per step is usually right. One is fine for a small step.\n"
     "\n"
     "DECOMPOSITION\n"
     "-------------\n"
@@ -123,6 +140,7 @@ def parse_planner_response(reply: str, *, task_id: str, intent: str) -> PlannerO
         LedgerStep(
             id=step.id,
             description=step.description,
+            acceptance_criteria=tuple(step.acceptance_criteria),
             sprint_target=step.sprint_target,
             notes=step.notes,
         )
@@ -155,13 +173,19 @@ def make_planner_head(
     *,
     harness_dir: Path | None = None,
     observer: RunTaskObserver | None = None,
+    session_scope: str | None = None,
 ) -> Callable[[str, str], Awaitable[PlannerOutput]]:
     """Build a :data:`PlannerCallable` driven by :meth:`Harness.run_role`.
 
     The returned coroutine asks the planner LLM for a schema-constrained JSON
     object, parses the reply, and yields a :class:`PlannerOutput` ready for
     :func:`dream.planner.run_planner` to commit to the worktree.
+
+    ``session_scope`` names the planner's resumable thread within the task, so
+    a later call continues the conversation instead of starting over. Parse
+    retries share that thread, which lets the model see its own rejected reply.
     """
+    session_id = None if session_scope is None else role_session_id(session_scope, "planner")
     response_format = ResponseFormat.for_schema(
         PLANNER_RESPONSE_SCHEMA,
         name="planner_response",
@@ -178,6 +202,7 @@ def make_planner_head(
                 harness_dir=harness_dir,
                 observer=observer,
                 options=SessionOptions(response_format=response_format),
+                session_id=session_id,
             )
 
         def _on_retry(attempt: int, err: Exception) -> None:

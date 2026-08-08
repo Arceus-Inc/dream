@@ -62,7 +62,7 @@ def test_stdio_observer_writes_planner_lines() -> None:
     assert "4 steps" in out
 
 
-def test_stdio_observer_writes_sprint_and_negotiation_lines() -> None:
+def test_stdio_observer_writes_sprint_and_contract_lines() -> None:
     buf = io.StringIO()
     obs = StdioObserver(stream=buf)
 
@@ -73,9 +73,6 @@ def test_stdio_observer_writes_sprint_and_negotiation_lines() -> None:
             "step_id": "s1",
             "step_description": "Wire the thing",
         }
-    )
-    obs.on_event(
-        {"kind": "negotiation.imposed", "sprint_number": 1, "rounds": 3}
     )
     obs.on_event(
         {
@@ -96,7 +93,6 @@ def test_stdio_observer_writes_sprint_and_negotiation_lines() -> None:
     out = buf.getvalue()
     assert "[sprint 1] start step='s1'" in out
     assert "Wire the thing" in out
-    assert "negotiation cap hit" in out
     assert "contract written" in out
     assert "[sprint 1] done step='s1' outcome=pass" in out
 
