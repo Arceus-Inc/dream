@@ -420,10 +420,15 @@ handle = await harness.save_session(session)
 try:
     session = await harness.resume_session(stored_id)
 except SessionResumeError as exc:
-    if exc.should_clear_handle:
-        await harness.reset_session(stored_id)     # spent; start fresh
+    if not exc.should_clear_handle:
+        raise                                      # intact elsewhere; not yours to replace
+    await harness.reset_session(stored_id)         # spent; frees the name
     session = await harness.start_session(opts, session_id=stored_id)
 ```
+
+`start_session` refuses an id that already names a saved snapshot, so two
+callers picking the same key get an error instead of quietly saving over each
+other. Clearing it first is how you say you meant to.
 
 `run_role` takes the same argument, so a role thread continues across beats
 without the caller touching sessions at all:
@@ -433,8 +438,11 @@ result = await harness.run_role("generator", intent, session_id=f"task-{task_id}
 handle = result.session_handle          # None when session_id is omitted
 ```
 
-An unusable snapshot there starts the thread over under the same name rather
-than failing the run, so one stable key per thread is all a caller keeps.
+A spent snapshot there (never written, or corrupt) starts the thread over under
+the same name rather than failing the run, so one stable key per thread is all
+a caller keeps. A snapshot from another working directory is not spent: the run
+gets a fresh unnamed session and `session_handle` comes back `None`, leaving
+that transcript resumable from the workspace it belongs to.
 
 For a whole task, `run_task` takes a scope instead of a session id and gives
 each role its own thread beneath it:

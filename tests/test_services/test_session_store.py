@@ -19,7 +19,12 @@ from dream.engine._messages import (
 )
 from dream.errors import SessionResumeError
 from dream.harness import Harness, HarnessConfig
-from dream.services.session_store import FileSessionStore
+from dream.services.session_store import (
+    SCHEMA_VERSION,
+    FileSessionStore,
+    SessionCostSnapshot,
+    SessionSnapshot,
+)
 from dream.session import Session, SessionOptions
 from tests.test_engine._fakes import FakeDispatcher, FakeStreamer, FakeTurn
 
@@ -80,7 +85,7 @@ def test_save_load_roundtrip_preserves_messages_tool_calls_and_cost(tmp_path: Pa
     assert path.exists()
 
     loaded = store.load("abc123")
-    assert loaded.schema_version == 1
+    assert loaded.schema_version == SCHEMA_VERSION
     assert loaded.session_id == "abc123"
     assert loaded.model == "gpt-test"
     assert loaded.system_prompt == "be helpful"
@@ -167,10 +172,53 @@ def test_load_future_schema_reports_mismatch(tmp_path: Path) -> None:
 
 def test_load_truncated_payload_reports_corrupt(tmp_path: Path) -> None:
     store = FileSessionStore(tmp_path)
-    store.path_for("s1").write_text('{"schema_version": 1}', encoding="utf-8")
+    store.path_for("s1").write_text(f'{{"schema_version": {SCHEMA_VERSION}}}', encoding="utf-8")
     with pytest.raises(SessionResumeError) as excinfo:
         store.load("s1")
     assert excinfo.value.reason == "corrupt"
+
+
+def test_load_pre_working_dir_schema_reports_mismatch(tmp_path: Path) -> None:
+    """A snapshot from before directory binding must not resume anywhere.
+
+    Version 1 had no ``working_dir`` field, so it decodes as ``None`` and the
+    resume check has nothing to compare against — the transcript would drive
+    file and shell work in whatever workspace happened to open it. Reading it
+    as a foreign schema keeps the binding something a caller cannot skip by
+    holding an old file.
+    """
+    store = FileSessionStore(tmp_path)
+    store.path_for("s1").write_text('{"schema_version": 1}', encoding="utf-8")
+
+    with pytest.raises(SessionResumeError) as excinfo:
+        store.load("s1")
+    assert excinfo.value.reason == "schema_mismatch"
+    assert excinfo.value.should_clear_handle is True
+
+
+def test_snapshot_optional_fields_are_keyword_only() -> None:
+    """Field order is not part of the snapshot's contract.
+
+    Every optional field is one the harness learned to persist later, and each
+    new one lands next to the last. Passing them positionally would silently
+    bind ``metadata`` to ``working_dir`` the next time that happens, so the
+    dataclass refuses positionally.
+    """
+    session = _session_with_tool_transcript()
+    snapshot = session.snapshot()
+
+    with pytest.raises(TypeError):
+        SessionSnapshot(  # type: ignore[misc]
+            SCHEMA_VERSION,
+            "s1",
+            "m1",
+            None,
+            SessionCostSnapshot(0, 0, 0, 0, 0.0),
+            [],
+            [],
+            snapshot.saved_at,
+            3,
+        )
 
 
 def test_list_and_delete_sessions(tmp_path: Path) -> None:
@@ -459,6 +507,28 @@ async def test_resume_rejects_working_dir_change(tmp_path: Path) -> None:
 
     opted_in = await moved.resume_session("s1", allow_working_dir_change=True)
     assert opted_in.id == "s1"
+
+
+async def test_start_session_refuses_an_id_that_already_has_a_snapshot(
+    tmp_path: Path,
+) -> None:
+    """Minting an id must not land on someone else's transcript.
+
+    Two scheduler tasks that pick the same key would otherwise open independent
+    sessions and save over each other, and both callers would keep a handle
+    that looks fine. Continuing or discarding an occupied id is a decision the
+    caller has to make out loud.
+    """
+    harness = _handle_harness(tmp_path, working_dir=tmp_path)
+    session = await harness.start_session(session_id="s1")
+    await harness.save_session(session)
+
+    with pytest.raises(ValueError, match="already has a saved snapshot"):
+        await harness.start_session(session_id="s1")
+
+    assert await harness.reset_session("s1") is True
+    reused = await harness.start_session(session_id="s1")
+    assert reused.id == "s1"
 
 
 async def test_reset_session_clears_snapshot(tmp_path: Path) -> None:

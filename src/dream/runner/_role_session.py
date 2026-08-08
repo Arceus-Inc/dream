@@ -160,10 +160,12 @@ async def run_role(
 
     ``session_id`` names the role thread so it survives the process: the
     session resumes that snapshot when one is readable, and the run's
-    :class:`SessionHandle` comes back on the result. An unusable snapshot
-    (never written, corrupt, or taken under another working directory) starts
-    the thread over under the same name rather than failing the run — the
-    caller keeps one stable key either way. Without it, nothing is persisted.
+    :class:`SessionHandle` comes back on the result. A spent snapshot (never
+    written, or corrupt) starts the thread over under the same name rather
+    than failing the run, so the caller keeps one stable key. A snapshot taken
+    under another working directory is not spent — it stays where it is, this
+    run gets a fresh unnamed session, and the result carries no handle.
+    Without ``session_id``, nothing is persisted.
     """
     manifest = resolve_role_manifest(role, harness_dir=harness_dir)
     base = options if options is not None else SessionOptions()
@@ -191,7 +193,7 @@ async def run_role(
         metadata=metadata,
     )
 
-    session = await _open_role_session(harness, effective, session_id)
+    session, owns_session_id = await _open_role_session(harness, effective, session_id)
 
     role_label = str(manifest.name)
 
@@ -271,7 +273,7 @@ async def run_role(
     # holds the history explaining why, which the next run of this thread
     # should see. A hard crash (an exception, not an ``Error`` event) skips
     # this and leaves the previous snapshot standing.
-    handle = None if session_id is None else await harness.save_session(session)
+    handle = await harness.save_session(session) if owns_session_id else None
 
     if error is not None:
         raise RoleSessionError(
@@ -292,16 +294,25 @@ async def _open_role_session(
     harness: Harness,
     options: SessionOptions,
     session_id: str | None,
-) -> Session:
-    """Resume the named role thread, or open a fresh one under that name."""
+) -> tuple[Session, bool]:
+    """Open the named role thread; say whether this run may save under it.
+
+    Returns the session and whether it owns ``session_id``. Only a run that
+    owns the name is allowed to write a snapshot there.
+    """
     if session_id is None:
-        return await harness.start_session(options)
+        return await harness.start_session(options), False
     try:
-        return await harness.resume_session(session_id, options=options)
+        return await harness.resume_session(session_id, options=options), True
     except SessionResumeError as exc:
+        if not exc.should_clear_handle:
+            # A working-directory mismatch leaves the snapshot intact and still
+            # resumable from the workspace that wrote it. Run the role on an
+            # anonymous session so finishing here can't save over it.
+            return await harness.start_session(options), False
         # One retry with a clean thread, the same fallback a coding CLI makes
         # when ``--resume`` is refused: losing continuity beats stranding the
-        # role. Drop a spent snapshot so later runs don't re-pay the failure.
-        if exc.should_clear_handle:
-            await harness.reset_session(session_id)
-        return await harness.start_session(options, session_id=session_id)
+        # role. Drop the spent snapshot so the name is free and later runs
+        # don't re-pay the failure.
+        await harness.reset_session(session_id)
+        return await harness.start_session(options, session_id=session_id), True

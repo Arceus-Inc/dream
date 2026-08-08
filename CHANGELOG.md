@@ -14,24 +14,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Session handle contract for control planes driving the harness across process
   boundaries: `Harness.save_session` returns a `SessionHandle` (session id,
   path, working dir, plus `usage_delta` for the work since the previous save and
-  `usage_total`), `start_session(session_id=...)` accepts a caller-minted id so
+  `usage_total`),   `start_session(session_id=...)` accepts a caller-minted id so
   a scheduler's task-keyed record and the harness agree without a round-trip,
-  and `Harness.reset_session` drops a spent snapshot. The transcript stays in
-  dream's own store — a caller persists only the handle.
+  and `Harness.reset_session` drops a spent snapshot. An id that already names
+  a saved snapshot is refused, so two callers landing on the same key get an
+  error rather than saving over each other; `resume_session` continues it and
+  `reset_session` discards it. The transcript stays in dream's own store — a
+  caller persists only the handle.
 - `SessionResumeError` with a typed `reason` (`missing` / `corrupt` /
   `schema_mismatch` / `working_dir_mismatch`) and `should_clear_handle`, so a
   failed resume can be recovered (start fresh, clear the handle) without parsing
   messages. `resume_session` refuses a snapshot taken under another working
-  directory unless `allow_working_dir_change=True`; snapshots now record
-  `working_dir`.
+  directory unless `allow_working_dir_change=True`; snapshots record
+  `working_dir` at schema version 2, and a version-1 file — written before the
+  field existed, so with no directory to check — is refused as a
+  `schema_mismatch` rather than resumed anywhere.
 - `SessionHandle`, `SessionSnapshot`, `FileSessionStore`, and
   `SessionResumeError` are public exports.
 - `Harness.run_role(session_id=...)` names a role thread so it survives the
   process: the session resumes that snapshot when one is readable and
   `RunRoleResult.session_handle` carries the pointer plus the run's usage delta.
-  An unusable snapshot (never written, corrupt, or taken under another working
-  directory) starts the thread over under the same name instead of failing the
-  run. Omitting `session_id` persists nothing, as before.
+  A spent snapshot (never written, or corrupt) starts the thread over under the
+  same name instead of failing the run. A snapshot taken under another working
+  directory is left alone — the run gets a fresh unnamed session and no handle,
+  so the transcript stays resumable from the workspace that wrote it. Omitting
+  `session_id` persists nothing, as before.
 - `Harness.run_task(session_scope=...)` makes a whole task resumable off one
   key: each autowired head runs in its own thread under that scope
   (`{scope}:planner`, `{scope}:generator`, `{scope}:evaluator`), so a later

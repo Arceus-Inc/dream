@@ -167,6 +167,7 @@ class Harness:
         options: SessionOptions | None = None,
         *,
         session_id: str | None = None,
+        store: FileSessionStore | None = None,
     ) -> Session:
         """Create a new Session, binding an engine if one is configured.
 
@@ -180,28 +181,54 @@ class Harness:
         ``session_id`` lets a caller mint the id itself so its own records
         (a task-keyed row in a scheduler) and the harness agree without a
         round-trip; a random id is generated when omitted. Ids that could
-        escape the sessions root are rejected.
+        escape the sessions root are rejected, and so is an id that already
+        names a saved snapshot — two callers landing on the same key would
+        otherwise save over each other while both still hold a handle. Continue
+        that session with :meth:`resume_session` or clear it with
+        :meth:`reset_session` first.
         """
         import uuid
 
         await self._ensure_open()
         opts = options or SessionOptions()
         resolved_id = uuid.uuid4().hex if session_id is None else checked_session_id(session_id)
+        if session_id is not None:
+            self._refuse_occupied_id(resolved_id, store)
         engine = None
         if self.config._engine_factory is not None:
             engine = self.config._engine_factory(resolved_id, opts)
         return Session(id=resolved_id, options=opts, _engine=engine)
 
-    def _resolve_session_store(self, store: FileSessionStore | None) -> FileSessionStore:
+    def _maybe_session_store(self, store: FileSessionStore | None) -> FileSessionStore | None:
         if store is not None:
             return store
         if self.config.session_store is not None:
             return self.config.session_store
         if self.config.paths is not None:
             return FileSessionStore(self.config.paths.sessions_dir)
+        return None
+
+    def _resolve_session_store(self, store: FileSessionStore | None) -> FileSessionStore:
+        resolved = self._maybe_session_store(store)
+        if resolved is None:
+            raise ValueError(
+                "save_session/resume_session requires store=..., "
+                "HarnessConfig.session_store, or HarnessConfig.paths"
+            )
+        return resolved
+
+    def _refuse_occupied_id(self, session_id: str, store: FileSessionStore | None) -> None:
+        """Keep a caller-minted id off a snapshot that is still someone's.
+
+        Nothing to check when no store is configured: with nowhere to persist,
+        an id collision costs nothing.
+        """
+        resolved = self._maybe_session_store(store)
+        if resolved is None or not resolved.exists(session_id):
+            return
         raise ValueError(
-            "save_session/resume_session requires store=..., "
-            "HarnessConfig.session_store, or HarnessConfig.paths"
+            f"session {session_id!r} already has a saved snapshot; "
+            "resume_session to continue it, or reset_session to discard it"
         )
 
     async def save_session(

@@ -9,8 +9,10 @@ CLI. What this pins:
   ``usage_delta`` scoped to that run.
 - A second call under the same name resumes the transcript rather than
   restarting the conversation.
-- An unusable snapshot (corrupt, foreign working directory) never strands the
-  role: it starts the thread over under the same name instead of raising.
+- A spent snapshot (never written, corrupt) never strands the role: it starts
+  the thread over under the same name instead of raising.
+- A snapshot from another working directory is still someone's to resume, so
+  the run starts fresh and saves nothing rather than overwriting it.
 """
 
 from __future__ import annotations
@@ -123,12 +125,26 @@ async def test_corrupt_snapshot_starts_thread_over_under_same_id(tmp_path: Path)
     assert store.load("beat-1").session_id == "beat-1"
 
 
-async def test_snapshot_from_another_working_dir_starts_thread_over(tmp_path: Path) -> None:
+async def test_snapshot_from_another_working_dir_runs_fresh_and_unsaved(
+    tmp_path: Path,
+) -> None:
+    """A foreign workspace gets a fresh conversation, not the other one's slot.
+
+    The snapshot belongs to the workspace that wrote it and stays resumable
+    there, so this run can neither read it nor save over it. Restarting the
+    conversation keeps the role working; leaving the file alone keeps the
+    original thread's owner able to come back to it.
+    """
     streamer = FakeStreamer(
-        turns=[FakeTurn(text_chunks=["first"]), FakeTurn(text_chunks=["second"])]
+        turns=[
+            FakeTurn(text_chunks=["first"]),
+            FakeTurn(text_chunks=["second"]),
+            FakeTurn(text_chunks=["third"]),
+        ]
     )
     harness, store = _harness(tmp_path, streamer)
     await harness.run_role("generator", "first ask", session_id="beat-1")
+    original = store.load("beat-1")
 
     moved = Harness(
         HarnessConfig(
@@ -138,10 +154,19 @@ async def test_snapshot_from_another_working_dir_starts_thread_over(tmp_path: Pa
             _engine_factory=harness.config._engine_factory,
         )
     )
-    await moved.run_role("generator", "second ask", session_id="beat-1")
+    result = await moved.run_role("generator", "second ask", session_id="beat-1")
 
     # A transcript about other files is not continuity — the thread restarts.
     assert [m.text for m in streamer.calls[1]] == ["second ask"]
+    # ...and nothing this run did was written under a name it does not own.
+    assert result.session_handle is None
+    assert store.load("beat-1").saved_at == original.saved_at
+    assert store.load("beat-1").messages == original.messages
+
+    # The original workspace can still pick its thread back up.
+    resumed = await harness.run_role("generator", "third ask", session_id="beat-1")
+    assert [m.text for m in streamer.calls[2]] == ["first ask", "first", "third ask"]
+    assert resumed.session_handle is not None
 
 
 async def test_transcript_is_saved_when_the_role_session_errors(tmp_path: Path) -> None:

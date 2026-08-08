@@ -35,7 +35,11 @@ from dream.engine._messages import (
 from dream.errors import SessionResumeError
 from dream.utils.fs import atomic_write_text
 
-SCHEMA_VERSION = 1
+# Bumped to 2 when snapshots started recording ``working_dir``. A version-1 file
+# has no directory to check, so resuming one would silently skip the binding
+# that keeps a transcript in the workspace it was written for; reading it as a
+# foreign schema refuses it instead.
+SCHEMA_VERSION = 2
 
 __all__ = [
     "SCHEMA_VERSION",
@@ -127,12 +131,15 @@ class SessionSnapshot:
     messages: list[ConversationMessageRecord]
     tool_calls: list[ToolCallRecord]
     saved_at: datetime
-    max_turns: int | None = None
+    # Keyword-only from here down. Each of these is something the harness
+    # learned to persist after the fact, and the next one will land beside
+    # them; positional callers would then bind an old value to a new field.
+    max_turns: int | None = field(default=None, kw_only=True)
     # The directory the session did its work in. A resume into a different
     # working directory replays a transcript about other files, so the harness
     # refuses it unless the caller opts in. ``None`` for engine-less sessions.
-    working_dir: str | None = None
-    metadata: dict[str, JsonValue] = field(default_factory=dict)
+    working_dir: str | None = field(default=None, kw_only=True)
+    metadata: dict[str, JsonValue] = field(default_factory=dict, kw_only=True)
 
 
 @dataclass(frozen=True)
