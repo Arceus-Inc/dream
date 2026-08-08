@@ -401,6 +401,37 @@ Below `run_task` you also have:
 - `await harness.start_session(SessionOptions(...))` — a raw engine session
   (per-session `system_prompt` / `model` / `max_turns` overrides).
 
+### Resuming a session in another process
+
+The harness keeps its own transcript of record under
+`DreamPaths.sessions_dir` (`~/.dream/data/sessions/{id}.json`, `DREAM_HOME`
+honoured). If you are scheduling work in short windows — a control plane that
+wakes an agent, lets it run, and exits — persist the returned handle against
+whatever key you already have for the work, and resume through it:
+
+```python
+session = await harness.start_session(opts, session_id=f"task-{task_id}")
+...                                        # send / stream events
+handle = await harness.save_session(session)
+
+# Store handle.session_id (and handle.usage_delta for per-run billing).
+# Next window:
+try:
+    session = await harness.resume_session(stored_id)
+except SessionResumeError as exc:
+    if exc.should_clear_handle:
+        await harness.reset_session(stored_id)     # spent; start fresh
+    session = await harness.start_session(opts, session_id=stored_id)
+```
+
+Keep only the handle, not a second copy of the transcript. `usage_delta`
+covers the work since the previous save, so you never have to difference
+cumulative totals. A resume whose snapshot was taken under a different working
+directory raises `working_dir_mismatch` rather than replaying a transcript
+about other files; pass `allow_working_dir_change=True` when that is what you
+want. Give each concurrent agent its own `DREAM_HOME` (or an explicit
+`FileSessionStore`) so their session roots stay isolated.
+
 ## 9. Always-on agents
 
 For long-running agents, wrap the harness in the runtime:

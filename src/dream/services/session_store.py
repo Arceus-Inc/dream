@@ -4,6 +4,12 @@
 directory (typically ``DreamPaths.sessions_dir``). Snapshots carry the
 transcript, extracted tool-call records, cost counters, and session
 metadata needed to restore a ``Session`` without the in-memory engine.
+
+This store is the harness's own transcript of record — the equivalent of a
+coding CLI's on-disk session log. A control plane driving the harness across
+process boundaries is expected to persist only the returned
+:class:`SessionHandle` (session id + working dir + usage), not a second copy
+of the transcript, and to resume through ``Harness.resume_session``.
 """
 
 from __future__ import annotations
@@ -26,6 +32,7 @@ from dream.engine._messages import (
     ToolResultBlock,
     ToolUseBlock,
 )
+from dream.errors import SessionResumeError
 from dream.utils.fs import atomic_write_text
 
 SCHEMA_VERSION = 1
@@ -37,8 +44,10 @@ __all__ = [
     "FileSessionStore",
     "SessionCostFields",
     "SessionCostSnapshot",
+    "SessionHandle",
     "SessionSnapshot",
     "ToolCallRecord",
+    "checked_session_id",
     "cost_snapshot_from_fields",
     "extract_tool_calls",
     "is_json_value",
@@ -119,10 +128,34 @@ class SessionSnapshot:
     tool_calls: list[ToolCallRecord]
     saved_at: datetime
     max_turns: int | None = None
+    # The directory the session did its work in. A resume into a different
+    # working directory replays a transcript about other files, so the harness
+    # refuses it unless the caller opts in. ``None`` for engine-less sessions.
+    working_dir: str | None = None
     metadata: dict[str, JsonValue] = field(default_factory=dict)
 
 
-def _checked_session_id(session_id: str) -> str:
+@dataclass(frozen=True)
+class SessionHandle:
+    """What a caller persists to resume a session later.
+
+    The durable pointer at the transcript the harness already owns — the
+    control-plane row a scheduler keys by task. ``usage_delta`` covers only the
+    work since the previous save so a caller can bill per run without
+    differencing cumulative totals itself; ``usage_total`` is the session's
+    running total.
+    """
+
+    session_id: str
+    path: Path
+    working_dir: str | None
+    schema_version: int
+    saved_at: datetime
+    usage_delta: SessionCostSnapshot
+    usage_total: SessionCostSnapshot
+
+
+def checked_session_id(session_id: str) -> str:
     """Reject a session id that could escape the sessions root."""
     if (
         not session_id
@@ -242,6 +275,7 @@ def snapshot_to_dict(snapshot: SessionSnapshot) -> dict[str, object]:
         "model": snapshot.model,
         "system_prompt": snapshot.system_prompt,
         "max_turns": snapshot.max_turns,
+        "working_dir": snapshot.working_dir,
         "metadata": snapshot.metadata,
         "cost": {
             "input_tokens": snapshot.cost.input_tokens,
@@ -270,7 +304,7 @@ def snapshot_from_dict(data: Mapping[str, object]) -> SessionSnapshot:
         schema_version=schema_version,
         session_id=_require_str(data, "session_id"),
         model=_require_str(data, "model"),
-        system_prompt=_optional_str(data.get("system_prompt")),
+        system_prompt=_optional_str(data.get("system_prompt"), label="system_prompt"),
         cost=SessionCostSnapshot(
             input_tokens=_require_int(cost_raw, "input_tokens"),
             output_tokens=_require_int(cost_raw, "output_tokens"),
@@ -282,6 +316,7 @@ def snapshot_from_dict(data: Mapping[str, object]) -> SessionSnapshot:
         tool_calls=[_tool_call_from_dict(item) for item in tool_calls_raw],
         saved_at=datetime.fromisoformat(saved_at_raw),
         max_turns=_optional_int(data.get("max_turns")),
+        working_dir=_optional_str(data.get("working_dir"), label="working_dir"),
         metadata=json_dict_from_mapping(_optional_mapping(data.get("metadata"))),
     )
 
@@ -293,7 +328,7 @@ class FileSessionStore:
         self._root = root
 
     def path_for(self, session_id: str) -> Path:
-        safe_id = _checked_session_id(session_id)
+        safe_id = checked_session_id(session_id)
         return self._root / f"{safe_id}.json"
 
     def save(self, snapshot: SessionSnapshot) -> Path:
@@ -304,17 +339,74 @@ class FileSessionStore:
         return path
 
     def load(self, session_id: str) -> SessionSnapshot:
+        """Read a snapshot, or raise :class:`SessionResumeError`.
+
+        Every failure is typed so a caller holding the handle can tell "never
+        saved" from "written by an older dream" from "truncated file", and pick
+        the matching recovery instead of parsing messages.
+        """
         path = self.path_for(session_id)
         if not path.is_file():
-            raise FileNotFoundError(f"session snapshot not found: {path}")
-        raw = path.read_text(encoding="utf-8")
-        parsed: object = json.loads(raw)
+            raise SessionResumeError(
+                f"session snapshot not found: {path}",
+                reason="missing",
+                session_id=session_id,
+            )
+        try:
+            raw = path.read_text(encoding="utf-8")
+            parsed: object = json.loads(raw)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise SessionResumeError(
+                f"session snapshot unreadable: {path}",
+                reason="corrupt",
+                session_id=session_id,
+                cause=exc,
+            ) from exc
         if not isinstance(parsed, Mapping):
-            raise ValueError(f"expected JSON object in {path}")
-        return snapshot_from_dict(parsed)
+            raise SessionResumeError(
+                f"expected JSON object in {path}",
+                reason="corrupt",
+                session_id=session_id,
+            )
+        version = parsed.get("schema_version")
+        if version != SCHEMA_VERSION:
+            raise SessionResumeError(
+                f"unsupported schema_version {version!r} in {path} "
+                f"(this dream reads {SCHEMA_VERSION})",
+                reason="schema_mismatch",
+                session_id=session_id,
+            )
+        try:
+            return snapshot_from_dict(parsed)
+        except (ValueError, TypeError, KeyError) as exc:
+            raise SessionResumeError(
+                f"session snapshot failed to decode: {path}",
+                reason="corrupt",
+                session_id=session_id,
+                cause=exc,
+            ) from exc
 
     def exists(self, session_id: str) -> bool:
         return self.path_for(session_id).is_file()
+
+    def list_sessions(self) -> list[str]:
+        """Session ids with a snapshot on disk, sorted. Empty when unwritten."""
+        if not self._root.is_dir():
+            return []
+        return sorted(p.stem for p in self._root.glob("*.json") if p.is_file())
+
+    def delete(self, session_id: str) -> bool:
+        """Drop a snapshot. Returns whether a file was actually removed.
+
+        The recovery half of the handle contract: after a failed resume the
+        caller clears the spent snapshot so the next attempt starts clean.
+        """
+        path = self.path_for(session_id)
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return False
+        return True
 
 
 # --- private JSON helpers ----------------------------------------------------
@@ -466,11 +558,11 @@ def _require_bool(data: Mapping[str, object], key: str) -> bool:
     return value
 
 
-def _optional_str(value: object) -> str | None:
+def _optional_str(value: object, *, label: str) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str):
-        raise ValueError("system_prompt must be a string or null")
+        raise ValueError(f"{label} must be a string or null")
     return value
 
 

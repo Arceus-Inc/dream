@@ -11,6 +11,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Session.snapshot` / `restore_from_snapshot`, and `Harness.save_session` /
   `resume_session` so a process restart continues the same transcript (tool-call
   atom intact) with extracted `ToolCallRecord` history.
+- Session handle contract for control planes driving the harness across process
+  boundaries: `Harness.save_session` returns a `SessionHandle` (session id,
+  path, working dir, plus `usage_delta` for the work since the previous save and
+  `usage_total`), `start_session(session_id=...)` accepts a caller-minted id so
+  a scheduler's task-keyed record and the harness agree without a round-trip,
+  and `Harness.reset_session` drops a spent snapshot. The transcript stays in
+  dream's own store — a caller persists only the handle.
+- `SessionResumeError` with a typed `reason` (`missing` / `corrupt` /
+  `schema_mismatch` / `working_dir_mismatch`) and `should_clear_handle`, so a
+  failed resume can be recovered (start fresh, clear the handle) without parsing
+  messages. `resume_session` refuses a snapshot taken under another working
+  directory unless `allow_working_dir_change=True`; snapshots now record
+  `working_dir`.
+- `SessionHandle`, `SessionSnapshot`, `FileSessionStore`, and
+  `SessionResumeError` are public exports.
 - Level-2 ``apply_patch`` (Codex multi-hunk add/update/delete/move) — the sole
   surgical edit tool; former ``edit_file`` removed.
 - Spec 05 per-repo tools: discover ``.harness/tools/{name}.toml``, validate

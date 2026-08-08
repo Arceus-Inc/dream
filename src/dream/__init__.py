@@ -35,6 +35,7 @@ from dream.errors import (
     ProviderError,
     RunTaskError,
     SandboxError,
+    SessionResumeError,
     TaskCancelled,
 )
 from dream.events import (
@@ -50,6 +51,11 @@ from dream.events import (
 )
 from dream.harness import Harness, HarnessConfig
 from dream.observability import tail_events
+from dream.services.session_store import (
+    FileSessionStore,
+    SessionHandle,
+    SessionSnapshot,
+)
 from dream.session import Session, SessionCost, SessionOptions
 from dream.types import MessageRole, StopReason
 
@@ -64,6 +70,7 @@ __all__ = [
     "ExecPlan",
     "ExecPlanLedger",
     "ExecPlanStatus",
+    "FileSessionStore",
     "Harness",
     "HarnessConfig",
     "Hook",
@@ -93,7 +100,10 @@ __all__ = [
     "SandboxError",
     "Session",
     "SessionCost",
+    "SessionHandle",
     "SessionOptions",
+    "SessionResumeError",
+    "SessionSnapshot",
     "Skill",
     "StopReason",
     "TaskCancelled",

@@ -19,7 +19,13 @@ from dream.contracts.hook import Hook
 from dream.contracts.plugin import Plugin
 from dream.contracts.provider import Provider
 from dream.contracts.tool import Tool
-from dream.services.session_store import FileSessionStore
+from dream.errors import SessionResumeError
+from dream.services.session_store import (
+    FileSessionStore,
+    SessionHandle,
+    SessionSnapshot,
+    checked_session_id,
+)
 from dream.session import Session, SessionOptions
 
 if TYPE_CHECKING:
@@ -157,7 +163,12 @@ class Harness:
 
     # -- sessions ---------------------------------------------------------
 
-    async def start_session(self, options: SessionOptions | None = None) -> Session:
+    async def start_session(
+        self,
+        options: SessionOptions | None = None,
+        *,
+        session_id: str | None = None,
+    ) -> Session:
         """Create a new Session, binding an engine if one is configured.
 
         When ``HarnessConfig._engine_factory`` is set, the factory is
@@ -166,16 +177,21 @@ class Harness:
         Session is returned without an engine binding -- ``send`` will
         raise ``NotImplementedError`` until the production wiring is in
         place.
+
+        ``session_id`` lets a caller mint the id itself so its own records
+        (a task-keyed row in a scheduler) and the harness agree without a
+        round-trip; a random id is generated when omitted. Ids that could
+        escape the sessions root are rejected.
         """
         import uuid
 
         await self._ensure_open()
         opts = options or SessionOptions()
-        session_id = uuid.uuid4().hex
+        resolved_id = uuid.uuid4().hex if session_id is None else checked_session_id(session_id)
         engine = None
         if self.config._engine_factory is not None:
-            engine = self.config._engine_factory(session_id, opts)
-        return Session(id=session_id, options=opts, _engine=engine)
+            engine = self.config._engine_factory(resolved_id, opts)
+        return Session(id=resolved_id, options=opts, _engine=engine)
 
     def _resolve_session_store(self, store: FileSessionStore | None) -> FileSessionStore:
         if store is not None:
@@ -194,11 +210,30 @@ class Harness:
         session: Session,
         *,
         store: FileSessionStore | None = None,
-    ) -> Path:
-        """Persist a session snapshot to disk; return the written path."""
+    ) -> SessionHandle:
+        """Persist a session snapshot; return the handle to resume it.
+
+        The returned :class:`SessionHandle` is the only thing a caller needs to
+        keep: the transcript stays in the harness's own store. ``usage_delta``
+        reports the spend since this session's previous save, so a scheduler can
+        bill per run without differencing totals itself.
+        """
         resolved = self._resolve_session_store(store)
         snapshot = session.snapshot()
-        return resolved.save(snapshot)
+        usage_delta = session._usage_delta()
+        path = resolved.save(snapshot)
+        # Only advance the billing baseline once the bytes are durable, so a
+        # failed write leaves the next save reporting the same delta.
+        session._mark_persisted(snapshot.cost)
+        return SessionHandle(
+            session_id=snapshot.session_id,
+            path=path,
+            working_dir=snapshot.working_dir,
+            schema_version=snapshot.schema_version,
+            saved_at=snapshot.saved_at,
+            usage_delta=usage_delta,
+            usage_total=snapshot.cost,
+        )
 
     async def resume_session(
         self,
@@ -206,15 +241,23 @@ class Harness:
         *,
         options: SessionOptions | None = None,
         store: FileSessionStore | None = None,
+        allow_working_dir_change: bool = False,
     ) -> Session:
         """Load a saved snapshot and bind a fresh engine (process restart).
 
         When ``options`` is omitted, persisted model, prompt, turn budget, and
         JSON-compatible metadata are restored. Response formats and any
         non-JSON metadata must be passed explicitly.
+
+        Raises :class:`SessionResumeError` when the snapshot is missing,
+        unreadable, written by another schema, or belongs to a different
+        working directory — a transcript about other files is worse than no
+        transcript, so that last case needs ``allow_working_dir_change=True``.
         """
         resolved = self._resolve_session_store(store)
         snapshot = resolved.load(session_id)
+        if not allow_working_dir_change:
+            self._check_working_dir(snapshot, session_id)
         await self._ensure_open()
         opts = options or SessionOptions(
             model=snapshot.model,
@@ -228,6 +271,36 @@ class Harness:
         session = Session(id=session_id, options=opts, _engine=engine)
         session.restore_from_snapshot(snapshot)
         return session
+
+    def _check_working_dir(self, snapshot: SessionSnapshot, session_id: str) -> None:
+        """Refuse a resume whose snapshot was taken in another directory."""
+        saved = snapshot.working_dir
+        if saved is None:
+            return
+        current = self.config.working_dir
+        if Path(saved).expanduser().resolve() == Path(current).expanduser().resolve():
+            return
+        raise SessionResumeError(
+            f"session was saved under {saved!r} but this harness works in "
+            f"{str(current)!r}; pass allow_working_dir_change=True to resume anyway",
+            reason="working_dir_mismatch",
+            session_id=session_id,
+        )
+
+    async def reset_session(
+        self,
+        session_id: str,
+        *,
+        store: FileSessionStore | None = None,
+    ) -> bool:
+        """Drop a saved snapshot; return whether one was removed.
+
+        The recovery half of the handle contract: after a failed resume, or
+        when a caller decides the context has gone stale, clear the snapshot so
+        the next ``start_session`` under the same id begins clean.
+        """
+        resolved = self._resolve_session_store(store)
+        return resolved.delete(session_id)
 
     async def run_role(
         self,

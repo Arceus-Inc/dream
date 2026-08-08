@@ -17,6 +17,7 @@ from dream.engine._messages import (
     ToolUseBlock,
     sanitize_conversation_messages,
 )
+from dream.errors import SessionResumeError
 from dream.harness import Harness, HarnessConfig
 from dream.services.session_store import FileSessionStore
 from dream.session import Session, SessionOptions
@@ -139,10 +140,49 @@ def test_path_traversal_session_id_rejected(tmp_path: Path) -> None:
         store.path_for("foo/bar")
 
 
-def test_load_missing_raises_file_not_found(tmp_path: Path) -> None:
+def test_load_missing_raises_typed_resume_error(tmp_path: Path) -> None:
     store = FileSessionStore(tmp_path)
-    with pytest.raises(FileNotFoundError):
+    with pytest.raises(SessionResumeError) as excinfo:
         store.load("missing-session")
+    assert excinfo.value.reason == "missing"
+    assert excinfo.value.session_id == "missing-session"
+    assert excinfo.value.should_clear_handle is True
+
+
+def test_load_unparseable_file_reports_corrupt(tmp_path: Path) -> None:
+    store = FileSessionStore(tmp_path)
+    store.path_for("s1").write_text("{not json", encoding="utf-8")
+    with pytest.raises(SessionResumeError) as excinfo:
+        store.load("s1")
+    assert excinfo.value.reason == "corrupt"
+
+
+def test_load_future_schema_reports_mismatch(tmp_path: Path) -> None:
+    store = FileSessionStore(tmp_path)
+    store.path_for("s1").write_text('{"schema_version": 99}', encoding="utf-8")
+    with pytest.raises(SessionResumeError) as excinfo:
+        store.load("s1")
+    assert excinfo.value.reason == "schema_mismatch"
+
+
+def test_load_truncated_payload_reports_corrupt(tmp_path: Path) -> None:
+    store = FileSessionStore(tmp_path)
+    store.path_for("s1").write_text('{"schema_version": 1}', encoding="utf-8")
+    with pytest.raises(SessionResumeError) as excinfo:
+        store.load("s1")
+    assert excinfo.value.reason == "corrupt"
+
+
+def test_list_and_delete_sessions(tmp_path: Path) -> None:
+    store = FileSessionStore(tmp_path / "sessions")
+    assert store.list_sessions() == []
+
+    store.save(_session_with_tool_transcript().snapshot())
+    assert store.list_sessions() == ["abc123"]
+
+    assert store.delete("abc123") is True
+    assert store.delete("abc123") is False
+    assert store.list_sessions() == []
 
 
 # --- Session.snapshot / restore_from_snapshot ----------------------------------
@@ -243,6 +283,7 @@ async def test_harness_save_and_resume_session_roundtrip(tmp_path: Path) -> None
     paths = DreamPaths.resolve(tmp_path, home=tmp_path / "home")
     store = FileSessionStore(paths.sessions_dir)
     config = HarnessConfig(
+        working_dir=Path("/tmp"),
         paths=paths,
         session_store=store,
         _engine_factory=factory,  # type: ignore[call-arg]
@@ -252,8 +293,10 @@ async def test_harness_save_and_resume_session_roundtrip(tmp_path: Path) -> None
     session = await harness.start_session(SessionOptions(model="test-model"))
     await _collect(session, "use tool")
 
-    saved_path = await harness.save_session(session)
-    assert saved_path.exists()
+    handle = await harness.save_session(session)
+    assert handle.path.exists()
+    assert handle.session_id == session.id
+    assert handle.usage_total.input_tokens == session.cost.input_tokens
 
     resumed = await harness.resume_session(session.id)
     assert resumed.id == session.id
@@ -287,6 +330,7 @@ async def test_resume_honors_persisted_max_turns_over_harness_default(
     store = FileSessionStore(paths.sessions_dir)
     harness = Harness(
         HarnessConfig(
+            working_dir=Path("/tmp"),
             paths=paths,
             session_store=store,
             _engine_factory=factory,  # type: ignore[call-arg]
@@ -304,6 +348,137 @@ async def test_resume_honors_persisted_max_turns_over_harness_default(
     await harness.resume_session(session.id)
 
     assert observed == [None, 6]
+
+
+def _handle_harness(
+    tmp_path: Path,
+    *,
+    working_dir: Path,
+    streamer: FakeStreamer | None = None,
+) -> Harness:
+    """Harness wired to a temp session store, engines rooted at ``working_dir``."""
+    shared = streamer if streamer is not None else FakeStreamer([])
+
+    def factory(session_id: str, options: SessionOptions) -> QueryEngine:
+        return QueryEngine(
+            streamer=shared,
+            dispatcher=FakeDispatcher(),
+            session_id=session_id,
+            working_dir=working_dir,
+            max_turns=4,
+        )
+
+    paths = DreamPaths.resolve(tmp_path, home=tmp_path / "home")
+    return Harness(
+        HarnessConfig(
+            working_dir=working_dir,
+            paths=paths,
+            session_store=FileSessionStore(paths.sessions_dir),
+            _engine_factory=factory,  # type: ignore[call-arg]
+        )
+    )
+
+
+async def test_start_session_accepts_caller_supplied_id(tmp_path: Path) -> None:
+    harness = _handle_harness(tmp_path, working_dir=tmp_path)
+
+    session = await harness.start_session(session_id="beat-t123-emp7")
+
+    assert session.id == "beat-t123-emp7"
+    handle = await harness.save_session(session)
+    assert handle.session_id == "beat-t123-emp7"
+    assert handle.path.name == "beat-t123-emp7.json"
+
+
+async def test_start_session_rejects_traversal_in_supplied_id(tmp_path: Path) -> None:
+    harness = _handle_harness(tmp_path, working_dir=tmp_path)
+
+    with pytest.raises(ValueError, match="unsafe"):
+        await harness.start_session(session_id="../escape")
+
+
+async def test_handle_usage_delta_covers_only_work_since_previous_save(
+    tmp_path: Path,
+) -> None:
+    streamer = FakeStreamer(
+        turns=[
+            FakeTurn(text_chunks=["one"], usage=UsageSnapshot(input_tokens=5, output_tokens=2)),
+            FakeTurn(text_chunks=["two"], usage=UsageSnapshot(input_tokens=3, output_tokens=1)),
+        ]
+    )
+    harness = _handle_harness(tmp_path, working_dir=tmp_path, streamer=streamer)
+    session = await harness.start_session(session_id="s1")
+
+    await _collect(session, "first")
+    first = await harness.save_session(session)
+    assert first.usage_delta.input_tokens == 5
+    assert first.usage_total.input_tokens == 5
+
+    await _collect(session, "second")
+    second = await harness.save_session(session)
+    assert second.usage_delta.input_tokens == 3
+    assert second.usage_total.input_tokens == 8
+
+
+async def test_resumed_session_reports_delta_from_restored_total(tmp_path: Path) -> None:
+    streamer = FakeStreamer(
+        turns=[
+            FakeTurn(text_chunks=["one"], usage=UsageSnapshot(input_tokens=5)),
+            FakeTurn(text_chunks=["after"], usage=UsageSnapshot(input_tokens=4)),
+        ]
+    )
+    harness = _handle_harness(tmp_path, working_dir=tmp_path, streamer=streamer)
+    session = await harness.start_session(session_id="s1")
+    await _collect(session, "first")
+    await harness.save_session(session)
+
+    resumed = await harness.resume_session("s1")
+    await _collect(resumed, "second")
+    handle = await harness.save_session(resumed)
+
+    assert handle.usage_delta.input_tokens == 4
+    assert handle.usage_total.input_tokens == 9
+
+
+async def test_resume_rejects_working_dir_change(tmp_path: Path) -> None:
+    origin = tmp_path / "repo-a"
+    origin.mkdir()
+    harness = _handle_harness(tmp_path, working_dir=origin)
+    session = await harness.start_session(session_id="s1")
+    await harness.save_session(session)
+
+    elsewhere = tmp_path / "repo-b"
+    elsewhere.mkdir()
+    moved = _handle_harness(tmp_path, working_dir=elsewhere)
+
+    with pytest.raises(SessionResumeError) as excinfo:
+        await moved.resume_session("s1")
+    assert excinfo.value.reason == "working_dir_mismatch"
+    # The snapshot itself is intact, so the caller keeps its handle.
+    assert excinfo.value.should_clear_handle is False
+
+    opted_in = await moved.resume_session("s1", allow_working_dir_change=True)
+    assert opted_in.id == "s1"
+
+
+async def test_reset_session_clears_snapshot(tmp_path: Path) -> None:
+    harness = _handle_harness(tmp_path, working_dir=tmp_path)
+    session = await harness.start_session(session_id="s1")
+    await harness.save_session(session)
+
+    assert await harness.reset_session("s1") is True
+    assert await harness.reset_session("s1") is False
+
+    with pytest.raises(SessionResumeError) as excinfo:
+        await harness.resume_session("s1")
+    assert excinfo.value.reason == "missing"
+
+
+async def test_snapshot_records_engine_working_dir(tmp_path: Path) -> None:
+    harness = _handle_harness(tmp_path, working_dir=tmp_path)
+    session = await harness.start_session(session_id="s1")
+
+    assert session.snapshot().working_dir == str(tmp_path)
 
 
 def test_sanitize_after_restore_leaves_no_dangling_tool_use() -> None:
