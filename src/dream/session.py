@@ -189,12 +189,30 @@ class Session:
         """
         return self._transcript
 
+    def _effective_max_turns(self) -> int | None:
+        """Resolved turn budget for durable snapshots.
+
+        When ``SessionOptions.max_turns`` is unset, fall back to the bound
+        engine's limit so resume does not inherit a different harness default.
+        """
+        if self.options.max_turns is not None:
+            return self.options.max_turns
+        engine = self._engine
+        if engine is not None:
+            return engine.max_turns
+        return None
+
     def snapshot(self) -> SessionSnapshot:
         """Build a durable snapshot of this session's transcript, cost, and options.
 
         ``max_turns`` and JSON-compatible metadata are persisted. Response
         formats and non-JSON metadata must be supplied again when resuming.
+
+        Raises ``RuntimeError`` when a ``send`` is in flight — the transcript
+        and cost counters are not stable until the call finishes.
         """
+        if self._active:
+            raise RuntimeError("cannot snapshot while a send is in flight")
         from datetime import UTC, datetime
 
         model = self.options.model or self.model
@@ -205,6 +223,7 @@ class Session:
                 if isinstance(key, str) and is_json_value(value)
             }
         )
+        consistent = sanitize_conversation_messages(list(self._transcript))
         return SessionSnapshot(
             schema_version=SCHEMA_VERSION,
             session_id=self.id,
@@ -219,10 +238,10 @@ class Session:
                     cost_usd=self.cost.cost_usd,
                 )
             ),
-            messages=[message_to_record(m) for m in self._transcript],
-            tool_calls=extract_tool_calls(self._transcript),
+            messages=[message_to_record(m) for m in consistent],
+            tool_calls=extract_tool_calls(consistent),
             saved_at=datetime.now(tz=UTC),
-            max_turns=self.options.max_turns,
+            max_turns=self._effective_max_turns(),
             metadata=metadata,
         )
 

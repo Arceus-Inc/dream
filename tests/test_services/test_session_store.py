@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -101,6 +102,33 @@ def test_snapshot_persists_serializable_options_only() -> None:
 
     assert snapshot.max_turns == 3
     assert snapshot.metadata == {"trace_id": "abc"}
+
+
+def test_snapshot_persists_engine_max_turns_when_option_unset() -> None:
+    session = Session(
+        id="s1",
+        options=SessionOptions(model="m1"),
+        _engine=_engine(FakeStreamer([]), FakeDispatcher()),
+    )
+    session._engine.max_turns = 6  # type: ignore[attr-defined]
+
+    assert session.snapshot().max_turns == 6
+
+
+async def test_snapshot_rejects_while_send_in_flight() -> None:
+    streamer = FakeStreamer(
+        turns=[FakeTurn(text_chunks=["hi"], delay=0.2, usage=UsageSnapshot())]
+    )
+    session = Session(
+        id="s1",
+        _engine=_engine(streamer, FakeDispatcher()),
+    )
+
+    send_task = asyncio.create_task(_collect(session, "prompt"))
+    await asyncio.sleep(0.01)
+    with pytest.raises(RuntimeError, match="in flight"):
+        session.snapshot()
+    await send_task
 
 
 def test_path_traversal_session_id_rejected(tmp_path: Path) -> None:
@@ -238,6 +266,44 @@ async def test_harness_save_and_resume_session_roundtrip(tmp_path: Path) -> None
     assert len(streamer.calls) == 3
     third_call = streamer.calls[2]
     assert third_call[-1].text == "pick up"
+
+
+async def test_resume_honors_persisted_max_turns_over_harness_default(
+    tmp_path: Path,
+) -> None:
+    observed: list[int | None] = []
+
+    def factory(session_id: str, options: SessionOptions) -> QueryEngine:
+        observed.append(options.max_turns)
+        return QueryEngine(
+            streamer=FakeStreamer([]),
+            dispatcher=FakeDispatcher(),
+            session_id=session_id,
+            working_dir=Path("/tmp"),
+            max_turns=options.max_turns or 99,
+        )
+
+    paths = DreamPaths.resolve(tmp_path, home=tmp_path / "home")
+    store = FileSessionStore(paths.sessions_dir)
+    harness = Harness(
+        HarnessConfig(
+            paths=paths,
+            session_store=store,
+            _engine_factory=factory,  # type: ignore[call-arg]
+        )
+    )
+
+    session = await harness.start_session(SessionOptions(model="test-model"))
+    session._engine.max_turns = 6  # type: ignore[attr-defined]
+    session._transcript = [
+        ConversationMessage(role="user", content=[TextBlock(text="hello")]),
+        ConversationMessage(role="assistant", content=[TextBlock(text="hi")]),
+    ]
+    await harness.save_session(session)
+
+    await harness.resume_session(session.id)
+
+    assert observed == [None, 6]
 
 
 def test_sanitize_after_restore_leaves_no_dangling_tool_use() -> None:
