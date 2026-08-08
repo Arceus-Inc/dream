@@ -46,6 +46,7 @@ from dream.observability import JsonlTracer, TraceWriter
 from dream.permissions import SessionLimits, read_sandbox_config
 from dream.plugins import load_enabled_plugins
 from dream.prompts.environment import render_runtime_info
+from dream.prompts.system_prompt import assemble_session_system_prompt
 from dream.roles import RoleManifest
 from dream.runner._role_session import ROLE_MANIFEST_METADATA_KEY, ROLE_NAME_METADATA_KEY
 from dream.sandbox import SANDBOX_CONTEXT_KEY, SandboxAdapter, select_backend
@@ -53,7 +54,7 @@ from dream.services import cron as cron_service
 from dream.services.compact._carryover_state import CarryoverMetadata
 from dream.services.compact._orchestrator import AutoCompactState
 from dream.services.context_log import ContextEvent
-from dream.services.core_beliefs import extract_standing_orders, render_standing_orders
+from dream.services.core_beliefs import resolve_core_beliefs_path
 from dream.session import SessionOptions
 from dream.skills import (
     SKILL_CONTEXT_KEY,
@@ -111,6 +112,10 @@ def build_harness(
 
     ``model`` / ``api_key`` / ``base_url`` name any OpenAI-compatible chat
     endpoint (vanilla OpenAI, Azure's ``/openai/v1`` path, vLLM, gateways).
+
+    Standing orders (workforce identity, resume/recall, tool choice) come from
+    ``docs/design-docs/core-beliefs.md`` — worktree file if present, else Dream's
+    packaged constitution.
 
     ``registry`` may be supplied so the caller can register additional tools
     (e.g. MCP adapters) into the same registry *after* this returns but
@@ -427,25 +432,16 @@ def _assemble_system_prompt(
 ) -> str:
     """Assemble the per-session system prompt from its ordered blocks.
 
-    Order: the governance standing orders FIRST (the constitution outranks
-    everything; Spec 13F AC #21-22, re-extracted every session start), then
-    runtime info (host facts the model must trust), the skill catalogue
-    (capabilities), the memory catalogue (durable workspace facts), and the
-    caller-supplied prompt (task framing). Each block survives if the next is
-    empty.
+    Order: standing orders from ``core-beliefs.md`` FIRST, then runtime info,
+    skill/memory catalogues, and the caller-supplied role/craft prompt.
     """
-    standing_orders = render_standing_orders(
-        extract_standing_orders(paths.repo / "docs" / "design-docs" / "core-beliefs.md")
+    return assemble_session_system_prompt(
+        standing_orders_path=resolve_core_beliefs_path(paths.repo),
+        runtime_info=runtime_info,
+        catalogue=catalogue,
+        memory_catalogue=memory_catalogue,
+        system_prompt=system_prompt,
     )
-    parts = [standing_orders] if standing_orders else []
-    parts.append(runtime_info)
-    if catalogue:
-        parts.append(catalogue)
-    if memory_catalogue:
-        parts.append(memory_catalogue)
-    if system_prompt:
-        parts.append(system_prompt)
-    return "\n\n".join(parts)
 
 
 def _session_extra_params(
@@ -569,6 +565,8 @@ def _build_session_engine(
         if skill_registry is not None
         else None
     )
+    from dream.subagents._inline_executor import SUBAGENT_NAME_METADATA_KEY
+
     system_prompt = _assemble_system_prompt(
         paths=paths,
         runtime_info=runtime_info,
@@ -629,8 +627,6 @@ def _build_session_engine(
     }
     if ROLE_NAME_METADATA_KEY in options.metadata:
         context_metadata[ROLE_NAME_METADATA_KEY] = options.metadata[ROLE_NAME_METADATA_KEY]
-    from dream.subagents._inline_executor import SUBAGENT_NAME_METADATA_KEY
-
     if SUBAGENT_NAME_METADATA_KEY in options.metadata:
         context_metadata[SUBAGENT_NAME_METADATA_KEY] = options.metadata[SUBAGENT_NAME_METADATA_KEY]
     if skill_context is not None:
