@@ -50,6 +50,7 @@ async def main() -> None:
         api_key=creds["api_key"],
         base_url=creds["base_url"],
         working_dir=workspace,
+        web=True,
     )
     async with harness:
         result = await harness.run_task(

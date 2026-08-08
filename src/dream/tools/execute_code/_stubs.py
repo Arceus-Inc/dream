@@ -31,10 +31,10 @@ _STUBS: tuple[_StubSpec, ...] = (
         '{"path": path, "content": content}',
     ),
     _StubSpec(
-        NestedToolName.EDIT_FILE,
-        "path: str, old_str: str, new_str: str, replace_all: bool = False",
-        '"""Replace a substring in an existing file. Returns the tool content string."""',
-        '{"path": path, "old_str": old_str, "new_str": new_str, "replace_all": replace_all}',
+        NestedToolName.APPLY_PATCH,
+        "patch: str",
+        '"""Apply a Codex multi-hunk patch (add/update/delete). Returns the tool content string."""',
+        '{"patch": patch}',
     ),
     _StubSpec(
         NestedToolName.GREP,
@@ -61,16 +61,10 @@ _STUBS: tuple[_StubSpec, ...] = (
         '{"query": query, "max_results": max_results}',
     ),
     _StubSpec(
-        NestedToolName.WEB_EXTRACT,
-        (
-            "urls: list[str], extract_depth: str = 'basic', "
-            "format: str = 'markdown', include_images: bool = False"
-        ),
-        '"""Extract page content (depth/format/images match direct web_extract)."""',
-        (
-            '{"urls": urls, "extract_depth": extract_depth, '
-            '"format": format, "include_images": include_images}'
-        ),
+        NestedToolName.WEB_FETCH,
+        "url: str, timeout_seconds: float = 20.0, max_chars: int = 12000",
+        '"""Fetch one URL (SSRF-guarded). Returns the tool content string."""',
+        '{"url": url, "timeout_seconds": timeout_seconds, "max_chars": max_chars}',
     ),
 )
 

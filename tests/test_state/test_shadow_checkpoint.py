@@ -75,7 +75,7 @@ def test_new_turn_allows_another_when_changed(mgr: ShadowCheckpointManager, work
     )
     mgr.begin_turn()
     (work_dir / "README.md").write_text("changed\n", encoding="utf-8")
-    again = mgr.ensure(work_dir, reason=CheckpointReason.BEFORE_EDIT_FILE)
+    again = mgr.ensure(work_dir, reason=CheckpointReason.BEFORE_APPLY_PATCH)
     assert again.outcome is CheckpointOutcome.TAKEN
     assert len(mgr.list_for(work_dir)) == 2
 
@@ -191,7 +191,7 @@ def test_restore_removes_untracked_files(mgr: ShadowCheckpointManager, work_dir:
 
 def test_mutating_tool_enum_covers_craft_tools() -> None:
     names = {t.value for t in MutatingToolName}
-    assert {"write_file", "edit_file", "bash", "execute_code"}.issubset(names)
+    assert {"write_file", "apply_patch", "bash", "execute_code"}.issubset(names)
 
 
 @pytest.mark.asyncio

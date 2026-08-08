@@ -122,6 +122,21 @@ def test_collision_across_sources_raises() -> None:
         raise AssertionError("expected ToolCollisionError on cross-source collision")
 
 
+def test_replace_only_allows_default_to_per_repo() -> None:
+    reg = ToolRegistry()
+    reg.register(_make_tool("bash"), source=ToolSource.DEFAULT)
+    prior = reg.register(_make_tool("bash"), source=ToolSource.PER_REPO, replace=True)
+    assert prior is ToolSource.DEFAULT
+
+    reg.register(_make_tool("repo"), source=ToolSource.PER_REPO)
+    try:
+        reg.register(_make_tool("repo"), source=ToolSource.PER_REPO, replace=True)
+    except ToolCollisionError:
+        pass
+    else:
+        raise AssertionError("expected duplicate per-repo registration to fail")
+
+
 def test_to_api_schema_matches_list_order() -> None:
     reg = ToolRegistry(default_order=("bash",))
     reg.register(_make_tool("bash"), source=ToolSource.DEFAULT)

@@ -347,7 +347,8 @@ Scenario: Default tools are always present
   Given a clean repo with no .harness/tools/ entries
   When the session starts
   Then the tool list contains bash, read_file, write_file, edit_file, git, read_offloaded
-  And no other tools.
+  And the Level-2 coding companions grep, glob, todo_write, skill
+  And no pack tools (tasks, cron, web, browser, observability, worktree, code_intel, plan)
 
 Scenario: Tool order is byte-stable across sessions
   Given the same repo and tool set

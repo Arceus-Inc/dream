@@ -63,7 +63,7 @@ _DEFAULT_GP_TOOLS = (
     "glob",
     "bash",
     "write_file",
-    "edit_file",
+    "apply_patch",
 )
 
 

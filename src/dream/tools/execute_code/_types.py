@@ -20,18 +20,18 @@ MAX_RPC_REQUEST_BYTES: Final[int] = 1_048_576
 class NestedToolName(StrEnum):
     """Dream tools allowed inside an execute_code sandbox (Hermes PTC allowlist).
 
-    Hermes maps ``search_files``→grep/glob, ``patch``→edit_file, ``terminal``→bash.
+    Hermes maps ``search_files``→grep/glob, ``patch``→apply_patch, ``terminal``→bash.
     ``execute_code`` itself is intentionally absent (no recursion).
     """
 
     READ_FILE = "read_file"
     WRITE_FILE = "write_file"
-    EDIT_FILE = "edit_file"
+    APPLY_PATCH = "apply_patch"
     GREP = "grep"
     GLOB = "glob"
     BASH = "bash"
     WEB_SEARCH = "web_search"
-    WEB_EXTRACT = "web_extract"
+    WEB_FETCH = "web_fetch"
 
 
 class ExecuteCodeStatus(StrEnum):

@@ -171,6 +171,10 @@ class DreamPaths:
         """Operator trust-ramp promotions for discovered tools/MCPs (Spec 13B)."""
         return self.repo / ".harness" / "tool-tier-overrides.toml"
 
+    def tools_dir(self) -> Path:
+        """Per-repo tool declarations (Spec 05 ``.harness/tools/{name}.toml``)."""
+        return self.repo / ".harness" / "tools"
+
     def role_manifest_overlay(self, role: str) -> Path:
         """Operator overlay for a role manifest (Spec 10 §Artefact shapes).
 

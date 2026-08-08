@@ -7,35 +7,39 @@ Operators override per-field via ``.harness/roles/{role}.toml`` (see
   so any accidental side effect is deflected to an explicit plan output.
 - generator: ``tools=None`` (= all registered tools, intersected with the
   active sandbox tier at #13); ``permission_mode="default"``.
-- evaluator: reads + ``bash`` for in-session verify (Hermes/CC shape); no
-  writers and no ``spawn_subagent``. No harness oracle sidecar.
+- evaluator: reads + ``bash`` for in-session verify (Hermes/CC shape) plus
+  ``query_logs`` over session traces; no writers and no ``spawn_subagent``.
+  No harness oracle sidecar.
 """
 
 from __future__ import annotations
 
 from dream.roles._manifest import RoleManifest, RoleName
 
-# The read-only triplet — every read tool a planner may use without any tier
-# requirement above READ_ONLY. Tools absent from the registry are silently
-# dropped by ``compute_minimum_toolset``, so listing extras here (e.g.
-# ``query_logs`` from #12) is safe before those tools land.
+# The read-only Level-2 set — every read tool a planner may use without any
+# tier requirement above READ_ONLY. Pack-only tools (e.g. ``query_logs``) stay
+# out of the default manifest so unknown names are never silently dropped.
 _READ_ONLY_TRIPLET: tuple[str, ...] = (
     "read_file",
     "git",
-    "query_logs",
+    "grep",
+    "glob",
 )
 
-# Evaluator: same reads + bash so verification runs inside the judge session.
+# Evaluator: reads + bash verify + session-trace query (Spec 12b). ``query_logs``
+# lives in the observability pack, which ``build_harness`` enables by default.
 _EVALUATOR_TOOLS: tuple[str, ...] = (
     "read_file",
     "git",
-    "query_logs",
+    "grep",
+    "glob",
     "bash",
+    "query_logs",
 )
 
 _WRITERS_DENIED: tuple[str, ...] = (
     "write_file",
-    "edit_file",
+    "apply_patch",
     "bash",
 )
 
@@ -43,7 +47,7 @@ _WRITERS_DENIED: tuple[str, ...] = (
 # subagents are enabled); keep it out of the allow-list via tools= explicit.
 _EVALUATOR_DENIED: tuple[str, ...] = (
     "write_file",
-    "edit_file",
+    "apply_patch",
 )
 
 

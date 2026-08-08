@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Level-2 ``apply_patch`` (Codex multi-hunk add/update/delete/move) — the sole
+  surgical edit tool; former ``edit_file`` removed.
+- Spec 05 per-repo tools: discover ``.harness/tools/{name}.toml``, validate
+  the strict declaration schema, register as ``ToolSource.PER_REPO`` command
+  runners (shadowing a default warns; missing ``risk``/``tier_required`` blocks
+  ``build_harness``).
+
+### Changed
+- Evaluator default tools restore ``query_logs``; ``build_harness`` enables
+  the observability pack by default so the name is registered.
+- Consumer docs (`HARNESS.md`, `SDK_GUIDE.md`) document the Level-2 default
+  surface, opt-in packs, per-repo tools, and that Arceus employee tools stay
+  upstream via MCP.
+- Web tool descriptions sharpened so ``web_search`` / ``web_fetch`` no longer
+  overlap in when-to-use guidance.
+- **Breaking:** `default_registry()` is now the Level-2 coding surface only
+  (`read_file`, `apply_patch`, `write_file`, `bash`, `git`, `read_offloaded`,
+  `glob`, `grep`, `todo_write`, `skill`). Former extras moved to opt-in packs
+  via `register_*_tools` / `build_harness` flags (`tasks`, `cron`, `web`,
+  `browser`, `worktree`, `code_intel`, `plan`). Pass
+  `legacy_surface=True` to restore the previous fat default. Memory and
+  observability packs register when `memory=True` / `observability=True`
+  (both default on).
+- Planner default manifests read via `grep`/`glob` instead of pack-only tools.
+
+### Removed
+- ``edit_file`` / ``FileEditTool`` — use ``apply_patch`` for all surgical edits.
+- ``web_extract`` / ``WebExtractTool`` — redundant with ``web_fetch``; use
+  ``web_fetch`` for page bodies (and ``browser_run`` when JS is required).
+
+### Added
 - Powered hooks: `HookSpec.allow_continue`, `HookResult.continue_message` /
   `replacement_result` / `inject_context`, `HookEvent.SUBAGENT_START`.
   `HookExecutor` honors `allow_block` and `allow_continue` (first-wins continue;

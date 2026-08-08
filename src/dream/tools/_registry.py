@@ -54,25 +54,39 @@ class ToolRegistry:
         self._tools: dict[str, BaseTool] = {}
         self._sources: dict[str, ToolSource] = {}
 
-    def register(self, tool: BaseTool, *, source: ToolSource) -> None:
+    def register(
+        self, tool: BaseTool, *, source: ToolSource, replace: bool = False
+    ) -> ToolSource | None:
         """Add ``tool`` to the registry under ``tool.name``.
 
-        Raises ``ToolCollisionError`` if a tool with the same name is
-        already registered (regardless of source).
+        Raises ``ToolCollisionError`` if a tool with the same name is already
+        registered and ``replace`` is False. When ``replace`` is True (per-repo
+        shadow of a default), the prior entry is overwritten and its
+        :class:`ToolSource` is returned so the caller can warn.
         """
         name = tool.name
-        if name in self._tools:
-            prior = self._sources[name].value
+        prior_source = self._sources.get(name)
+        allowed_replacement = (
+            replace
+            and prior_source is ToolSource.DEFAULT
+            and source is ToolSource.PER_REPO
+        )
+        if prior_source is not None and not allowed_replacement:
             raise ToolCollisionError(
                 f"tool name {name!r} already registered "
-                f"(prior source: {prior}, new source: {source.value})"
+                f"(prior source: {prior_source.value}, new source: {source.value})"
             )
         self._tools[name] = tool
         self._sources[name] = source
+        return prior_source
 
     def get(self, name: str) -> BaseTool | None:
         """Return the registered tool, or ``None`` if not present."""
         return self._tools.get(name)
+
+    def source_for(self, name: str) -> ToolSource | None:
+        """Return the provenance of a registered tool, or ``None``."""
+        return self._sources.get(name)
 
     def iter_with_source(self) -> Iterator[tuple[BaseTool, ToolSource]]:
         """Yield ``(tool, source)`` pairs in deterministic listing order.

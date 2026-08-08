@@ -143,8 +143,10 @@ def test_opener_present_when_a_surface_is_enabled(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_empty_workspace_opens_as_a_noop(tmp_path: Path) -> None:
     registry = default_registry()
-    before = {t.name for t in registry.list_tools()}
     harness = _build(tmp_path, registry)
+    # Packs applied at build time (e.g. memory=True) are not session-open side
+    # effects — capture the post-build surface, then assert open adds nothing.
+    before = {t.name for t in registry.list_tools()}
     await harness.start_session()  # fires the opener; nothing to wire
     after = {t.name for t in registry.list_tools()}
     assert after == before

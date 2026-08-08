@@ -21,14 +21,20 @@ from dream.tasks import (
     BackgroundTaskManager,
     TaskSessionContext,
 )
-from dream.tools.builtin import default_registry
+from dream.tools.builtin import default_registry, register_task_tools
+
+
+def _task_registry():
+    registry = default_registry()
+    register_task_tools(registry)
+    return registry
 
 
 async def test_task_create_then_get_round_trips_through_dispatcher(tmp_path: Path) -> None:
     manager = BackgroundTaskManager(tasks_dir=tmp_path / "tasks")
     session = TaskSessionContext(manager=manager)
     dispatcher = EngineToolDispatcher(
-        registry=default_registry(),
+        registry=_task_registry(),
         working_dir=tmp_path,
         session_id="s_int",
         context_metadata={TASK_CONTEXT_KEY: session},
@@ -60,7 +66,7 @@ async def test_task_create_then_get_round_trips_through_dispatcher(tmp_path: Pat
 
 async def test_task_create_missing_context_is_structured_error(tmp_path: Path) -> None:
     dispatcher = EngineToolDispatcher(
-        registry=default_registry(),
+        registry=_task_registry(),
         working_dir=tmp_path,
         session_id="s_no_ctx",
     )
