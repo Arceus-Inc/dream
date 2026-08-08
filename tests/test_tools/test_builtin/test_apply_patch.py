@@ -8,8 +8,8 @@ from unittest.mock import patch
 import pytest
 
 from dream.tools._context import ToolExecutionContext
-from dream.tools.builtin import apply_patch as apply_patch_mod
-from dream.tools.builtin.apply_patch import ApplyPatchTool
+from dream.tools.apply_patch import ApplyPatchTool
+from dream.tools.apply_patch import _workspace as workspace_mod
 
 
 @pytest.fixture
@@ -233,7 +233,7 @@ async def test_uses_atomic_write(
     f = tmp_path / "code.py"
     f.write_text("old\n", encoding="utf-8")
     with patch.object(
-        apply_patch_mod, "atomic_write_text", wraps=apply_patch_mod.atomic_write_text
+        workspace_mod, "atomic_write_text", wraps=workspace_mod.atomic_write_text
     ) as spy:
         result = await tool.execute(
             {
@@ -320,7 +320,7 @@ async def test_partial_apply_is_rolled_back(
     second = tmp_path / "second.txt"
     first.write_text("first\n", encoding="utf-8")
     second.write_text("second\n", encoding="utf-8")
-    real_write = apply_patch_mod.atomic_write_text
+    real_write = workspace_mod.atomic_write_text
     calls = {"n": 0}
 
     def flaky_write(path: Path, content: str) -> None:
@@ -329,7 +329,7 @@ async def test_partial_apply_is_rolled_back(
             raise OSError("simulated write failure")
         real_write(path, content)
 
-    with patch.object(apply_patch_mod, "atomic_write_text", side_effect=flaky_write):
+    with patch.object(workspace_mod, "atomic_write_text", side_effect=flaky_write):
         result = await tool.execute(
             {
                 "patch": (
