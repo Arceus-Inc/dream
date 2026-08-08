@@ -221,6 +221,7 @@ def _load_declaration(path: Path) -> tuple[_PerRepoDeclaration, dict[str, object
         )
 
     decl = _PerRepoDeclaration.model_validate(dict(raw))
+    _validate_command_template(decl.command, decl.name)
     parameters = _resolve_parameters(decl.parameters, tools_dir=path.parent)
     schema_type = parameters.get("type")
     properties = parameters.get("properties")
@@ -245,6 +246,20 @@ def _load_declaration(path: Path) -> tuple[_PerRepoDeclaration, dict[str, object
             )
         )
     return decl, parameters
+
+
+def _validate_command_template(command: str, decl_name: str) -> None:
+    """Reject placeholder syntax that execution cannot substitute."""
+    for _, field_name, format_spec, conversion in Formatter().parse(command):
+        if field_name is None:
+            continue
+        if format_spec or conversion or "." in field_name or "[" in field_name:
+            raise PerRepoToolError(
+                (
+                    f"tool declaration {decl_name!r}: "
+                    f"unsupported placeholder syntax: {{{field_name}}}",
+                )
+            )
 
 
 def _preflight_per_repo_registration(registry: ToolRegistry, name: str) -> None:

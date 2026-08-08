@@ -224,6 +224,25 @@ parameters = { type = "object", properties = {} }
     assert "{print}" in result.content
 
 
+def test_unsupported_placeholder_syntax_is_rejected(tmp_path: Path) -> None:
+    tools_dir = tmp_path / "tools"
+    _write_tool(
+        tools_dir,
+        "bad_format",
+        """
+name = "bad_format"
+description = "Unsupported conversion"
+command = "echo {name!s}"
+risk = "safe"
+tier_required = 0
+timeout_seconds = 5.0
+parameters = { type = "object", properties = { name = { type = "string" } }, required = ["name"] }
+""",
+    )
+    with pytest.raises(PerRepoToolError, match="unsupported placeholder syntax"):
+        load_per_repo_tools(default_registry(), tools_dir)
+
+
 def test_registration_collision_does_not_mutate_registry(tmp_path: Path) -> None:
     from pydantic import BaseModel
 
