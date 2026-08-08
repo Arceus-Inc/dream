@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from dream.runner._head_retry import ask_until_parsed
+from dream.runner._role_session import role_session_id
 
 if TYPE_CHECKING:
     from dream.harness import Harness
@@ -236,6 +237,7 @@ def make_evaluator_propose_head(
     intent: str = "",
     harness_dir: Path | None = None,
     observer: RunTaskObserver | None = None,
+    session_scope: str | None = None,
 ) -> Callable[[int, list[NegotiationEntry]], Awaitable[list[str]]]:
     """Build an async :data:`~dream.sprint.EvaluatorPropose` over a harness.
 
@@ -248,8 +250,15 @@ def make_evaluator_propose_head(
     ``intent`` is the task intent; embedding it keeps the proposed criteria
     specific to the actual work instead of generic boilerplate the evaluator
     later cannot verify.
+
+    ``session_scope`` puts the proposal in the task's evaluator thread — the
+    same one that later judges the work, so it grades against criteria it
+    remembers proposing.
     """
     intent_block = _format_intent_block(intent)
+    session_id = (
+        None if session_scope is None else role_session_id(session_scope, "evaluator")
+    )
 
     async def propose(round_num: int, log: list[NegotiationEntry]) -> list[str]:
         prompt = EVALUATOR_PROPOSE_INSTRUCTION_TEMPLATE.format(
@@ -261,7 +270,11 @@ def make_evaluator_propose_head(
 
         async def _ask(p: str) -> Any:
             return await harness.run_role(
-                "evaluator", p, harness_dir=harness_dir, observer=observer
+                "evaluator",
+                p,
+                harness_dir=harness_dir,
+                observer=observer,
+                session_id=session_id,
             )
 
         def _on_retry(attempt: int, err: Exception) -> None:
@@ -301,6 +314,7 @@ def make_generator_respond_head(
     intent: str = "",
     harness_dir: Path | None = None,
     observer: RunTaskObserver | None = None,
+    session_scope: str | None = None,
 ) -> Callable[
     [int, list[NegotiationEntry], list[str]],
     Awaitable[tuple[bool, list[str] | None]],
@@ -311,8 +325,15 @@ def make_generator_respond_head(
     :meth:`Harness.run_role`, embeds the evaluator's proposal plus the
     task intent and running negotiation log in the prompt, parses the model's strict
     ``<response>``-envelope reply, and returns ``(accept, counter)``.
+
+    ``session_scope`` puts the response in the task's generator thread — the
+    same one that does the work, so the generator negotiates and then builds
+    against terms it remembers agreeing to.
     """
     intent_block = _format_intent_block(intent)
+    session_id = (
+        None if session_scope is None else role_session_id(session_scope, "generator")
+    )
 
     async def respond(
         round_num: int,
@@ -329,7 +350,11 @@ def make_generator_respond_head(
 
         async def _ask(p: str) -> Any:
             return await harness.run_role(
-                "generator", p, harness_dir=harness_dir, observer=observer
+                "generator",
+                p,
+                harness_dir=harness_dir,
+                observer=observer,
+                session_id=session_id,
             )
 
         def _on_retry(attempt: int, err: Exception) -> None:

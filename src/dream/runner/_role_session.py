@@ -50,6 +50,7 @@ __all__ = [
     "RoleSessionError",
     "RunRoleResult",
     "resolve_role_manifest",
+    "role_session_id",
     "run_role",
 ]
 
@@ -62,6 +63,16 @@ ROLE_MANIFEST_METADATA_KEY = "dream.role_manifest"
 
 class RoleSessionError(RuntimeError):
     """Raised when a role-bound session errored mid-stream."""
+
+
+def role_session_id(scope: str, role: RoleName | str) -> str:
+    """Name ``role``'s thread inside ``scope``.
+
+    One scope key per task gives every role its own resumable thread — a
+    planner and an evaluator are different conversations and must not share
+    one. Heads bound to the same role deliberately land on the same thread.
+    """
+    return f"{scope}:{role}"
 
 
 @dataclass(frozen=True)

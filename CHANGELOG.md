@@ -32,6 +32,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   An unusable snapshot (never written, corrupt, or taken under another working
   directory) starts the thread over under the same name instead of failing the
   run. Omitting `session_id` persists nothing, as before.
+- `Harness.run_task(session_scope=...)` makes a whole task resumable off one
+  key: each autowired head runs in its own thread under that scope
+  (`{scope}:planner`, `{scope}:generator`, `{scope}:evaluator`), so a later
+  call with the same scope continues those conversations instead of restarting
+  them. Heads sharing a role share the thread — the generator negotiates and
+  then builds against terms it agreed to, and the evaluator judges against
+  criteria it proposed. Explicitly supplied heads are untouched.
 - Level-2 ``apply_patch`` (Codex multi-hunk add/update/delete/move) — the sole
   surgical edit tool; former ``edit_file`` removed.
 - Spec 05 per-repo tools: discover ``.harness/tools/{name}.toml``, validate

@@ -435,6 +435,21 @@ handle = result.session_handle          # None when session_id is omitted
 An unusable snapshot there starts the thread over under the same name rather
 than failing the run, so one stable key per thread is all a caller keeps.
 
+For a whole task, `run_task` takes a scope instead of a session id and gives
+each role its own thread beneath it:
+
+```python
+await harness.run_task(intent=intent, session_scope=f"task-{task_id}")
+# threads: task-42:planner, task-42:generator, task-42:evaluator
+```
+
+Call it again with the same scope and those conversations continue. Roles never
+share a thread, but heads bound to the same role do: the generator negotiates
+the sprint contract and then builds against terms it remembers agreeing to, and
+the evaluator judges against criteria it proposed itself. Use
+`dream.runner.role_session_id(scope, role)` to address one thread directly —
+for example to `reset_session` just the generator.
+
 Keep only the handle, not a second copy of the transcript. `usage_delta`
 covers the work since the previous save, so you never have to difference
 cumulative totals. A resume whose snapshot was taken under a different working

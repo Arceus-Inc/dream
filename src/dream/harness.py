@@ -365,6 +365,7 @@ class Harness:
         observer: RunTaskObserver | None = None,
         rubric: str | None = None,
         plan_admission: PlanAdmission | None = None,
+        session_scope: str | None = None,
     ) -> RunTaskResult:
         """Run an end-to-end task: planner → bounded sprint loop.
 
@@ -381,6 +382,13 @@ class Harness:
         ``observer`` is forwarded to the runner and to every head so a
         single :class:`~dream.runner.StdioObserver` (or custom hook) sees
         every macro and streaming event.
+
+        ``session_scope`` makes the task's role sessions resumable: each
+        autowired head runs in its own thread under that scope
+        (``{scope}:planner`` and so on), so calling ``run_task`` again with the
+        same scope continues those conversations rather than restarting them.
+        A caller driving the harness in short windows keeps one key per task.
+        Explicitly supplied heads are left alone — they own their own sessions.
         """
         from dataclasses import replace as _replace
 
@@ -407,6 +415,7 @@ class Harness:
                 harness_dir=harness_dir,
                 observer=meter,
                 worktree_root=root,
+                session_scope=session_scope,
             )
         )
 
@@ -451,6 +460,7 @@ class Harness:
         harness_dir: Path | None,
         observer: RunTaskObserver | None,
         worktree_root: Path | None = None,
+        session_scope: str | None = None,
     ) -> tuple[
         PlannerCallable,
         GeneratorExecute,
@@ -463,6 +473,9 @@ class Harness:
         A one-liner ``await harness.run_task(intent=...)`` wires every LLM head
         from the configured engine; explicitly supplied heads pass through
         untouched. Returns the five resolved heads in run_task argument order.
+
+        ``session_scope`` is forwarded to each factory so its role runs in a
+        resumable thread under that scope.
         """
         if (
             planner is not None
@@ -488,18 +501,35 @@ class Harness:
         )
 
         if planner is None:
-            planner = make_planner_head(self, harness_dir=harness_dir, observer=observer)
+            planner = make_planner_head(
+                self,
+                harness_dir=harness_dir,
+                observer=observer,
+                session_scope=session_scope,
+            )
         if generator_execute is None:
             generator_execute = make_generator_head(
-                self, task_intent=intent, harness_dir=harness_dir, observer=observer
+                self,
+                task_intent=intent,
+                harness_dir=harness_dir,
+                observer=observer,
+                session_scope=session_scope,
             )
         if evaluator_propose is None:
             evaluator_propose = make_evaluator_propose_head(
-                self, intent=intent, harness_dir=harness_dir, observer=observer
+                self,
+                intent=intent,
+                harness_dir=harness_dir,
+                observer=observer,
+                session_scope=session_scope,
             )
         if generator_respond is None:
             generator_respond = make_generator_respond_head(
-                self, intent=intent, harness_dir=harness_dir, observer=observer
+                self,
+                intent=intent,
+                harness_dir=harness_dir,
+                observer=observer,
+                session_scope=session_scope,
             )
         if evaluator_run is None:
             evaluator_run = make_evaluator_head(
@@ -507,6 +537,7 @@ class Harness:
                 task_intent=intent,
                 harness_dir=harness_dir,
                 observer=observer,
+                session_scope=session_scope,
                 # worktree_root kept for API compat; evaluator verifies in-session via bash.
                 worktree_root=worktree_root,
             )

@@ -58,6 +58,7 @@ from dream.runner._role_session import (
     RoleSessionError,
     RunRoleResult,
     resolve_role_manifest,
+    role_session_id,
     run_role,
 )
 from dream.runner._run import (
@@ -90,6 +91,7 @@ __all__ = [
     "make_generator_respond_head",
     "make_planner_head",
     "resolve_role_manifest",
+    "role_session_id",
     "run_role",
     "run_task",
 ]

@@ -8,8 +8,10 @@ error and previous bad reply, giving the model a second chance to emit the
 required envelope.
 
 Design decisions:
-- A fresh role session is opened per attempt (``run_role`` always starts a
-  new session — that is inherent to the heads' ``ask`` callables).
+- Attempts share whatever session the head's ``ask`` callable opens: a fresh
+  one per attempt by default, or the role's thread when the head was built
+  with a ``session_scope`` (there the model also sees its own rejected reply
+  in the transcript, not just quoted back in the re-prompt).
 - Only parse errors are retried; engine-layer errors
   (:class:`~dream.runner.RoleSessionError`) are never swallowed.
 - The retry budget is small by default (``DEFAULT_RETRIES = 2``, i.e. three

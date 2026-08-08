@@ -25,6 +25,7 @@ from pydantic import ValidationError
 from dream.api.response_format import ResponseFormat
 from dream.runner._evaluator_schema import EVALUATOR_VERDICT_SCHEMA, EvaluatorVerdict
 from dream.runner._head_retry import ask_until_parsed
+from dream.runner._role_session import role_session_id
 from dream.session import SessionOptions
 from dream.sprint import EvaluationRecord
 
@@ -254,6 +255,7 @@ def make_evaluator_head(
     observer: RunTaskObserver | None = None,
     worktree_root: Path | None = None,
     oracle_timeout_seconds: float = 300.0,
+    session_scope: str | None = None,
 ) -> Callable[
     [str, int, SprintContract, LedgerStep],
     Awaitable[EvaluationRecord],
@@ -262,8 +264,14 @@ def make_evaluator_head(
 
     The evaluator LLM session has ``bash`` and runs verification itself.
     Final replies are constrained by :data:`EVALUATOR_VERDICT_SCHEMA`.
+
+    ``session_scope`` names the task's evaluator thread, so successive sprints
+    are judged by an evaluator that remembers what it already accepted.
     """
     del worktree_root, oracle_timeout_seconds
+    session_id = (
+        None if session_scope is None else role_session_id(session_scope, "evaluator")
+    )
     response_format = ResponseFormat.for_schema(
         EVALUATOR_VERDICT_SCHEMA,
         name="evaluator_verdict",
@@ -291,6 +299,7 @@ def make_evaluator_head(
                 harness_dir=harness_dir,
                 observer=observer,
                 options=SessionOptions(response_format=response_format),
+                session_id=session_id,
             )
 
         def _on_retry(attempt: int, err: Exception) -> None:

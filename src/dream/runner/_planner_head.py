@@ -31,6 +31,7 @@ from dream.api.response_format import ResponseFormat
 from dream.planner import LedgerStep, PlannerLedger, PlannerOutput
 from dream.runner._head_retry import ask_until_parsed
 from dream.runner._planner_schema import PLANNER_RESPONSE_SCHEMA, PlannerResponse
+from dream.runner._role_session import role_session_id
 from dream.session import SessionOptions
 
 if TYPE_CHECKING:
@@ -155,13 +156,19 @@ def make_planner_head(
     *,
     harness_dir: Path | None = None,
     observer: RunTaskObserver | None = None,
+    session_scope: str | None = None,
 ) -> Callable[[str, str], Awaitable[PlannerOutput]]:
     """Build a :data:`PlannerCallable` driven by :meth:`Harness.run_role`.
 
     The returned coroutine asks the planner LLM for a schema-constrained JSON
     object, parses the reply, and yields a :class:`PlannerOutput` ready for
     :func:`dream.planner.run_planner` to commit to the worktree.
+
+    ``session_scope`` names the planner's resumable thread within the task, so
+    a later call continues the conversation instead of starting over. Parse
+    retries share that thread, which lets the model see its own rejected reply.
     """
+    session_id = None if session_scope is None else role_session_id(session_scope, "planner")
     response_format = ResponseFormat.for_schema(
         PLANNER_RESPONSE_SCHEMA,
         name="planner_response",
@@ -178,6 +185,7 @@ def make_planner_head(
                 harness_dir=harness_dir,
                 observer=observer,
                 options=SessionOptions(response_format=response_format),
+                session_id=session_id,
             )
 
         def _on_retry(attempt: int, err: Exception) -> None:
