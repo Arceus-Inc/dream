@@ -424,6 +424,17 @@ except SessionResumeError as exc:
     session = await harness.start_session(opts, session_id=stored_id)
 ```
 
+`run_role` takes the same argument, so a role thread continues across beats
+without the caller touching sessions at all:
+
+```python
+result = await harness.run_role("generator", intent, session_id=f"task-{task_id}:generator")
+handle = result.session_handle          # None when session_id is omitted
+```
+
+An unusable snapshot there starts the thread over under the same name rather
+than failing the run, so one stable key per thread is all a caller keeps.
+
 Keep only the handle, not a second copy of the transcript. `usage_delta`
 covers the work since the previous save, so you never have to difference
 cumulative totals. A resume whose snapshot was taken under a different working

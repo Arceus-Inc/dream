@@ -310,6 +310,7 @@ class Harness:
         options: SessionOptions | None = None,
         harness_dir: Path | None = None,
         observer: RunTaskObserver | None = None,
+        session_id: str | None = None,
     ) -> RunRoleResult:
         """Run one session as a named role; return its assistant text + cost.
 
@@ -325,6 +326,10 @@ class Harness:
         The primitive the production planner / generator / evaluator
         heads compose into :func:`dream.runner.run_task` — see spec 10
         slice G2.
+
+        ``session_id`` names the role thread so a later call continues it
+        instead of starting over; the run's :class:`SessionHandle` comes back
+        on the result. Nothing is persisted when it is omitted.
         """
         # Local import keeps the harness <-> runner module graph
         # one-way: ``dream.runner`` imports from ``dream.planner`` /
@@ -339,6 +344,7 @@ class Harness:
             options=options,
             harness_dir=harness_dir,
             observer=observer,
+            session_id=session_id,
         )
 
     async def run_task(

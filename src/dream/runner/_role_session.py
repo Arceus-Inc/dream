@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from dream.errors import SessionResumeError
 from dream.events import Error, Event, TextDelta, ToolUseResult, ToolUseStart
 from dream.roles import (
     RoleManifest,
@@ -37,7 +38,8 @@ from dream.roles import (
     load_role_manifest,
 )
 from dream.runner._observer import RunTaskObserver
-from dream.session import SessionCost, SessionOptions
+from dream.services.session_store import SessionHandle
+from dream.session import Session, SessionCost, SessionOptions
 
 if TYPE_CHECKING:
     from dream.harness import Harness
@@ -79,6 +81,9 @@ class RunRoleResult:
     final_text: str
     cost: SessionCost
     events: tuple[Event, ...]
+    # The pointer to resume this role thread later — ``None`` unless the
+    # caller named the session via ``session_id``.
+    session_handle: SessionHandle | None = None
 
 
 def resolve_role_manifest(
@@ -122,6 +127,7 @@ async def run_role(
     options: SessionOptions | None = None,
     harness_dir: Path | None = None,
     observer: RunTaskObserver | None = None,
+    session_id: str | None = None,
 ) -> RunRoleResult:
     """Run one session as ``role``; return assistant text + cost.
 
@@ -140,6 +146,13 @@ async def run_role(
     ``role.tool.start``, ``role.tool.result`` and ``role.error`` events
     in between. Production heads forward the observer through this
     kwarg so :func:`dream.runner.run_task` can drive a live walkthrough.
+
+    ``session_id`` names the role thread so it survives the process: the
+    session resumes that snapshot when one is readable, and the run's
+    :class:`SessionHandle` comes back on the result. An unusable snapshot
+    (never written, corrupt, or taken under another working directory) starts
+    the thread over under the same name rather than failing the run — the
+    caller keeps one stable key either way. Without it, nothing is persisted.
     """
     manifest = resolve_role_manifest(role, harness_dir=harness_dir)
     base = options if options is not None else SessionOptions()
@@ -167,7 +180,7 @@ async def run_role(
         metadata=metadata,
     )
 
-    session = await harness.start_session(effective)
+    session = await _open_role_session(harness, effective, session_id)
 
     role_label = str(manifest.name)
 
@@ -243,6 +256,12 @@ async def run_role(
             }
         )
 
+    # Persist before the error check: a session that errored mid-stream still
+    # holds the history explaining why, which the next run of this thread
+    # should see. A hard crash (an exception, not an ``Error`` event) skips
+    # this and leaves the previous snapshot standing.
+    handle = None if session_id is None else await harness.save_session(session)
+
     if error is not None:
         raise RoleSessionError(
             f"role {manifest.name!r} session {session.id} errored: {error.message}"
@@ -254,4 +273,24 @@ async def run_role(
         final_text="".join(text_chunks),
         cost=session.cost,
         events=tuple(captured),
+        session_handle=handle,
     )
+
+
+async def _open_role_session(
+    harness: Harness,
+    options: SessionOptions,
+    session_id: str | None,
+) -> Session:
+    """Resume the named role thread, or open a fresh one under that name."""
+    if session_id is None:
+        return await harness.start_session(options)
+    try:
+        return await harness.resume_session(session_id, options=options)
+    except SessionResumeError as exc:
+        # One retry with a clean thread, the same fallback a coding CLI makes
+        # when ``--resume`` is refused: losing continuity beats stranding the
+        # role. Drop a spent snapshot so later runs don't re-pay the failure.
+        if exc.should_clear_handle:
+            await harness.reset_session(session_id)
+        return await harness.start_session(options, session_id=session_id)

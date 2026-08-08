@@ -26,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `working_dir`.
 - `SessionHandle`, `SessionSnapshot`, `FileSessionStore`, and
   `SessionResumeError` are public exports.
+- `Harness.run_role(session_id=...)` names a role thread so it survives the
+  process: the session resumes that snapshot when one is readable and
+  `RunRoleResult.session_handle` carries the pointer plus the run's usage delta.
+  An unusable snapshot (never written, corrupt, or taken under another working
+  directory) starts the thread over under the same name instead of failing the
+  run. Omitting `session_id` persists nothing, as before.
 - Level-2 ``apply_patch`` (Codex multi-hunk add/update/delete/move) — the sole
   surgical edit tool; former ``edit_file`` removed.
 - Spec 05 per-repo tools: discover ``.harness/tools/{name}.toml``, validate
