@@ -11,7 +11,7 @@ class MutatingToolName(StrEnum):
     """Built-in tools that may mutate the working tree."""
 
     WRITE_FILE = "write_file"
-    EDIT_FILE = "edit_file"
+    APPLY_PATCH = "apply_patch"
     BASH = "bash"
     EXECUTE_CODE = "execute_code"
     TASK_CREATE = "task_create"
@@ -21,7 +21,7 @@ class CheckpointReason(StrEnum):
     """Why a snapshot was requested (stored as the git commit subject)."""
 
     BEFORE_WRITE_FILE = "before write_file"
-    BEFORE_EDIT_FILE = "before edit_file"
+    BEFORE_APPLY_PATCH = "before apply_patch"
     BEFORE_BASH = "before bash"
     BEFORE_EXECUTE_CODE = "before execute_code"
     BEFORE_TASK_CREATE = "before task_create"
@@ -89,7 +89,7 @@ class RestoreResult:
 
 _TOOL_TO_REASON: dict[MutatingToolName, CheckpointReason] = {
     MutatingToolName.WRITE_FILE: CheckpointReason.BEFORE_WRITE_FILE,
-    MutatingToolName.EDIT_FILE: CheckpointReason.BEFORE_EDIT_FILE,
+    MutatingToolName.APPLY_PATCH: CheckpointReason.BEFORE_APPLY_PATCH,
     MutatingToolName.BASH: CheckpointReason.BEFORE_BASH,
     MutatingToolName.EXECUTE_CODE: CheckpointReason.BEFORE_EXECUTE_CODE,
     MutatingToolName.TASK_CREATE: CheckpointReason.BEFORE_TASK_CREATE,

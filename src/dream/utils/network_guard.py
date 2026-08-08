@@ -18,7 +18,7 @@ refuses the request *before any bytes are exchanged* when:
     - IPv4 CGN (shared) ``100.64.0.0/10``,
     - multicast and reserved addresses.
 
-The absence of this guard is the difference between ``web_search`` / ``web_extract``
+The absence of this guard is the difference between ``web_search``
 (single trusted Tavily host, no guard) and ``web_fetch`` (arbitrary target, guard).
 
 ``allow_private`` is an explicit escape hatch for local development fixtures; it

@@ -71,13 +71,66 @@ from dream.tasks import (
 )
 from dream.tasks._cron import CRON_MANIFEST_DIR, load_cron_manifests
 from dream.tools._base import BaseTool
+from dream.tools._per_repo import PerRepoToolError, load_per_repo_tools
 from dream.tools._registry import ToolRegistry, ToolSource
-from dream.tools.builtin import default_registry, register_task_memory_tools
+from dream.tools.builtin import (
+    default_registry,
+    register_browser_tools,
+    register_code_intel_tools,
+    register_cron_tools,
+    register_legacy_surface,
+    register_memory_tools,
+    register_observability_tools,
+    register_plan_tools,
+    register_task_memory_tools,
+    register_task_tools,
+    register_web_tools,
+    register_worktree_tools,
+)
 from dream.tools.builtin.spawn_subagent import SpawnSubagentTool
 
 __all__ = ["PolicyWarningSink", "SkillEventSink", "build_harness"]
 
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
+
+
+def _apply_tool_packs(
+    registry: ToolRegistry,
+    *,
+    memory: bool,
+    tasks: bool,
+    cron: bool,
+    web: bool,
+    browser: bool,
+    observability: bool,
+    worktree: bool,
+    code_intel: bool,
+    plan: bool,
+    legacy_surface: bool,
+) -> None:
+    """Register opt-in tool packs onto ``registry`` (idempotent)."""
+    if legacy_surface:
+        register_legacy_surface(registry)
+        return
+    if memory:
+        register_memory_tools(registry)
+    if tasks:
+        register_task_tools(registry)
+    if cron:
+        register_cron_tools(registry)
+    if web:
+        register_web_tools(registry)
+    if browser:
+        register_browser_tools(registry)
+    if observability:
+        register_observability_tools(registry)
+    if worktree:
+        register_worktree_tools(registry)
+    if code_intel:
+        register_code_intel_tools(registry)
+    if plan:
+        register_plan_tools(registry)
+
 
 # A context-event sink the skill registry calls when a body loads.
 SkillEventSink = Callable[[ContextEvent], None]
@@ -99,6 +152,15 @@ def build_harness(
     skills: bool = True,
     memory: bool = True,
     working_memory: bool = False,
+    tasks: bool = False,
+    cron: bool = False,
+    web: bool = False,
+    browser: bool = False,
+    observability: bool = True,
+    worktree: bool = False,
+    code_intel: bool = False,
+    plan: bool = False,
+    legacy_surface: bool = False,
     mcp: bool = True,
     plugins: bool = True,
     subagents: SubagentSet | None = None,
@@ -117,6 +179,17 @@ def build_harness(
     *before* the first session starts — the tool wire-schema and the skill
     available-tool set are computed lazily per session, so late registrations
     are reflected.
+
+    The default tool surface is the Level-2 coding set (read/edit/write/bash/
+    git/read_offloaded/glob/grep/todo_write/skill). Opt-in packs:
+
+    - ``memory`` (default on) — ``memory_search`` / ``memory_get``
+    - ``observability`` (default on) — ``query_logs`` / ``query_metrics``
+      (evaluator default tools include ``query_logs``)
+    - ``tasks`` / ``cron`` / ``web`` / ``browser`` / ``worktree`` /
+      ``code_intel`` / ``plan`` — each off by default
+    - ``legacy_surface=True`` — registers every former default-registry pack
+      (migration escape hatch; ignores the individual pack flags)
 
     Skills are auto-discovered from the workspace (bundled + user + project
     ``SKILL.md`` dirs) by default so the whole action surface is wired with
@@ -156,6 +229,21 @@ def build_harness(
         raise ValueError("api_key must be a non-empty string")
     resolved_env: Mapping[str, str] = env if env is not None else os.environ
     tool_registry = registry if registry is not None else default_registry()
+    # Resolve paths early so per-repo tools and home overrides share one root.
+    paths = DreamPaths.resolve(working_dir, env=resolved_env).ensure()
+    _apply_tool_packs(
+        tool_registry,
+        memory=memory,
+        tasks=tasks,
+        cron=cron,
+        web=web,
+        browser=browser,
+        observability=observability,
+        worktree=worktree,
+        code_intel=code_intel,
+        plan=plan,
+        legacy_surface=legacy_surface,
+    )
     # Task memory (spec 11a) is opt-in: only register its tools when asked so
     # the default tool surface stays unchanged. The per-session context is
     # wired below in ``_build_session_engine`` (it needs the session id).
@@ -165,11 +253,15 @@ def build_harness(
     # ``subagents is None`` keeps the tool surface byte-identical (default off).
     if subagents is not None and tool_registry.get("spawn_subagent") is None:
         tool_registry.register(SpawnSubagentTool(), source=ToolSource.DEFAULT)
+    # Spec 05: discover per-repo tools after all default registrations so a
+    # declared per-repo tool can intentionally shadow any built-in.
+    try:
+        per_repo = load_per_repo_tools(tool_registry, paths.tools_dir())
+    except PerRepoToolError as exc:
+        raise ValueError(
+            "per-repo tool declarations failed validation: " + "; ".join(exc.findings)
+        ) from exc
     compactor = AutoCompactState()
-    # Resolve the home root from env so ``DREAM_HOME`` overrides are honoured
-    # for task storage / sidecars (#43); hardcoding ``Path.home()`` would write
-    # task artifacts under ~/.dream even when the operator redirected the root.
-    paths = DreamPaths.resolve(working_dir, env=resolved_env).ensure()
     # Auto-discover workspace skills (Spec 06) unless the caller supplied a
     # registry or opted out. An explicit ``skill_registry`` wins — the REPL
     # builds its own with shadow reporting. Malformed SKILL.md files are the
@@ -189,9 +281,12 @@ def build_harness(
     # discarding them inside the factory (#47). They derive solely from
     # ``.harness/tool-tier-overrides.toml`` (paths) and are independent of
     # session/role, so one assembly here covers every session in this process.
+    # Per-repo shadow warnings ride the same sink.
     if policy_warning_sink is not None:
         _, policy_warnings = make_permission_gate(tool_registry, paths=paths, cwd=working_dir)
         for warning in policy_warnings:
+            policy_warning_sink(warning)
+        for warning in per_repo.warnings:
             policy_warning_sink(warning)
 
     # 128K is the default we use throughout Spec 02; utilisation surfaces

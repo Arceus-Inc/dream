@@ -129,13 +129,81 @@ def test_memory_can_be_disabled(tmp_path: Path) -> None:
     assert "naming-convention" not in prompt
 
 
-def test_memory_tools_in_default_registry() -> None:
+def test_memory_tools_registered_when_memory_enabled(tmp_path: Path) -> None:
     from dream.tools.builtin import default_registry
 
-    names = {t.name for t in default_registry().list_tools()}
+    registry = default_registry()
+    assert "memory_search" not in {t.name for t in registry.list_tools()}
+    _build(tmp_path, registry=registry, memory=True)
+    names = {t.name for t in registry.list_tools()}
     assert "memory_search" in names
     assert "memory_get" in names
 
+
+def test_memory_tools_omitted_when_memory_disabled(tmp_path: Path) -> None:
+    from dream.tools.builtin import default_registry
+
+    registry = default_registry()
+    _build(tmp_path, registry=registry, memory=False)
+    names = {t.name for t in registry.list_tools()}
+    assert "memory_search" not in names
+    assert "memory_get" not in names
+
+
+def test_build_harness_omits_pack_tools_by_default(tmp_path: Path) -> None:
+    from dream.tools.builtin import default_registry
+
+    registry = default_registry()
+    _build(tmp_path, registry=registry, memory=False, observability=False)
+    names = {t.name for t in registry.list_tools()}
+    for pack_tool in (
+        "task_create",
+        "web_search",
+        "browser_run",
+        "execute_code",
+        "plan_show",
+        "query_logs",
+    ):
+        assert pack_tool not in names
+
+
+def test_build_harness_registers_observability_by_default(tmp_path: Path) -> None:
+    from dream.tools.builtin import default_registry
+
+    registry = default_registry()
+    _build(tmp_path, registry=registry, memory=False)
+    names = {t.name for t in registry.list_tools()}
+    assert {"query_logs", "query_metrics"} <= names
+
+
+def test_build_harness_legacy_surface_registers_packs(tmp_path: Path) -> None:
+    from dream.tools.builtin import default_registry
+
+    registry = default_registry()
+    _build(tmp_path, registry=registry, legacy_surface=True)
+    names = {t.name for t in registry.list_tools()}
+    assert {"memory_search", "task_create", "web_search", "execute_code"} <= names
+    assert "web_extract" not in names
+
+
+def test_build_harness_individual_pack_flags(tmp_path: Path) -> None:
+    from dream.tools.builtin import default_registry
+
+    registry = default_registry()
+    _build(
+        tmp_path,
+        registry=registry,
+        memory=False,
+        observability=False,
+        web=True,
+        plan=True,
+    )
+    names = {t.name for t in registry.list_tools()}
+    assert {"web_search", "web_fetch", "plan_show"} <= names
+    assert "web_extract" not in names
+    assert "task_create" not in names
+    assert "browser_run" not in names
+    assert "query_logs" not in names
 
 _TASK_MEMORY_TOOLS = {
     "working_memory_read",
@@ -224,6 +292,41 @@ def test_register_task_memory_tools_is_idempotent() -> None:
     register_task_memory_tools(registry)  # second call must not raise a collision
     names = {t.name for t in registry.list_tools()}
     assert _TASK_MEMORY_TOOLS <= names
+
+
+def test_per_repo_shadow_keeps_task_memory_tools(tmp_path: Path) -> None:
+    from dream import build_harness
+    from dream.tools._registry import ToolSource
+    from dream.tools.builtin import default_registry
+
+    wt = tmp_path / "wt"
+    tools_dir = wt / ".harness" / "tools"
+    tools_dir.mkdir(parents=True)
+    (tools_dir / "working_memory_read.toml").write_text(
+        """
+name = "working_memory_read"
+description = "Repo-local memory reader"
+command = "echo repo"
+risk = "safe"
+tier_required = 0
+timeout_seconds = 5.0
+parameters = { type = "object", properties = {} }
+""",
+        encoding="utf-8",
+    )
+    registry = default_registry()
+    build_harness(
+        model="m",
+        api_key="k",
+        working_dir=wt,
+        registry=registry,
+        memory=False,
+        working_memory=True,
+        env={"DREAM_HOME": str(tmp_path / "home")},
+    )
+    assert {t.name for t in registry.list_tools()} >= _TASK_MEMORY_TOOLS
+    sources = {tool.name: source for tool, source in registry.iter_with_source()}
+    assert sources["working_memory_read"] is ToolSource.PER_REPO
 
 
 def test_build_harness_is_public() -> None:

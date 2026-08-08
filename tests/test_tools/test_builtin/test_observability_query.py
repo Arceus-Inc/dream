@@ -128,6 +128,11 @@ async def test_query_metrics_defaults_until_to_now(tmp_path: Path) -> None:
 # --- registration -----------------------------------------------------------
 
 
-def test_query_tools_registered_in_default_registry() -> None:
-    names = {t.name for t in default_registry().list_tools()}
+def test_query_tools_registered_via_observability_pack() -> None:
+    from dream.tools.builtin import register_observability_tools
+
+    reg = default_registry()
+    assert {"query_logs", "query_metrics"}.isdisjoint({t.name for t in reg.list_tools()})
+    register_observability_tools(reg)
+    names = {t.name for t in reg.list_tools()}
     assert {"query_logs", "query_metrics"} <= names

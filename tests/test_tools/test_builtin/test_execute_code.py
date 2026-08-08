@@ -23,7 +23,13 @@ from dream.tools.execute_code import (
 
 @pytest.fixture
 def registry():
-    return default_registry()
+    from dream.tools.builtin import register_code_intel_tools, register_web_tools
+
+    reg = default_registry()
+    register_code_intel_tools(reg)
+    # Nested allowlist may include web_* when present in the session registry.
+    register_web_tools(reg)
+    return reg
 
 
 @pytest.fixture
@@ -47,7 +53,11 @@ def test_declaration_is_mutating(tool: ExecuteCodeTool) -> None:
 
 
 def test_sandbox_allowlist_is_typed_dream_names() -> None:
-    session = frozenset(t.name for t in default_registry().list_tools())
+    from dream.tools.builtin import register_code_intel_tools
+
+    reg = default_registry()
+    register_code_intel_tools(reg)
+    session = frozenset(t.name for t in reg.list_tools())
     names = sandbox_tools_for(session)
     assert NestedToolName.READ_FILE in names
     assert NestedToolName.BASH in names
@@ -59,10 +69,14 @@ def test_empty_session_intersection_fails_closed() -> None:
     assert sandbox_tools_for(frozenset()) == frozenset()
 
 
-def test_default_registry_includes_execute_code() -> None:
-    names = {t.name for t in default_registry().list_tools()}
-    assert "execute_code" in names
+def test_code_intel_pack_includes_execute_code() -> None:
+    from dream.tools.builtin import register_code_intel_tools
 
+    reg = default_registry()
+    register_code_intel_tools(reg)
+    names = {t.name for t in reg.list_tools()}
+    assert "execute_code" in names
+    assert "execute_code" not in {t.name for t in default_registry().list_tools()}
 
 async def test_script_stdout_is_the_only_parent_payload(
     tool: ExecuteCodeTool, ctx: ToolExecutionContext, tmp_path: Path
