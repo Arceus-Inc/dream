@@ -302,7 +302,12 @@ class Harness:
         """Refuse a resume whose snapshot was taken in another directory."""
         saved = snapshot.working_dir
         if saved is None:
-            return
+            raise SessionResumeError(
+                f"session {session_id!r} has no recorded working directory; "
+                "pass allow_working_dir_change=True to resume anyway",
+                reason="working_dir_mismatch",
+                session_id=session_id,
+            )
         current = self.config.working_dir
         if Path(saved).expanduser().resolve() == Path(current).expanduser().resolve():
             return

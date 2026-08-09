@@ -488,6 +488,31 @@ async def test_resumed_session_reports_delta_from_restored_total(tmp_path: Path)
     assert handle.usage_total.input_tokens == 9
 
 
+async def test_resume_rejects_snapshot_without_recorded_working_dir(
+    tmp_path: Path,
+) -> None:
+    """A v2 snapshot with no directory binding must not resume blindly.
+
+    Without a recorded ``working_dir`` the harness cannot tell whether the
+    transcript belongs in this workspace, so the caller must opt in explicitly.
+    """
+    harness = _handle_harness(tmp_path, working_dir=tmp_path / "repo")
+    (tmp_path / "repo").mkdir()
+    store = harness.config.session_store
+    assert store is not None
+    unbound = _session_with_tool_transcript().snapshot()
+    assert unbound.working_dir is None
+    store.save(unbound)
+
+    with pytest.raises(SessionResumeError) as excinfo:
+        await harness.resume_session("abc123")
+    assert excinfo.value.reason == "working_dir_mismatch"
+    assert excinfo.value.should_clear_handle is False
+
+    opted_in = await harness.resume_session("abc123", allow_working_dir_change=True)
+    assert opted_in.id == "abc123"
+
+
 async def test_resume_rejects_working_dir_change(tmp_path: Path) -> None:
     origin = tmp_path / "repo-a"
     origin.mkdir()
