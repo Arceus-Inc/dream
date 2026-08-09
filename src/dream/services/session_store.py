@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections import UserDict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -83,7 +84,7 @@ class ToolUseBlockRecord:
     kind: Literal["tool_use"]
     id: str
     name: str
-    input: dict[str, JsonValue]
+    input: tuple[tuple[str, JsonValue], ...]
 
 
 @dataclass(frozen=True)
@@ -100,7 +101,7 @@ ContentBlockRecord = TextBlockRecord | ImageBlockRecord | ToolUseBlockRecord | T
 @dataclass(frozen=True)
 class ConversationMessageRecord:
     role: RoleLiteral
-    content: list[ContentBlockRecord]
+    content: tuple[ContentBlockRecord, ...]
 
 
 @dataclass(frozen=True)
@@ -116,20 +117,27 @@ class SessionCostSnapshot:
 class ToolCallRecord:
     tool_use_id: str
     tool_name: str
-    input: dict[str, JsonValue]
+    input: tuple[tuple[str, JsonValue], ...]
     result_content: str | None
     is_error: bool | None
 
 
 @dataclass(frozen=True)
 class SessionSnapshot:
+    """Immutable durable state of one provider-independent session.
+
+    The file-store codec remains the source of truth for serialization; this
+    value object gives callers a stable point-in-time view without exposing
+    mutable transcript collections.
+    """
+
     schema_version: int
     session_id: str
     model: str
     system_prompt: str | None
     cost: SessionCostSnapshot
-    messages: list[ConversationMessageRecord]
-    tool_calls: list[ToolCallRecord]
+    messages: tuple[ConversationMessageRecord, ...]
+    tool_calls: tuple[ToolCallRecord, ...]
     saved_at: datetime
     # Keyword-only from here down. Each of these is something the harness
     # learned to persist after the fact, and the next one will land beside
@@ -139,7 +147,7 @@ class SessionSnapshot:
     # working directory replays a transcript about other files, so the harness
     # refuses it unless the caller opts in. ``None`` for engine-less sessions.
     working_dir: str | None = field(default=None, kw_only=True)
-    metadata: dict[str, JsonValue] = field(default_factory=dict, kw_only=True)
+    metadata: tuple[tuple[str, JsonValue], ...] = field(default=(), kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -210,7 +218,7 @@ def message_to_record(message: ConversationMessage) -> ConversationMessageRecord
     for block in message.content:
         blocks.append(block_to_record(block))
     role: RoleLiteral = message.role
-    return ConversationMessageRecord(role=role, content=blocks)
+    return ConversationMessageRecord(role=role, content=tuple(blocks))
 
 
 def block_to_record(block: ContentBlock) -> ContentBlockRecord:
@@ -223,7 +231,7 @@ def block_to_record(block: ContentBlock) -> ContentBlockRecord:
             kind="tool_use",
             id=block.id,
             name=block.name,
-            input=json_dict_from_mapping(block.input),
+            input=tuple(json_dict_from_mapping(block.input).items()),
         )
     if isinstance(block, ToolResultBlock):
         return ToolResultBlockRecord(
@@ -247,7 +255,11 @@ def record_to_block(record: ContentBlockRecord) -> ContentBlock:
     if isinstance(record, ImageBlockRecord):
         return ImageBlock(media_type=record.media_type, data=record.data)
     if isinstance(record, ToolUseBlockRecord):
-        return ToolUseBlock(id=record.id, name=record.name, input=dict(record.input))
+        return ToolUseBlock(
+            id=record.id,
+            name=record.name,
+            input=json_dict_from_mapping(UserDict(record.input)),
+        )
     if isinstance(record, ToolResultBlockRecord):
         return ToolResultBlock(
             tool_use_id=record.tool_use_id,
@@ -275,7 +287,7 @@ def extract_tool_calls(messages: Sequence[ConversationMessage]) -> list[ToolCall
                 ToolCallRecord(
                     tool_use_id=block.id,
                     tool_name=block.name,
-                    input=json_dict_from_mapping(block.input),
+                    input=tuple(json_dict_from_mapping(block.input).items()),
                     result_content=result.content if result is not None else None,
                     is_error=result.is_error if result is not None else None,
                 )
@@ -291,7 +303,7 @@ def snapshot_to_dict(snapshot: SessionSnapshot) -> dict[str, object]:
         "system_prompt": snapshot.system_prompt,
         "max_turns": snapshot.max_turns,
         "working_dir": snapshot.working_dir,
-        "metadata": snapshot.metadata,
+        "metadata": json_dict_from_mapping(UserDict(snapshot.metadata)),
         "cost": {
             "input_tokens": snapshot.cost.input_tokens,
             "output_tokens": snapshot.cost.output_tokens,
@@ -327,12 +339,14 @@ def snapshot_from_dict(data: Mapping[str, object]) -> SessionSnapshot:
             cache_write_tokens=_require_int(cost_raw, "cache_write_tokens"),
             cost_usd=_require_float(cost_raw, "cost_usd"),
         ),
-        messages=[_message_record_from_dict(item) for item in messages_raw],
-        tool_calls=[_tool_call_from_dict(item) for item in tool_calls_raw],
+        messages=tuple(_message_record_from_dict(item) for item in messages_raw),
+        tool_calls=tuple(_tool_call_from_dict(item) for item in tool_calls_raw),
         saved_at=datetime.fromisoformat(saved_at_raw),
         max_turns=_optional_int(data.get("max_turns")),
         working_dir=_optional_str(data.get("working_dir"), label="working_dir"),
-        metadata=json_dict_from_mapping(_optional_mapping(data.get("metadata"))),
+        metadata=tuple(
+            json_dict_from_mapping(_optional_mapping(data.get("metadata"))).items()
+        ),
     )
 
 
@@ -444,7 +458,7 @@ def _block_record_to_dict(block: ContentBlockRecord) -> dict[str, object]:
             "kind": "tool_use",
             "id": block.id,
             "name": block.name,
-            "input": block.input,
+            "input": json_dict_from_mapping(UserDict(block.input)),
         }
     if isinstance(block, ToolResultBlockRecord):
         return {
@@ -460,7 +474,7 @@ def _tool_call_to_dict(record: ToolCallRecord) -> dict[str, object]:
     return {
         "tool_use_id": record.tool_use_id,
         "tool_name": record.tool_name,
-        "input": record.input,
+        "input": json_dict_from_mapping(UserDict(record.input)),
         "result_content": record.result_content,
         "is_error": record.is_error,
     }
@@ -478,7 +492,7 @@ def _message_record_from_dict(raw: object) -> ConversationMessageRecord:
     content_raw = _require_list(data, "content")
     return ConversationMessageRecord(
         role=role,
-        content=[_block_record_from_dict(item) for item in content_raw],
+        content=tuple(_block_record_from_dict(item) for item in content_raw),
     )
 
 
@@ -499,7 +513,7 @@ def _block_record_from_dict(raw: object) -> ContentBlockRecord:
             kind="tool_use",
             id=_require_str(data, "id"),
             name=_require_str(data, "name"),
-            input=json_dict_from_mapping(input_raw),
+            input=tuple(json_dict_from_mapping(input_raw).items()),
         )
     if kind == "tool_result":
         return ToolResultBlockRecord(
@@ -519,7 +533,7 @@ def _tool_call_from_dict(raw: object) -> ToolCallRecord:
     return ToolCallRecord(
         tool_use_id=_require_str(data, "tool_use_id"),
         tool_name=_require_str(data, "tool_name"),
-        input=json_dict_from_mapping(input_raw),
+        input=tuple(json_dict_from_mapping(input_raw).items()),
         result_content=str(result_content) if result_content is not None else None,
         is_error=bool(is_error) if is_error is not None else None,
     )

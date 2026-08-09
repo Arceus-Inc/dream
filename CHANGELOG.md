@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `RunTrace.read()` aggregates a session's existing JSONL `TraceEvent` stream
+  into an immutable typed value, while `SessionSnapshot` now presents immutable
+  transcript, tool-call, and metadata collections to control-plane consumers.
 - Durable session save/resume: `FileSessionStore` under `DreamPaths.sessions_dir`,
   `Session.snapshot` / `restore_from_snapshot`, and `Harness.save_session` /
   `resume_session` so a process restart continues the same transcript (tool-call

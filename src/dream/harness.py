@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections import UserDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -25,6 +26,7 @@ from dream.services.session_store import (
     SessionHandle,
     SessionSnapshot,
     checked_session_id,
+    json_dict_from_mapping,
 )
 from dream.session import Session, SessionOptions
 
@@ -289,7 +291,7 @@ class Harness:
             model=snapshot.model,
             system_prompt=snapshot.system_prompt,
             max_turns=snapshot.max_turns,
-            metadata=snapshot.metadata,
+            metadata=json_dict_from_mapping(UserDict(snapshot.metadata)),
         )
         engine = None
         if self.config._engine_factory is not None:

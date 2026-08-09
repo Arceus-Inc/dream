@@ -276,12 +276,12 @@ class Session:
             model=model,
             system_prompt=self.options.system_prompt,
             cost=self._current_cost(),
-            messages=[message_to_record(m) for m in consistent],
-            tool_calls=extract_tool_calls(consistent),
+            messages=tuple(message_to_record(m) for m in consistent),
+            tool_calls=tuple(extract_tool_calls(consistent)),
             saved_at=datetime.now(tz=UTC),
             max_turns=self._effective_max_turns(),
             working_dir=self._working_dir(),
-            metadata=metadata,
+            metadata=tuple(metadata.items()),
         )
 
     def restore_from_snapshot(self, snapshot: SessionSnapshot) -> None:

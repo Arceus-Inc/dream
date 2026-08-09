@@ -50,7 +50,7 @@ from dream.events import (
     TurnComplete,
 )
 from dream.harness import Harness, HarnessConfig
-from dream.observability import tail_events
+from dream.observability import RunTrace, tail_events
 from dream.services.session_store import (
     FileSessionStore,
     SessionHandle,
@@ -97,6 +97,7 @@ __all__ = [
     "ProviderEvent",
     "ProviderUsage",
     "RunTaskError",
+    "RunTrace",
     "SandboxError",
     "Session",
     "SessionCost",
