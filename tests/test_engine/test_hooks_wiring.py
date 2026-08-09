@@ -6,9 +6,9 @@ lifecycle events fire during a real session:
 
 - ``SESSION_START`` once at session start, payload ``{session_id}``;
 - ``PRE_TOOL_USE`` immediately *before* each tool dispatch, payload
-  ``{tool_name, tool_input}``;
+  ``{session_id, tool_name, tool_input}``;
 - ``POST_TOOL_USE`` immediately *after* the tool result is produced,
-  payload ``{tool_name, is_error, result_summary}``;
+  payload ``{session_id, tool_name, is_error, result_summary}``;
 - ``STOP`` once at session end, payload ``{session_id}``.
 
 The SACRED invariant: ``POST_TOOL_USE`` must fire *after* the
@@ -219,9 +219,12 @@ async def test_full_lifecycle_order(tmp_path: Path) -> None:
     by_event = {ev: payload for ev, payload in hook.seen}
     assert by_event[HookEvent.SESSION_START] == {"session_id": "s_lifecycle"}
     assert by_event[HookEvent.STOP]["session_id"] == "s_lifecycle"
-    assert by_event[HookEvent.PRE_TOOL_USE]["tool_name"] == "echo"
-    assert by_event[HookEvent.PRE_TOOL_USE]["tool_input"] == {}
+    pre = by_event[HookEvent.PRE_TOOL_USE]
+    assert pre["session_id"] == "s_lifecycle"
+    assert pre["tool_name"] == "echo"
+    assert pre["tool_input"] == {}
     post = by_event[HookEvent.POST_TOOL_USE]
+    assert post["session_id"] == "s_lifecycle"
     assert post["tool_name"] == "echo"
     assert post["is_error"] is False
     assert "echo-result" in post["result_summary"]
