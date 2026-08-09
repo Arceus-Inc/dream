@@ -29,7 +29,6 @@ class VerifyOnStopConfig:
     require_evidence_for: frozenset[str] = frozenset(t.value for t in MutatingToolName)
     evidence_tools: frozenset[str] = frozenset(
         {
-            "bash",
             "grep",
             "glob",
             "read_file",

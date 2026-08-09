@@ -35,7 +35,7 @@ async def test_no_nudge_when_evidence_ran_after_mutate() -> None:
     )
     await hook(
         HookEvent.POST_TOOL_USE,
-        {"session_id": "s1", "tool_name": "bash", "is_error": False},
+        {"session_id": "s1", "tool_name": "grep", "is_error": False},
     )
     result = await hook(
         HookEvent.STOP,
@@ -117,10 +117,25 @@ async def test_failed_mutate_does_not_count() -> None:
 
 
 @pytest.mark.asyncio
+async def test_mutating_bash_alone_does_not_satisfy_evidence() -> None:
+    """A mutating tool cannot clear the evidence requirement on the same call."""
+    hook = VerifyOnStopHook()
+    await hook(
+        HookEvent.POST_TOOL_USE,
+        {"session_id": "s1", "tool_name": "bash", "is_error": False},
+    )
+    result = await hook(
+        HookEvent.STOP,
+        {"session_id": "s1", "phase": "pre_seal", "verify_nudges": 0},
+    )
+    assert result.continue_message is not None
+
+
+@pytest.mark.asyncio
 async def test_later_mutation_requires_new_evidence() -> None:
     hook = VerifyOnStopHook()
     await hook(HookEvent.POST_TOOL_USE, {"session_id": "s1", "tool_name": "write_file"})
-    await hook(HookEvent.POST_TOOL_USE, {"session_id": "s1", "tool_name": "bash"})
+    await hook(HookEvent.POST_TOOL_USE, {"session_id": "s1", "tool_name": "grep"})
     await hook(HookEvent.POST_TOOL_USE, {"session_id": "s1", "tool_name": "task_create"})
     result = await hook(
         HookEvent.STOP,

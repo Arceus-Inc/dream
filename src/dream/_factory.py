@@ -145,7 +145,7 @@ def build_harness(
     or empty config as "nothing to wire". Pass ``False`` to skip either surface.
 
     ``verify_on_stop`` (default True) registers Hermes-style STOP continue:
-    mutating file tools without a subsequent evidence tool (bash/read/grep/glob)
+    mutating file tools without a subsequent evidence tool (read/grep/glob)
     nudge another turn before seal (capped by ``max_verify_nudges``).
 
     ``env`` is consulted only for host resolution — ``DREAM_HOME`` path
