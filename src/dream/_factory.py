@@ -268,8 +268,16 @@ def build_harness(
         register_task_memory_tools(tool_registry)
     # Subagents: register spawn when a set is provided (including empty — generalPurpose only).
     # ``subagents is None`` keeps the tool surface byte-identical (default off).
-    if subagents is not None and tool_registry.get("spawn_subagent") is None:
-        tool_registry.register(SpawnSubagentTool(), source=ToolSource.DEFAULT)
+    if subagents is not None:
+        from dream.tools.builtin.delegation_get import DelegationGetTool
+        from dream.tools.builtin.delegation_stop import DelegationStopTool
+
+        if tool_registry.get("spawn_subagent") is None:
+            tool_registry.register(SpawnSubagentTool(), source=ToolSource.DEFAULT)
+        if tool_registry.get("delegation_get") is None:
+            tool_registry.register(DelegationGetTool(), source=ToolSource.DEFAULT)
+        if tool_registry.get("delegation_stop") is None:
+            tool_registry.register(DelegationStopTool(), source=ToolSource.DEFAULT)
     # Spec 05: discover per-repo tools after all default registrations so a
     # declared per-repo tool can intentionally shadow any built-in.
     try:
@@ -792,7 +800,23 @@ def _build_session_engine(
     # the session has no subagent set (top-level role without spawn capability).
     if role_allowed is not None:
         context_metadata[PARENT_TOOLS_KEY] = role_allowed
-    context_metadata[PARENT_PERMISSIONS_KEY] = permission_gate
+
+    from dream.subagents._inline_executor import (
+        SUBAGENT_OVERLAY_METADATA_KEY,
+        SUBAGENT_WORKING_DIR_METADATA_KEY,
+    )
+    from dream.subagents._overlay_gate import wrap_permission_gate
+
+    session_working_dir = working_dir
+    override_cwd = options.metadata.get(SUBAGENT_WORKING_DIR_METADATA_KEY)
+    if isinstance(override_cwd, str) and override_cwd:
+        session_working_dir = Path(override_cwd)
+
+    overlay = options.metadata.get(SUBAGENT_OVERLAY_METADATA_KEY)
+    child_gate = permission_gate
+    if isinstance(overlay, tuple) and overlay:
+        child_gate = wrap_permission_gate(permission_gate, overlay)
+    context_metadata[PARENT_PERMISSIONS_KEY] = child_gate
 
     # The run_role observer (when present) rides into the tool context, so the spawn tool can
     # forward it into a child session — nested spawns then surface on the same observer/bus.
@@ -834,10 +858,10 @@ def _build_session_engine(
         streamer=streamer,
         registry=tool_registry,
         session_id=session_id,
-        working_dir=working_dir,
+        working_dir=session_working_dir,
         scratch_dir=paths.sidecar(session_id) / "scratch",
         max_turns=options.max_turns or max_turns,
-        permission_gate=permission_gate,
+        permission_gate=child_gate,
         role_allowed_tools=role_allowed,
         limits=SessionLimits(),
         context_metadata=context_metadata,

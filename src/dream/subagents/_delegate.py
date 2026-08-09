@@ -116,7 +116,15 @@ async def run_subagent_delegate(
     there, never into the caller's worktree. Without it the summary is truncated
     with no spill.
     """
-    workspace = str(working_dir) if working_dir is not None else None
+    parent_cwd = Path(working_dir) if working_dir is not None else None
+    scratch = Path(spill_dir) if spill_dir is not None else None
+    # Shared isolation: advertise the parent cwd. WORKTREE isolation rebuilds
+    # the prompt inside the executor once the ephemeral checkout exists.
+    workspace = (
+        None
+        if agent.isolation.value == "worktree"
+        else (str(parent_cwd) if parent_cwd is not None else None)
+    )
     prompt = build_child_prompt(goal, context, workspace_path=workspace)
     result = await run_subagent_session(
         agent,
@@ -126,6 +134,10 @@ async def run_subagent_delegate(
         spawn_counter=spawn_counter,
         tracer=tracer,
         observer=observer,
+        working_dir=parent_cwd,
+        spill_dir=scratch,
+        goal=goal,
+        context=context,
     )
     if not result.success:
         return result

@@ -17,6 +17,7 @@ class DelegationStatus(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     TIMED_OUT = "timed_out"
+    STOPPED = "stopped"
 
 
 @dataclass(frozen=True)
@@ -45,13 +46,26 @@ class DelegationCompletion:
         return "\n".join(lines)
 
 
+@dataclass(frozen=True)
+class DelegationSnapshot:
+    """Pollable view of one delegation (active or completed)."""
+
+    delegation_id: str
+    session_id: str
+    status: DelegationStatus
+    subagent_names: tuple[str, ...]
+    results: tuple[SubagentResult, ...] = ()
+    error: str | None = None
+
+
 _DelegationWork = Callable[[], Awaitable[tuple[SubagentResult, ...]]]
 
 
-@dataclass(frozen=True)
+@dataclass
 class _ActiveDelegation:
     session_id: str
     task: asyncio.Task[None]
+    subagent_names: tuple[str, ...]
 
 
 class AsyncDelegationManager:
@@ -66,6 +80,7 @@ class AsyncDelegationManager:
         self._timeout_seconds = timeout_seconds
         self._active: dict[str, _ActiveDelegation] = {}
         self._completed: defaultdict[str, deque[DelegationCompletion]] = defaultdict(deque)
+        self._history: dict[str, DelegationSnapshot] = {}
         self._ready: defaultdict[str, asyncio.Event] = defaultdict(asyncio.Event)
 
     def start(
@@ -78,7 +93,17 @@ class AsyncDelegationManager:
             return None
         delegation_id = uuid4().hex[:12]
         task = asyncio.create_task(self._run(delegation_id, session_id, work))
-        self._active[delegation_id] = _ActiveDelegation(session_id=session_id, task=task)
+        self._active[delegation_id] = _ActiveDelegation(
+            session_id=session_id,
+            task=task,
+            subagent_names=subagent_names,
+        )
+        self._history[delegation_id] = DelegationSnapshot(
+            delegation_id=delegation_id,
+            session_id=session_id,
+            status=DelegationStatus.DISPATCHED,
+            subagent_names=subagent_names,
+        )
         return DelegationHandle(
             delegation_id=delegation_id,
             status=DelegationStatus.DISPATCHED,
@@ -87,6 +112,22 @@ class AsyncDelegationManager:
 
     def active(self, session_id: str) -> int:
         return sum(item.session_id == session_id for item in self._active.values())
+
+    def get(self, delegation_id: str) -> DelegationSnapshot | None:
+        return self._history.get(delegation_id)
+
+    def list_for_session(self, session_id: str) -> tuple[DelegationSnapshot, ...]:
+        return tuple(
+            snap for snap in self._history.values() if snap.session_id == session_id
+        )
+
+    async def stop(self, delegation_id: str) -> DelegationSnapshot | None:
+        active = self._active.get(delegation_id)
+        if active is None:
+            return self._history.get(delegation_id)
+        active.task.cancel()
+        await asyncio.gather(active.task, return_exceptions=True)
+        return self._history.get(delegation_id)
 
     def drain(self, session_id: str) -> tuple[DelegationCompletion, ...]:
         queue = self._completed[session_id]
@@ -127,6 +168,7 @@ class AsyncDelegationManager:
         session_id: str,
         work: _DelegationWork,
     ) -> None:
+        names = self._active[delegation_id].subagent_names if delegation_id in self._active else ()
         try:
             async with asyncio.timeout(self._timeout_seconds):
                 results = await work()
@@ -142,9 +184,9 @@ class AsyncDelegationManager:
         except asyncio.CancelledError:
             completion = DelegationCompletion(
                 delegation_id=delegation_id,
-                status=DelegationStatus.FAILED,
+                status=DelegationStatus.STOPPED,
                 results=(),
-                error="background delegation cancelled",
+                error="background delegation stopped",
             )
         except TimeoutError:
             completion = DelegationCompletion(
@@ -153,7 +195,7 @@ class AsyncDelegationManager:
                 results=(),
                 error=f"background delegation exceeded {self._timeout_seconds:g}s",
             )
-        except Exception as exc:  # the parent receives failure; the task never leaks it
+        except Exception as exc:
             completion = DelegationCompletion(
                 delegation_id=delegation_id,
                 status=DelegationStatus.FAILED,
@@ -163,6 +205,14 @@ class AsyncDelegationManager:
         finally:
             self._active.pop(delegation_id, None)
             self._ready[session_id].set()
+        self._history[delegation_id] = DelegationSnapshot(
+            delegation_id=delegation_id,
+            session_id=session_id,
+            status=completion.status,
+            subagent_names=names,
+            results=completion.results,
+            error=completion.error,
+        )
         self._completed[session_id].append(completion)
         self._ready[session_id].set()
 
@@ -171,5 +221,6 @@ __all__ = [
     "AsyncDelegationManager",
     "DelegationCompletion",
     "DelegationHandle",
+    "DelegationSnapshot",
     "DelegationStatus",
 ]

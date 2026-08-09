@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from dream.subagents import IsolationMode
 from dream.subagents._declaration import Subagent, SubagentSet
 
 
@@ -56,10 +57,12 @@ class TestSubagentDeclaration:
             spawned_by=("analyst",),
             system_prompt="You are a SQL expert.",
             max_turns=4,
+            isolation=IsolationMode.WORKTREE,
         )
         d = agent.to_dict()
         restored = Subagent.from_dict(d)
         assert restored == agent
+        assert restored.isolation is IsolationMode.WORKTREE
 
     def test_from_dict_defaults(self) -> None:
         d = {"name": "test", "description": "test", "tools": ["x"]}

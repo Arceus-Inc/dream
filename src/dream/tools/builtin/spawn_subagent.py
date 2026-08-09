@@ -21,12 +21,20 @@ from pydantic import BaseModel, Field, model_validator
 from dream.contracts.hook import SubagentJoinMode
 from dream.contracts.tool import ToolResult
 from dream.observability._tracer import Tracer
+from dream.subagents._builtins import (
+    EXPLORE,
+    PLAN,
+    VERIFY,
+    merge_builtins,
+    spawn_catalog_names,
+)
 from dream.subagents._declaration import (
     GENERAL_PURPOSE_DESCRIPTION,
     GENERAL_PURPOSE_NAME,
     Subagent,
     SubagentSet,
 )
+from dream.subagents._inline_executor import SUBAGENT_NAME_METADATA_KEY
 from dream.subagents._projection import SubagentResult
 from dream.tools._base import BaseTool, ToolDeclaration
 from dream.tools._context import ToolExecutionContext
@@ -53,10 +61,6 @@ SPAWN_SUBAGENT_TOOL = "spawn_subagent"
 GENERAL_PURPOSE = GENERAL_PURPOSE_NAME
 
 
-class SpawnJoinMode(StrEnum):
-    DELEGATE = "delegate"
-
-
 class SpawnDispatchStatus(StrEnum):
     DISPATCHED = "dispatched"
     COMPLETED = "completed"
@@ -74,9 +78,30 @@ _DEFAULT_GP_TOOLS = (
 
 
 def spawn_type_names(subagent_set: SubagentSet | None) -> tuple[str, ...]:
-    """Enum values for this beat: generalPurpose first, then Spec names."""
-    names = tuple(subagent_set.names()) if subagent_set is not None else ()
-    return (GENERAL_PURPOSE_NAME, *names)
+    """Enum values: generalPurpose, builtins, then remaining role names."""
+    return spawn_catalog_names(subagent_set)
+
+
+def resolve_agent(
+    type_name: str,
+    *,
+    subagent_set: SubagentSet | None,
+    parent_tools: frozenset[str] | None,
+    parent_name: str | None,
+) -> Subagent | None:
+    """Resolve a fail-closed catalog entry; enforce ``spawned_by`` when set.
+
+    Role overrides of ``explore`` / ``plan`` / ``verify`` win: the merged
+    catalogue is consulted first so advertised names match the live resolver.
+    """
+    if type_name == GENERAL_PURPOSE_NAME:
+        return general_purpose_agent(parent_tools)
+    agent = merge_builtins(subagent_set).get(type_name)
+    if agent is None:
+        return None
+    if agent.spawned_by and (parent_name is None or parent_name not in agent.spawned_by):
+        return None
+    return agent
 
 
 def spawn_label_from_input(tool_input: Mapping[str, Any]) -> str:
@@ -296,6 +321,8 @@ class SpawnSubagentTool(BaseTool):
         subagent_set: SubagentSet | None = ctx.metadata.get(SUBAGENT_SET_CONTEXT_KEY)
         available = spawn_type_names(subagent_set)
         parent_tools: frozenset[str] | None = ctx.metadata.get(PARENT_TOOLS_KEY)
+        parent_name_raw = ctx.metadata.get(SUBAGENT_NAME_METADATA_KEY)
+        parent_name = parent_name_raw if isinstance(parent_name_raw, str) else None
         requested = (
             args.tasks
             if args.tasks is not None
@@ -310,11 +337,12 @@ class SpawnSubagentTool(BaseTool):
         resolved: list[_ResolvedTask] = []
         for task in requested:
             type_name = task.subagent_type.strip()
-            agent: Subagent | None
-            if type_name == GENERAL_PURPOSE:
-                agent = general_purpose_agent(parent_tools)
-            else:
-                agent = subagent_set.get(type_name) if subagent_set is not None else None
+            agent = resolve_agent(
+                type_name,
+                subagent_set=subagent_set,
+                parent_tools=parent_tools,
+                parent_name=parent_name,
+            )
             if agent is None:
                 return unknown_subagent_result(type_name, available)
             resolved.append(
@@ -355,8 +383,9 @@ class SpawnSubagentTool(BaseTool):
             ledger = SpawnLedger()
             ctx.metadata[SPAWN_LEDGER_KEY] = ledger
         names = tuple(task.agent.name for task in resolved)
-        # generalPurpose is repeatable ad-hoc work; evidence specialists remain one-shot.
-        ledger_names = tuple(name for name in names if name != GENERAL_PURPOSE)
+        # Builtins + generalPurpose are repeatable; role specialists remain one-shot.
+        _repeatable = frozenset({GENERAL_PURPOSE, EXPLORE, PLAN, VERIFY})
+        ledger_names = tuple(name for name in names if name not in _repeatable)
         duplicate = ledger.claim(ledger_names)
         if duplicate is not None:
             return ToolResult(
@@ -509,7 +538,7 @@ class SpawnSubagentTool(BaseTool):
                     "turns_used": result.turns_used,
                     "tool_calls": result.tool_calls,
                     "tool_errors": result.tool_errors,
-                    "mode": SpawnJoinMode.DELEGATE.value,
+                    "mode": SubagentJoinMode.SYNC.value,
                     "join_mode": SubagentJoinMode.SYNC.value,
                     "background_forced_sync": bool(forced_sync_note),
                 },
