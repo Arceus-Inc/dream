@@ -144,6 +144,28 @@ async def test_corrupt_snapshot_starts_thread_over_under_same_id(tmp_path: Path)
     ]
 
 
+async def test_recovery_survives_a_throwing_observer(tmp_path: Path) -> None:
+    class ThrowingRecoveryObserver:
+        def on_event(self, event: dict[str, object]) -> None:
+            if event.get("kind") == "role.session.recovered":
+                raise RuntimeError("observer unavailable")
+
+    streamer = FakeStreamer(turns=[FakeTurn(text_chunks=["ok"])])
+    harness, store = _harness(tmp_path, streamer)
+    store.path_for("beat-1").parent.mkdir(parents=True, exist_ok=True)
+    store.path_for("beat-1").write_text("{truncated", encoding="utf-8")
+
+    result = await harness.run_role(
+        "generator",
+        "do the thing",
+        session_id="beat-1",
+        observer=ThrowingRecoveryObserver(),
+    )
+
+    assert result.session_handle is not None
+    assert store.load("beat-1").session_id == "beat-1"
+
+
 async def test_snapshot_from_another_working_dir_runs_fresh_and_unsaved(
     tmp_path: Path,
 ) -> None:

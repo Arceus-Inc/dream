@@ -24,6 +24,7 @@ discipline only (the v1 contract every role is built around).
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from enum import StrEnum
@@ -44,6 +45,8 @@ from dream.session import Session, SessionCost, SessionOptions
 
 if TYPE_CHECKING:
     from dream.harness import Harness
+
+_logger = logging.getLogger(__name__)
 
 __all__ = [
     "ROLE_MANIFEST_METADATA_KEY",
@@ -227,8 +230,12 @@ async def run_role(
     role_label = str(manifest.name)
 
     def _emit(event: dict[str, Any]) -> None:
-        if observer is not None:
+        if observer is None:
+            return
+        try:
             observer.on_event(event)
+        except Exception:
+            _logger.exception("run observer rejected %s", event.get("kind", "unknown"))
 
     opened = await _open_role_session(harness, effective, session_id)
     session = opened.session
