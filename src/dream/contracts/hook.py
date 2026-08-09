@@ -37,6 +37,7 @@ class SubagentJoinMode(StrEnum):
 class PreToolPayload(TypedDict, total=False):
     """PRE_TOOL_USE / SUBAGENT_* hook payload shape."""
 
+    session_id: str
     tool_name: str
     tool_input: dict[str, Any]
     subagent_name: str | None
@@ -70,10 +71,12 @@ class PreToolHookPayload:
 
     tool_name: str
     tool_input: dict[str, Any]
+    session_id: str
     subagent_name: str | None = None
 
     def to_dict(self) -> PreToolPayload:
         payload: PreToolPayload = {
+            "session_id": self.session_id,
             "tool_name": self.tool_name,
             "tool_input": self.tool_input,
         }
@@ -89,9 +92,11 @@ class PostToolHookPayload:
     tool_name: str
     is_error: bool
     result_summary: str
+    session_id: str
 
     def to_dict(self) -> PreToolPayload:
         return {
+            "session_id": self.session_id,
             "tool_name": self.tool_name,
             "is_error": self.is_error,
             "result_summary": self.result_summary,

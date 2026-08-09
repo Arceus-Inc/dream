@@ -157,6 +157,7 @@ class EngineToolDispatcher:
             PreToolHookPayload(
                 tool_name=name,
                 tool_input=tool_input,
+                session_id=self.session_id,
                 subagent_name=session_subagent,
             ).to_dict(),
         )
@@ -191,6 +192,7 @@ class EngineToolDispatcher:
                 tool_name=name,
                 is_error=is_error,
                 result_summary=content[:_RESULT_SUMMARY_MAX_CHARS],
+                session_id=self.session_id,
             ).to_dict(),
         )
         if post.replacement_result is not None:
