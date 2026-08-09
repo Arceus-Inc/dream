@@ -16,13 +16,13 @@ from __future__ import annotations
 
 import json
 import os
-from collections import UserDict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Literal, TypeGuard
 
+from dream._immutable_json import FrozenJsonObject
 from dream.api.structured import JsonValue
 from dream.engine._messages import (
     ContentBlock,
@@ -84,7 +84,7 @@ class ToolUseBlockRecord:
     kind: Literal["tool_use"]
     id: str
     name: str
-    input: tuple[tuple[str, JsonValue], ...]
+    input: FrozenJsonObject
 
 
 @dataclass(frozen=True)
@@ -117,7 +117,7 @@ class SessionCostSnapshot:
 class ToolCallRecord:
     tool_use_id: str
     tool_name: str
-    input: tuple[tuple[str, JsonValue], ...]
+    input: FrozenJsonObject
     result_content: str | None
     is_error: bool | None
 
@@ -147,7 +147,7 @@ class SessionSnapshot:
     # working directory replays a transcript about other files, so the harness
     # refuses it unless the caller opts in. ``None`` for engine-less sessions.
     working_dir: str | None = field(default=None, kw_only=True)
-    metadata: tuple[tuple[str, JsonValue], ...] = field(default=(), kw_only=True)
+    metadata: FrozenJsonObject = field(default_factory=FrozenJsonObject, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -207,10 +207,18 @@ def json_dict_from_mapping(raw: Mapping[str, object]) -> dict[str, JsonValue]:
     for key, value in raw.items():
         if not isinstance(key, str):
             raise ValueError(f"JSON object key must be str, got {type(key).__name__}")
-        if not is_json_value(value):
-            raise ValueError(f"value for {key!r} is not a valid JsonValue")
-        out[key] = value
+        out[key] = _json_value_from_object(value, key=key)
     return out
+
+
+def _json_value_from_object(value: object, *, key: str) -> JsonValue:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, list):
+        return [_json_value_from_object(item, key=key) for item in value]
+    if isinstance(value, Mapping):
+        return json_dict_from_mapping(value)
+    raise ValueError(f"value for {key!r} is not a valid JsonValue")
 
 
 def message_to_record(message: ConversationMessage) -> ConversationMessageRecord:
@@ -231,7 +239,7 @@ def block_to_record(block: ContentBlock) -> ContentBlockRecord:
             kind="tool_use",
             id=block.id,
             name=block.name,
-            input=tuple(json_dict_from_mapping(block.input).items()),
+            input=FrozenJsonObject.capture(block.input),
         )
     if isinstance(block, ToolResultBlock):
         return ToolResultBlockRecord(
@@ -258,7 +266,7 @@ def record_to_block(record: ContentBlockRecord) -> ContentBlock:
         return ToolUseBlock(
             id=record.id,
             name=record.name,
-            input=json_dict_from_mapping(UserDict(record.input)),
+            input=json_dict_from_mapping(record.input.thaw()),
         )
     if isinstance(record, ToolResultBlockRecord):
         return ToolResultBlock(
@@ -287,7 +295,7 @@ def extract_tool_calls(messages: Sequence[ConversationMessage]) -> list[ToolCall
                 ToolCallRecord(
                     tool_use_id=block.id,
                     tool_name=block.name,
-                    input=tuple(json_dict_from_mapping(block.input).items()),
+                    input=FrozenJsonObject.capture(block.input),
                     result_content=result.content if result is not None else None,
                     is_error=result.is_error if result is not None else None,
                 )
@@ -303,7 +311,7 @@ def snapshot_to_dict(snapshot: SessionSnapshot) -> dict[str, object]:
         "system_prompt": snapshot.system_prompt,
         "max_turns": snapshot.max_turns,
         "working_dir": snapshot.working_dir,
-        "metadata": json_dict_from_mapping(UserDict(snapshot.metadata)),
+        "metadata": json_dict_from_mapping(snapshot.metadata.thaw()),
         "cost": {
             "input_tokens": snapshot.cost.input_tokens,
             "output_tokens": snapshot.cost.output_tokens,
@@ -344,9 +352,7 @@ def snapshot_from_dict(data: Mapping[str, object]) -> SessionSnapshot:
         saved_at=datetime.fromisoformat(saved_at_raw),
         max_turns=_optional_int(data.get("max_turns")),
         working_dir=_optional_str(data.get("working_dir"), label="working_dir"),
-        metadata=tuple(
-            json_dict_from_mapping(_optional_mapping(data.get("metadata"))).items()
-        ),
+        metadata=FrozenJsonObject.capture(_optional_mapping(data.get("metadata"))),
     )
 
 
@@ -458,7 +464,7 @@ def _block_record_to_dict(block: ContentBlockRecord) -> dict[str, object]:
             "kind": "tool_use",
             "id": block.id,
             "name": block.name,
-            "input": json_dict_from_mapping(UserDict(block.input)),
+            "input": json_dict_from_mapping(block.input.thaw()),
         }
     if isinstance(block, ToolResultBlockRecord):
         return {
@@ -474,7 +480,7 @@ def _tool_call_to_dict(record: ToolCallRecord) -> dict[str, object]:
     return {
         "tool_use_id": record.tool_use_id,
         "tool_name": record.tool_name,
-        "input": json_dict_from_mapping(UserDict(record.input)),
+        "input": json_dict_from_mapping(record.input.thaw()),
         "result_content": record.result_content,
         "is_error": record.is_error,
     }
@@ -513,7 +519,7 @@ def _block_record_from_dict(raw: object) -> ContentBlockRecord:
             kind="tool_use",
             id=_require_str(data, "id"),
             name=_require_str(data, "name"),
-            input=tuple(json_dict_from_mapping(input_raw).items()),
+            input=FrozenJsonObject.capture(input_raw),
         )
     if kind == "tool_result":
         return ToolResultBlockRecord(
@@ -533,7 +539,7 @@ def _tool_call_from_dict(raw: object) -> ToolCallRecord:
     return ToolCallRecord(
         tool_use_id=_require_str(data, "tool_use_id"),
         tool_name=_require_str(data, "tool_name"),
-        input=tuple(json_dict_from_mapping(input_raw).items()),
+        input=FrozenJsonObject.capture(input_raw),
         result_content=str(result_content) if result_content is not None else None,
         is_error=bool(is_error) if is_error is not None else None,
     )

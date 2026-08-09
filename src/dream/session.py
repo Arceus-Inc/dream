@@ -27,6 +27,7 @@ from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from dream._immutable_json import FrozenJsonObject
 from dream.api.response_format import ResponseFormat
 from dream.engine._events import (
     AssistantTextDelta,
@@ -281,7 +282,7 @@ class Session:
             saved_at=datetime.now(tz=UTC),
             max_turns=self._effective_max_turns(),
             working_dir=self._working_dir(),
-            metadata=tuple(metadata.items()),
+            metadata=FrozenJsonObject.capture(metadata),
         )
 
     def restore_from_snapshot(self, snapshot: SessionSnapshot) -> None:

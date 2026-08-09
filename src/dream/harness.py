@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections import UserDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -291,7 +290,7 @@ class Harness:
             model=snapshot.model,
             system_prompt=snapshot.system_prompt,
             max_turns=snapshot.max_turns,
-            metadata=json_dict_from_mapping(UserDict(snapshot.metadata)),
+            metadata=json_dict_from_mapping(snapshot.metadata.thaw()),
         )
         engine = None
         if self.config._engine_factory is not None:

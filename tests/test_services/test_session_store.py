@@ -107,7 +107,7 @@ def test_snapshot_persists_serializable_options_only() -> None:
     snapshot = Session(id="s1", options=options).snapshot()
 
     assert snapshot.max_turns == 3
-    assert snapshot.metadata == (("trace_id", "abc"),)
+    assert snapshot.metadata["trace_id"] == "abc"
 
 
 def test_snapshot_persists_engine_max_turns_when_option_unset() -> None:
@@ -254,7 +254,7 @@ def test_snapshot_extracts_tool_call_records_from_transcript() -> None:
     rec = snap.tool_calls[0]
     assert rec.tool_use_id == "tu_1"
     assert rec.tool_name == "echo"
-    assert rec.input == (("x", 1),)
+    assert rec.input["x"] == 1
     assert rec.result_content == "done"
     assert rec.is_error is False
 

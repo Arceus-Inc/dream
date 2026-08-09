@@ -8,7 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from dream import RunTrace, Session
+from dream import FileSessionStore, RunTrace, Session, SessionOptions
+from dream._immutable_json import FrozenJsonArray, FrozenJsonObject
 from dream.engine._messages import ConversationMessage, TextBlock, ToolUseBlock
 from dream.observability import TraceEvent, TraceWriter
 
@@ -33,7 +34,7 @@ def test_session_snapshot_is_an_immutable_point_in_time_view() -> None:
     assert isinstance(after.messages[0].content, tuple)
     tool_use = after.messages[0].content[1]
     assert tool_use.kind == "tool_use"
-    assert tool_use.input == (("query", "paperclip"),)
+    assert tool_use.input["query"] == "paperclip"
     assert isinstance(after.tool_calls, tuple)
     with pytest.raises(FrozenInstanceError):
         after.session_id = "other"  # type: ignore[misc]
@@ -77,3 +78,53 @@ def test_run_trace_rejects_events_for_another_session(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="other-session"):
         RunTrace.read(session_id="session-1", path=path)
+
+
+def test_session_snapshot_deeply_captures_nested_json(tmp_path: Path) -> None:
+    tags = ["before"]
+    options = SessionOptions(metadata=UserDict(context=UserDict(tags=tags)))
+    session = Session(id="session-1", options=options)
+    session.transcript.append(
+        ConversationMessage(
+            role="user",
+            content=[ToolUseBlock(id="call-1", name="search", input=UserDict(tags=tags))],
+        )
+    )
+
+    snapshot = session.snapshot()
+    tags.append("after")
+
+    context = snapshot.metadata["context"]
+    assert isinstance(context, FrozenJsonObject)
+    frozen_tags = context["tags"]
+    assert isinstance(frozen_tags, FrozenJsonArray)
+    assert frozen_tags.values == ("before",)
+    tool_input = snapshot.tool_calls[0].input["tags"]
+    assert isinstance(tool_input, FrozenJsonArray)
+    assert tool_input.values == ("before",)
+
+    store = FileSessionStore(tmp_path)
+    store.save(snapshot)
+    loaded = store.load(snapshot.session_id)
+    assert loaded.metadata == snapshot.metadata
+    assert loaded.tool_calls == snapshot.tool_calls
+
+
+def test_run_trace_deeply_freezes_event_attributes(tmp_path: Path) -> None:
+    path = tmp_path / "trace.jsonl"
+    path.write_text(
+        '{"ts":"2026-08-09T00:00:00+00:00","session_id":"session-1",'
+        '"task_id":null,"event_type":"state.transition","span_id":"span-1",'
+        '"parent_span_id":null,"attributes":{"context":{"tags":["before"]}}}\n',
+        encoding="utf-8",
+    )
+
+    trace = RunTrace.read(session_id="session-1", path=path)
+
+    attributes = trace.events[0].attributes
+    assert isinstance(attributes, FrozenJsonObject)
+    context = attributes["context"]
+    assert isinstance(context, FrozenJsonObject)
+    tags = context["tags"]
+    assert isinstance(tags, FrozenJsonArray)
+    assert tags.values == ("before",)
