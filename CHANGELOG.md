@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `SprintRunResult.evaluation` exposes the typed `EvaluationRecord | None`, and
+  `USER_PROMPT_SUBMIT` hook payloads include the configured role when present.
 - Durable session save/resume: `FileSessionStore` under `DreamPaths.sessions_dir`,
   `Session.snapshot` / `restore_from_snapshot`, and `Harness.save_session` /
   `resume_session` so a process restart continues the same transcript (tool-call
