@@ -31,6 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `schema_mismatch` rather than resumed anywhere.
 - `SessionHandle`, `SessionSnapshot`, `FileSessionStore`, and
   `SessionResumeError` are public exports.
+- `SessionSaveConflictError` is a public export for optimistic snapshot-write
+  conflicts, and `role.session.recovered.action` adds `resume` when recovery
+  preserves and resumes a concurrent replacement snapshot.
 - `Harness.run_role(session_id=...)` names a role thread so it survives the
   process: the session resumes that snapshot when one is readable and
   `RunRoleResult.session_handle` carries the pointer plus the run's usage delta.

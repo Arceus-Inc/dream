@@ -36,6 +36,7 @@ from dream.errors import (
     RunTaskError,
     SandboxError,
     SessionResumeError,
+    SessionSaveConflictError,
     TaskCancelled,
 )
 from dream.events import (
@@ -103,6 +104,7 @@ __all__ = [
     "SessionHandle",
     "SessionOptions",
     "SessionResumeError",
+    "SessionSaveConflictError",
     "SessionSnapshot",
     "Skill",
     "StopReason",

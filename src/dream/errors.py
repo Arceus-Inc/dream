@@ -6,7 +6,10 @@ a stable string `code` consumers can branch on without parsing messages.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from dream.services.session_store import SessionSnapshotRevision
 
 # The phase of ``run_task`` a fault surfaced in — the typed location a
 # consumer (chorus) records on its escalation trail.
@@ -114,7 +117,8 @@ class SessionResumeError(DreamError):
     so a control plane holding the handle can apply the recovery it wants:
     start a fresh session and drop the stored handle, or escalate. Only
     ``working_dir_mismatch`` describes a *reusable* snapshot — the session is
-    intact, it just belongs to another working directory.
+    intact, it just belongs to another working directory. When bytes were
+    readable, :attr:`revision` identifies the exact snapshot that failed.
     """
 
     code = "dream.session_resume"
@@ -125,6 +129,7 @@ class SessionResumeError(DreamError):
         *,
         reason: SessionResumeFailure,
         session_id: str,
+        revision: SessionSnapshotRevision | None = None,
         cause: BaseException | None = None,
         code: str | None = None,
     ) -> None:
@@ -135,12 +140,38 @@ class SessionResumeError(DreamError):
         super().__init__(message, code=code)
         self.reason: SessionResumeFailure = reason
         self.session_id = session_id
+        self.revision = revision
         self.cause = cause
 
     @property
     def should_clear_handle(self) -> bool:
         """Whether the caller's stored handle is spent and must be dropped."""
         return self.reason != "working_dir_mismatch"
+
+
+class SessionSaveConflictError(DreamError):
+    """A session save lost optimistic ownership of its snapshot path.
+
+    ``expected_revision`` is the snapshot the session resumed, or ``None``
+    when it opened against a missing path. ``actual_revision`` is what the
+    store found while holding its inter-process lock.
+    """
+
+    code = "dream.session_save_conflict"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        session_id: str,
+        expected_revision: SessionSnapshotRevision | None,
+        actual_revision: SessionSnapshotRevision | None,
+        code: str | None = None,
+    ) -> None:
+        super().__init__(message, code=code)
+        self.session_id = session_id
+        self.expected_revision = expected_revision
+        self.actual_revision = actual_revision
 
 
 __all__ = [
@@ -153,5 +184,6 @@ __all__ = [
     "RunTaskError",
     "SandboxError",
     "SessionResumeError",
+    "SessionSaveConflictError",
     "TaskCancelled",
 ]

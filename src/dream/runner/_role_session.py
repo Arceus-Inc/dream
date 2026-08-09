@@ -72,6 +72,7 @@ class SessionRecoveryAction(StrEnum):
 
     RESET = "reset"
     BYPASS = "bypass"
+    RESUME = "resume"
 
 
 @dataclass(frozen=True)
@@ -374,18 +375,28 @@ async def _open_role_session(
                     snapshot_preserved=True,
                 ),
             )
-        # One retry with a clean thread, the same fallback a coding CLI makes
-        # when ``--resume`` is refused: losing continuity beats stranding the
-        # role. Drop the spent snapshot so the name is free and later runs
-        # don't re-pay the failure.
-        await harness.reset_session(session_id)
+        # Clear only the exact bytes that failed to load. A replacement wins:
+        # resuming it preserves another process's transcript instead of
+        # starting fresh over its snapshot.
+        if await harness._reset_session_if_unchanged(session_id, exc.revision):
+            return OpenedRoleSession(
+                session=await harness.start_session(options, session_id=session_id),
+                owns_requested_id=True,
+                recovery=SessionRecoveryNotice(
+                    requested_session_id=exc.session_id,
+                    reason=exc.reason,
+                    action=SessionRecoveryAction.RESET,
+                    snapshot_preserved=False,
+                ),
+            )
+        replacement = await harness.resume_session(session_id, options=options)
         return OpenedRoleSession(
-            session=await harness.start_session(options, session_id=session_id),
+            session=replacement,
             owns_requested_id=True,
             recovery=SessionRecoveryNotice(
                 requested_session_id=exc.session_id,
                 reason=exc.reason,
-                action=SessionRecoveryAction.RESET,
-                snapshot_preserved=False,
+                action=SessionRecoveryAction.RESUME,
+                snapshot_preserved=True,
             ),
         )

@@ -24,6 +24,7 @@ from dream.services.session_store import (
     FileSessionStore,
     SessionHandle,
     SessionSnapshot,
+    SessionSnapshotRevision,
     checked_session_id,
 )
 from dream.session import Session, SessionOptions
@@ -242,18 +243,20 @@ class Harness:
         The returned :class:`SessionHandle` is the only thing a caller needs to
         keep: the transcript stays in the harness's own store. ``usage_delta``
         reports the spend since this session's previous save, so a scheduler can
-        bill per run without differencing totals itself.
+        bill per run without differencing totals itself. The write compares the
+        store against the revision this session opened; a concurrent replacement
+        raises :class:`dream.errors.SessionSaveConflictError` unchanged.
         """
         resolved = self._resolve_session_store(store)
         snapshot = session.snapshot()
         usage_delta = session._usage_delta()
-        path = resolved.save(snapshot)
+        write = resolved.compare_and_swap_save(snapshot, session._snapshot_expectation())
         # Only advance the billing baseline once the bytes are durable, so a
         # failed write leaves the next save reporting the same delta.
-        session._mark_persisted(snapshot.cost)
+        session._mark_persisted(snapshot.cost, write.revision)
         return SessionHandle(
             session_id=snapshot.session_id,
-            path=path,
+            path=write.path,
             working_dir=snapshot.working_dir,
             schema_version=snapshot.schema_version,
             saved_at=snapshot.saved_at,
@@ -281,9 +284,10 @@ class Harness:
         transcript, so that last case needs ``allow_working_dir_change=True``.
         """
         resolved = self._resolve_session_store(store)
-        snapshot = resolved.load(session_id)
+        loaded = resolved.load_with_revision(session_id)
+        snapshot = loaded.snapshot
         if not allow_working_dir_change:
-            self._check_working_dir(snapshot, session_id)
+            self._check_working_dir(snapshot, session_id, loaded.revision)
         await self._ensure_open()
         opts = options or SessionOptions(
             model=snapshot.model,
@@ -294,11 +298,21 @@ class Harness:
         engine = None
         if self.config._engine_factory is not None:
             engine = self.config._engine_factory(session_id, opts)
-        session = Session(id=session_id, options=opts, _engine=engine)
+        session = Session(
+            id=session_id,
+            options=opts,
+            _engine=engine,
+            _snapshot_revision=loaded.revision,
+        )
         session.restore_from_snapshot(snapshot)
         return session
 
-    def _check_working_dir(self, snapshot: SessionSnapshot, session_id: str) -> None:
+    def _check_working_dir(
+        self,
+        snapshot: SessionSnapshot,
+        session_id: str,
+        revision: SessionSnapshotRevision,
+    ) -> None:
         """Refuse a resume whose snapshot was taken in another directory."""
         saved = snapshot.working_dir
         if saved is None:
@@ -307,6 +321,7 @@ class Harness:
                 "pass allow_working_dir_change=True to resume anyway",
                 reason="working_dir_mismatch",
                 session_id=session_id,
+                revision=revision,
             )
         current = self.config.working_dir
         if Path(saved).expanduser().resolve() == Path(current).expanduser().resolve():
@@ -316,6 +331,7 @@ class Harness:
             f"{str(current)!r}; pass allow_working_dir_change=True to resume anyway",
             reason="working_dir_mismatch",
             session_id=session_id,
+            revision=revision,
         )
 
     async def reset_session(
@@ -332,6 +348,17 @@ class Harness:
         """
         resolved = self._resolve_session_store(store)
         return resolved.delete(session_id)
+
+    async def _reset_session_if_unchanged(
+        self,
+        session_id: str,
+        expected_revision: SessionSnapshotRevision | None,
+        *,
+        store: FileSessionStore | None = None,
+    ) -> bool:
+        """Clear a failed snapshot only when no writer has replaced its bytes."""
+        resolved = self._resolve_session_store(store)
+        return resolved.reset_if_unchanged(session_id, expected_revision)
 
     async def run_role(
         self,
@@ -492,11 +519,7 @@ class Harness:
         ``session_scope`` is forwarded to each factory so its role runs in a
         resumable thread under that scope.
         """
-        if (
-            planner is not None
-            and generator_execute is not None
-            and evaluator_run is not None
-        ):
+        if planner is not None and generator_execute is not None and evaluator_run is not None:
             return (planner, generator_execute, evaluator_run)
 
         from dream.runner import (

@@ -9,38 +9,76 @@ from __future__ import annotations
 
 import dream
 
-EXPECTED_PUBLIC_API: frozenset[str] = frozenset({
-    # facade
-    "Harness", "HarnessConfig",
-    "Session", "SessionOptions", "SessionCost",
-    # durable sessions
-    "SessionHandle", "SessionSnapshot", "FileSessionStore",
-    # events
-    "Event", "TextDelta", "ToolUseStart", "ToolUseResult", "TurnComplete",
-    "Compacted", "HookBlocked", "PermissionDenied", "Error",
-    # errors
-    "DreamError", "ProviderError", "SandboxError", "PermissionError",
-    "HookError", "PluginError", "CompactionError",
-    "RunTaskError", "TaskCancelled", "SessionResumeError",
-    # contracts
-    "Tool", "ToolResult", "ToolContext",
-    "Hook", "HookEvent", "HookResult", "HookSpec",
-    "Skill",
-    "Plugin", "PluginManifest",
-    "Provider", "ProviderCapabilities", "ProviderEvent", "ProviderUsage",
-    "MemoryRecord", "MemoryDelta", "MemoryScope", "MemoryType",
-    "MemoryStore", "MemoryWriter",
-    "ExecPlan", "ExecPlanLedger", "ExecPlanStatus",
-    # types
-    "MessageRole", "StopReason",
-    # token metering
-    "UsageSnapshot",
-    # factory
-    "build_harness",
-    "tail_events",
-    # metadata
-    "__version__",
-})
+EXPECTED_PUBLIC_API: frozenset[str] = frozenset(
+    {
+        # facade
+        "Harness",
+        "HarnessConfig",
+        "Session",
+        "SessionOptions",
+        "SessionCost",
+        # durable sessions
+        "SessionHandle",
+        "SessionSnapshot",
+        "FileSessionStore",
+        # events
+        "Event",
+        "TextDelta",
+        "ToolUseStart",
+        "ToolUseResult",
+        "TurnComplete",
+        "Compacted",
+        "HookBlocked",
+        "PermissionDenied",
+        "Error",
+        # errors
+        "DreamError",
+        "ProviderError",
+        "SandboxError",
+        "PermissionError",
+        "HookError",
+        "PluginError",
+        "CompactionError",
+        "RunTaskError",
+        "TaskCancelled",
+        "SessionResumeError",
+        "SessionSaveConflictError",
+        # contracts
+        "Tool",
+        "ToolResult",
+        "ToolContext",
+        "Hook",
+        "HookEvent",
+        "HookResult",
+        "HookSpec",
+        "Skill",
+        "Plugin",
+        "PluginManifest",
+        "Provider",
+        "ProviderCapabilities",
+        "ProviderEvent",
+        "ProviderUsage",
+        "MemoryRecord",
+        "MemoryDelta",
+        "MemoryScope",
+        "MemoryType",
+        "MemoryStore",
+        "MemoryWriter",
+        "ExecPlan",
+        "ExecPlanLedger",
+        "ExecPlanStatus",
+        # types
+        "MessageRole",
+        "StopReason",
+        # token metering
+        "UsageSnapshot",
+        # factory
+        "build_harness",
+        "tail_events",
+        # metadata
+        "__version__",
+    }
+)
 
 
 def test_all_matches_expected() -> None:
