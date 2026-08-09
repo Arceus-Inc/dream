@@ -434,7 +434,7 @@ other. Clearing it first is how you say you meant to.
 without the caller touching sessions at all:
 
 ```python
-result = await harness.run_role("generator", intent, session_id=f"task-{task_id}:generator")
+result = await harness.run_role("generator", intent, session_id=f"task-{task_id}-generator")
 handle = result.session_handle          # None when session_id is omitted
 ```
 
@@ -449,7 +449,7 @@ each role its own thread beneath it:
 
 ```python
 await harness.run_task(intent=intent, session_scope=f"task-{task_id}")
-# threads: task-42:planner, task-42:generator, task-42:evaluator
+# threads: task-42-planner, task-42-generator, task-42-evaluator
 ```
 
 Call it again with the same scope and those conversations continue. Each role

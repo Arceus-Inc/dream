@@ -409,7 +409,7 @@ class Harness:
 
         ``session_scope`` makes the task's role sessions resumable: each
         autowired head runs in its own thread under that scope
-        (``{scope}:planner`` and so on), so calling ``run_task`` again with the
+        (``{scope}-planner`` and so on), so calling ``run_task`` again with the
         same scope continues those conversations rather than restarting them.
         A caller driving the harness in short windows keeps one key per task.
         Explicitly supplied heads are left alone — they own their own sessions.

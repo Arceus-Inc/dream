@@ -163,12 +163,20 @@ class SessionHandle:
 
 
 def checked_session_id(session_id: str) -> str:
-    """Reject a session id that could escape the sessions root."""
+    """Reject a session id that could escape the sessions root.
+
+    ``:`` is rejected alongside the path separators because a session id also
+    names a sidecar directory (it is the trace log's key), and the task-id
+    validator guarding that root treats a colon as Windows drive and alternate
+    -data-stream syntax. Catching it here means a caller-supplied scope fails
+    where it is set rather than deep inside engine construction.
+    """
     if (
         not session_id
         or session_id in {".", ".."}
         or "/" in session_id
         or "\\" in session_id
+        or ":" in session_id
         or "\x00" in session_id
         or os.path.isabs(session_id)
     ):

@@ -41,7 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `session_id` persists nothing, as before.
 - `Harness.run_task(session_scope=...)` makes a whole task resumable off one
   key: each autowired head runs in its own thread under that scope
-  (`{scope}:planner`, `{scope}:generator`, `{scope}:evaluator`), so a later
+  (`{scope}-planner`, `{scope}-generator`, `{scope}-evaluator`), so a later
   call with the same scope continues those conversations instead of restarting
   them. Explicitly supplied heads are untouched.
 - `LedgerStep.acceptance_criteria`: the planner names what "done" means for each

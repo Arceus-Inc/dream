@@ -38,7 +38,7 @@ from dream.roles import (
     load_role_manifest,
 )
 from dream.runner._observer import RunTaskObserver
-from dream.services.session_store import SessionHandle
+from dream.services.session_store import SessionHandle, checked_session_id
 from dream.session import Session, SessionCost, SessionOptions
 
 if TYPE_CHECKING:
@@ -71,8 +71,12 @@ def role_session_id(scope: str, role: RoleName | str) -> str:
     One scope key per task gives every role its own resumable thread — a
     planner and an evaluator are different conversations and must not share
     one. Heads bound to the same role deliberately land on the same thread.
+
+    The separator is a hyphen because a session id becomes a directory name
+    under the sidecar root, and ``:`` is rejected there as Windows drive and
+    alternate-data-stream syntax.
     """
-    return f"{scope}:{role}"
+    return checked_session_id(f"{scope}-{role}")
 
 
 @dataclass(frozen=True)

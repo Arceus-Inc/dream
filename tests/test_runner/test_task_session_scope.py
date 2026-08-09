@@ -61,7 +61,26 @@ def _as_harness(stub: _RecordingHarness) -> Harness:
 
 
 def test_role_session_id_namespaces_the_role_under_the_scope() -> None:
-    assert role_session_id("task-42", "generator") == "task-42:generator"
+    assert role_session_id("task-42", "generator") == "task-42-generator"
+
+
+def test_role_session_id_stays_usable_as_a_path_segment() -> None:
+    """A session id names a sidecar directory, so it has to survive that root's validator.
+
+    ``:`` reads as Windows drive / alternate-data-stream syntax there. Deriving
+    ids with one used to blow up inside engine construction as a baffling
+    "unsafe task_id", and only against a real engine — every faked-engine test
+    sailed past it.
+    """
+    from dream.utils.identifiers import checked_task_id
+
+    assert checked_task_id(role_session_id("task-42", "planner")) == "task-42-planner"
+
+
+def test_role_session_id_refuses_a_scope_that_cannot_be_a_path_segment() -> None:
+    """A caller-supplied scope fails where it is set, not deep in the engine."""
+    with pytest.raises(ValueError, match="unsafe session_id"):
+        role_session_id("task:42", "planner")
 
 
 async def test_run_task_hands_the_scope_to_every_autowired_head(
@@ -122,7 +141,7 @@ async def test_generator_head_runs_in_the_scoped_generator_thread() -> None:
 
     await head("task-42", 1, None, LedgerStep(id="s1", description="do thing"))
 
-    assert stub.calls == [("generator", "task-42:generator")]
+    assert stub.calls == [("generator", "task-42-generator")]
 
 
 async def test_generator_head_stays_unnamed_without_a_scope() -> None:
