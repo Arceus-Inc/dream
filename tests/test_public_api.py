@@ -14,6 +14,14 @@ EXPECTED_PUBLIC_API: frozenset[str] = frozenset({
     "Harness", "HarnessConfig",
     "Session", "SessionOptions", "SessionCost",
     "RunTrace",
+    # replay
+    "DuplicateHarnessVariantIdError", "DuplicateReplayCaseIdError",
+    "HarnessRevisionRef", "HarnessVariant", "IncompleteReplayResultError", "InvalidReplayUsageError",
+    "ModelConfigRef",
+    "ReplayArtifactRef", "ReplayAssertion", "ReplayAssertionOutcome", "ReplayCase",
+    "ReplayCaseOutcome", "ReplayComparator", "ReplayComparison", "ReplayExecution",
+    "ReplayExecutor", "ReplayIdentityMismatchError", "ReplayOutcome", "ReplayOutcomeKind",
+    "SandboxProfileRef", "SessionCostDelta", "SkillRevisionRef", "ToolProfileRef",
     # durable sessions
     "SessionHandle", "SessionSnapshot", "FileSessionStore",
     # events
