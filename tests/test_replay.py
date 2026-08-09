@@ -155,6 +155,23 @@ class _DecreasingUsageExecutor:
         )
 
 
+class _NonFiniteUsageExecutor:
+    def __init__(self, cost_usd: float) -> None:
+        self._cost_usd = cost_usd
+
+    def __call__(self, case: ReplayCase, variant: HarnessVariant) -> ReplayExecution:
+        return ReplayExecution(
+            case_id=case.case_id,
+            session_snapshot=_snapshot(
+                case.session_snapshot.session_id,
+                cost_usd=self._cost_usd,
+            ),
+            trace=RunTrace(session_id=case.session_snapshot.session_id, events=()),
+            outcome=ReplayOutcome(ReplayOutcomeKind.SUCCESS),
+            artifacts=(),
+        )
+
+
 def test_comparator_orders_cases_surfaces_noncritical_degradation_and_blocks_critical_failure() -> None:
     success = ReplayOutcome(ReplayOutcomeKind.SUCCESS)
     failure = ReplayOutcome(ReplayOutcomeKind.FAILURE)
@@ -329,4 +346,55 @@ def test_replay_contract_rejects_blank_ids_and_duplicate_artifacts() -> None:
             trace=RunTrace(session_id="session", events=()),
             outcome=ReplayOutcome(ReplayOutcomeKind.SUCCESS),
             artifacts=(artifact, artifact),
+        )
+
+
+@pytest.mark.parametrize("cost_usd", (float("nan"), float("inf"), float("-inf")))
+def test_comparator_rejects_non_finite_replay_cost(cost_usd: float) -> None:
+    session = _snapshot("session")
+    case = ReplayCase(
+        case_id="case",
+        session_snapshot=session,
+        assertions=(
+            ReplayAssertion(
+                "outcome",
+                True,
+                expected_outcome=ReplayOutcome(ReplayOutcomeKind.SUCCESS),
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        InvalidReplayUsageError,
+        match="replay cumulative cost must be finite",
+    ):
+        ReplayComparator(_NonFiniteUsageExecutor(cost_usd)).compare(
+            baseline=_variant("baseline"),
+            candidate=_variant("candidate"),
+            cases=(case,),
+        )
+
+
+def test_comparator_rejects_non_finite_source_cost() -> None:
+    session = _snapshot("session", cost_usd=float("nan"))
+    case = ReplayCase(
+        case_id="case",
+        session_snapshot=session,
+        assertions=(
+            ReplayAssertion(
+                "outcome",
+                True,
+                expected_outcome=ReplayOutcome(ReplayOutcomeKind.SUCCESS),
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        InvalidReplayUsageError,
+        match="replay cumulative cost must be finite",
+    ):
+        ReplayComparator(_NonFiniteUsageExecutor(0.1)).compare(
+            baseline=_variant("baseline"),
+            candidate=_variant("candidate"),
+            cases=(case,),
         )

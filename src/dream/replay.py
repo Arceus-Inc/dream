@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from math import isfinite
 from typing import Protocol
 
 from dream.observability import RunTrace
@@ -359,6 +360,8 @@ def _check_cumulative_usage(
     source: SessionCostSnapshot,
     result: SessionCostSnapshot,
 ) -> None:
+    if not isfinite(source.cost_usd) or not isfinite(result.cost_usd):
+        raise InvalidReplayUsageError("replay cumulative cost must be finite")
     if (
         result.input_tokens < source.input_tokens
         or result.output_tokens < source.output_tokens
