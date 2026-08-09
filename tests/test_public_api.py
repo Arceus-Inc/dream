@@ -13,13 +13,15 @@ EXPECTED_PUBLIC_API: frozenset[str] = frozenset({
     # facade
     "Harness", "HarnessConfig",
     "Session", "SessionOptions", "SessionCost",
+    # durable sessions
+    "SessionHandle", "SessionSnapshot", "FileSessionStore",
     # events
     "Event", "TextDelta", "ToolUseStart", "ToolUseResult", "TurnComplete",
     "Compacted", "HookBlocked", "PermissionDenied", "Error",
     # errors
     "DreamError", "ProviderError", "SandboxError", "PermissionError",
     "HookError", "PluginError", "CompactionError",
-    "RunTaskError", "TaskCancelled",
+    "RunTaskError", "TaskCancelled", "SessionResumeError",
     # contracts
     "Tool", "ToolResult", "ToolContext",
     "Hook", "HookEvent", "HookResult", "HookSpec",

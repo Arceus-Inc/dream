@@ -4,8 +4,8 @@ The runner is silent by default: every meaningful boundary is captured
 into the returned ``RunTaskResult.events`` tuple but nothing is written
 anywhere. For interactive operator use that's the wrong default — when
 you type ``await harness.run_task(intent="…")`` you want to *see* the
-planner draft a spec, the negotiation rounds, every tool the generator
-calls, and the evaluator's verdict as they happen.
+planner draft a spec, every tool the generator calls, and the evaluator's
+verdict as they happen.
 
 This module ships two things:
 
@@ -29,7 +29,6 @@ Event kinds emitted today (additions are non-breaking):
 * ``planner.completed``— task_id, spec_path, ledger_path, step_count
 * ``sprint.started``   — sprint_number, step_id, step_description
 * ``sprint.completed`` — sprint_number, step_id, outcome|None
-* ``negotiation.imposed`` — sprint_number, rounds (cap hit)
 * ``contract.written`` — sprint_number, path
 * ``generator.started``— sprint_number, step_id, has_contract
 * ``generator.completed`` — sprint_number, step_id
@@ -66,9 +65,6 @@ from dream.runner._ansi import (
 )
 from dream.runner._ansi import (
     GREEN as _GREEN,
-)
-from dream.runner._ansi import (
-    MAGENTA as _MAGENTA,
 )
 from dream.runner._ansi import (
     RED as _RED,
@@ -110,8 +106,6 @@ _ROLE_COLOUR: dict[str, str] = {
     "planner": _CYAN,
     "generator": _GREEN,
     "evaluator": _YELLOW,
-    "negotiator-evaluator": _MAGENTA,
-    "negotiator-generator": _MAGENTA,
 }
 
 _OUTCOME_COLOUR: dict[str, str] = {
@@ -334,14 +328,6 @@ def _on_sprint_completed(event: dict[str, Any], obs: StdioObserver) -> str:
     return obs._c(_BOLD, line)
 
 
-def _on_negotiation_imposed(event: dict[str, Any], obs: StdioObserver) -> str:
-    line = (
-        f"⚠ [sprint {event.get('sprint_number')}] negotiation cap hit after "
-        f"{event.get('rounds')} rounds — contract imposed"
-    )
-    return obs._c(_YELLOW, line)
-
-
 def _on_contract_written(event: dict[str, Any], obs: StdioObserver) -> str:
     line = (
         f"◇ [sprint {event.get('sprint_number')}] contract written → "
@@ -463,7 +449,6 @@ _HANDLERS: dict[str, Any] = {
     "planner.completed": _on_planner_completed,
     "sprint.started": _on_sprint_started,
     "sprint.completed": _on_sprint_completed,
-    "negotiation.imposed": _on_negotiation_imposed,
     "contract.written": _on_contract_written,
     "generator.started": _on_generator_started,
     "generator.completed": _on_generator_completed,

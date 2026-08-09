@@ -7,8 +7,7 @@ Test groups:
 1. Core helper contract — ask_until_parsed in isolation.
 2. Planner head via ask_until_parsed — bad-then-good + exhaustion.
 3. Evaluator head via ask_until_parsed — lightweight mirrors.
-4. Negotiator heads (evaluator-propose, generator-respond) — lightweight.
-5. Observer event emission on retry.
+4. Observer event emission on retry.
 """
 
 from __future__ import annotations
@@ -32,13 +31,9 @@ from dream.harness import Harness, HarnessConfig
 from dream.planner import LedgerStep, PlannerOutput
 from dream.runner import (
     EvaluatorHeadParseError,
-    EvaluatorProposeHeadParseError,
-    GeneratorRespondHeadParseError,
     PlannerHeadParseError,
     RoleSessionError,
     make_evaluator_head,
-    make_evaluator_propose_head,
-    make_generator_respond_head,
     make_planner_head,
 )
 from dream.runner._observer import _CapturingObserver
@@ -117,6 +112,7 @@ def _valid_planner_reply(
             {
                 "id": "s1",
                 "description": "do thing one",
+                "acceptance_criteria": ["thing one is done"],
                 "sprint_target": None,
                 "notes": "",
             }
@@ -136,31 +132,12 @@ def _valid_verdict_reply(outcome: str = "pass") -> str:
     return f"<verdict>{body}</verdict>"
 
 
-def _valid_proposal_reply(items: list[str] | None = None) -> str:
-    if items is None:
-        items = ["MUST do it"]
-    return f"<proposal>{json.dumps(items)}</proposal>"
-
-
-def _valid_response_reply(accept: bool = True) -> str:
-    body = json.dumps({"accept": accept, "counter": None})
-    return f"<response>{body}</response>"
-
-
 def _invalid_planner_reply() -> str:
     return "I forgot the envelope entirely. Here is my plan."
 
 
 def _invalid_verdict_reply() -> str:
     return "Looks fine to me, no envelope."
-
-
-def _invalid_proposal_reply() -> str:
-    return "I think criteria are important."
-
-
-def _invalid_response_reply() -> str:
-    return "Sure, I accept that."
 
 
 def _contract() -> SprintContract:
@@ -678,157 +655,7 @@ async def test_evaluator_head_role_session_error_propagates_without_retry() -> N
 
 
 # ===========================================================================
-# GROUP 4: Negotiator heads wired through ask_until_parsed
-# ===========================================================================
-
-
-async def test_evaluator_propose_head_recovers_from_bad_then_good() -> None:
-    """Bad proposal on first ask, valid on second → list[str] returned."""
-    harness, streamer = _harness_with_multi_replies(
-        [_invalid_proposal_reply(), _valid_proposal_reply()]
-    )
-    head = make_evaluator_propose_head(harness)
-
-    result = await head(1, [])  # type: ignore[misc]
-
-    assert result == ["MUST do it"]
-    assert streamer.call_count == 2
-
-
-async def test_evaluator_propose_head_exhaustion_raises() -> None:
-    """Three bad proposal replies → EvaluatorProposeHeadParseError after 3 asks."""
-    harness, streamer = _harness_with_multi_replies(
-        [
-            _invalid_proposal_reply(),
-            _invalid_proposal_reply(),
-            _invalid_proposal_reply(),
-        ]
-    )
-    head = make_evaluator_propose_head(harness)
-
-    with pytest.raises(EvaluatorProposeHeadParseError):
-        await head(1, [])  # type: ignore[misc]
-
-    assert streamer.call_count == 3
-
-
-async def test_evaluator_propose_head_emits_head_retry_event() -> None:
-    """head.retry event emitted with role=evaluator for proposal head."""
-    harness, _streamer = _harness_with_multi_replies(
-        [_invalid_proposal_reply(), _valid_proposal_reply()]
-    )
-    observer = _CapturingObserver()
-    head = make_evaluator_propose_head(harness, observer=observer)
-
-    await head(1, [])  # type: ignore[misc]
-
-    retry_events = [e for e in observer.events if e.get("kind") == "head.retry"]
-    assert len(retry_events) == 1
-    assert retry_events[0]["role"] == "evaluator"
-
-
-async def test_generator_respond_head_recovers_from_bad_then_good() -> None:
-    """Bad response on first ask, valid on second → (bool, list|None) returned."""
-    harness, streamer = _harness_with_multi_replies(
-        [_invalid_response_reply(), _valid_response_reply(accept=True)]
-    )
-    head = make_generator_respond_head(harness)
-
-    accept, counter = await head(1, [], ["c"])  # type: ignore[misc]
-
-    assert accept is True
-    assert counter is None
-    assert streamer.call_count == 2
-
-
-async def test_generator_respond_head_exhaustion_raises() -> None:
-    """Three bad response replies → GeneratorRespondHeadParseError after 3 asks."""
-    harness, streamer = _harness_with_multi_replies(
-        [
-            _invalid_response_reply(),
-            _invalid_response_reply(),
-            _invalid_response_reply(),
-        ]
-    )
-    head = make_generator_respond_head(harness)
-
-    with pytest.raises(GeneratorRespondHeadParseError):
-        await head(1, [], ["c"])  # type: ignore[misc]
-
-    assert streamer.call_count == 3
-
-
-async def test_generator_respond_head_emits_head_retry_event() -> None:
-    """head.retry event emitted with role=generator for respond head."""
-    harness, _streamer = _harness_with_multi_replies(
-        [_invalid_response_reply(), _valid_response_reply(accept=True)]
-    )
-    observer = _CapturingObserver()
-    head = make_generator_respond_head(harness, observer=observer)
-
-    await head(1, [], ["c"])  # type: ignore[misc]
-
-    retry_events = [e for e in observer.events if e.get("kind") == "head.retry"]
-    assert len(retry_events) == 1
-    assert retry_events[0]["role"] == "generator"
-
-
-async def test_evaluator_propose_head_role_session_error_propagates() -> None:
-    """RoleSessionError from engine propagates immediately; no retry."""
-    from dream.engine._events import ErrorEvent
-
-    class _ErrorStreamer:
-        async def stream_turn(
-            self, messages: Sequence[ConversationMessage]
-        ) -> AsyncIterator[StreamEvent]:
-            yield ErrorEvent(message="boom", recoverable=False)
-            yield AssistantTurnComplete(blocks=[], usage=UsageSnapshot())
-
-    def _factory(session_id: str, options: SessionOptions) -> QueryEngine:
-        return QueryEngine(
-            streamer=_ErrorStreamer(),
-            dispatcher=FakeDispatcher(),
-            session_id=session_id,
-            working_dir=Path("/tmp"),
-            max_turns=options.max_turns or 4,
-        )
-
-    harness = Harness(HarnessConfig(_engine_factory=_factory))  # type: ignore[call-arg]
-    head = make_evaluator_propose_head(harness)
-
-    with pytest.raises(RoleSessionError):
-        await head(1, [])  # type: ignore[misc]
-
-
-async def test_generator_respond_head_role_session_error_propagates() -> None:
-    """RoleSessionError from engine propagates immediately; no retry for respond head."""
-    from dream.engine._events import ErrorEvent
-
-    class _ErrorStreamer:
-        async def stream_turn(
-            self, messages: Sequence[ConversationMessage]
-        ) -> AsyncIterator[StreamEvent]:
-            yield ErrorEvent(message="boom", recoverable=False)
-            yield AssistantTurnComplete(blocks=[], usage=UsageSnapshot())
-
-    def _factory(session_id: str, options: SessionOptions) -> QueryEngine:
-        return QueryEngine(
-            streamer=_ErrorStreamer(),
-            dispatcher=FakeDispatcher(),
-            session_id=session_id,
-            working_dir=Path("/tmp"),
-            max_turns=options.max_turns or 4,
-        )
-
-    harness = Harness(HarnessConfig(_engine_factory=_factory))  # type: ignore[call-arg]
-    head = make_generator_respond_head(harness)
-
-    with pytest.raises(RoleSessionError):
-        await head(1, [], ["c"])  # type: ignore[misc]
-
-
-# ===========================================================================
-# GROUP 5: Observer event structure verification
+# GROUP 4: Observer event structure verification
 # ===========================================================================
 
 

@@ -83,11 +83,12 @@ asyncio.run(main())
 What happens when you run it:
 
 1. **Planner** (one LLM role session) writes a spec + a step ledger into the
-   workspace under `docs/exec-plans/active/`.
-2. **Sprint loop** — per sprint: the evaluator and generator negotiate a
-   sprint contract, the generator executes the step with real tools (files,
-   sandboxed bash, skills, memory, your plugins/MCP tools), then the
-   evaluator judges the result against the contract.
+   workspace under `docs/exec-plans/active/`, with acceptance criteria on
+   every step.
+2. **Sprint loop** — per sprint: the step's criteria are committed as a sprint
+   contract, the generator executes the step with real tools (files, sandboxed
+   bash, skills, memory, your plugins/MCP tools), then the evaluator judges the
+   result against that contract.
 3. The loop ends when every step is `done`, a step is `blocked`, or
    `max_sprints` is reached. Everything is on disk and resumable.
 

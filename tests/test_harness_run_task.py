@@ -9,8 +9,6 @@ inside the Harness namespace:
         intent="…",
         planner=planner,
         generator_execute=gen,
-        evaluator_propose=propose,
-        generator_respond=respond,
         evaluator_run=evaluate,
     )
 
@@ -46,8 +44,6 @@ async def test_run_task_forwards_all_kwargs(monkeypatch: pytest.MonkeyPatch) -> 
     harness = Harness(HarnessConfig(working_dir=Path("/wt")))
     planner = AsyncMock()
     gen_exec = AsyncMock()
-    eval_propose = AsyncMock()
-    gen_respond = AsyncMock()
     eval_run = AsyncMock()
 
     def goal_for(step: Any, n: int) -> str:
@@ -58,8 +54,6 @@ async def test_run_task_forwards_all_kwargs(monkeypatch: pytest.MonkeyPatch) -> 
         intent="ship it",
         planner=planner,
         generator_execute=gen_exec,
-        evaluator_propose=eval_propose,
-        generator_respond=gen_respond,
         evaluator_run=eval_run,
         max_sprints=3,
         verification_steps=({"kind": "shell", "command": "pytest"},),
@@ -71,8 +65,6 @@ async def test_run_task_forwards_all_kwargs(monkeypatch: pytest.MonkeyPatch) -> 
     assert captured["intent"] == "ship it"
     assert captured["planner"] is planner
     assert captured["generator_execute"] is gen_exec
-    assert captured["evaluator_propose"] is eval_propose
-    assert captured["generator_respond"] is gen_respond
     assert captured["evaluator_run"] is eval_run
     assert captured["max_sprints"] == 3
     assert captured["verification_steps"] == (
@@ -99,8 +91,6 @@ async def test_run_task_defaults_worktree_to_config_working_dir(
         intent="i",
         planner=AsyncMock(),
         generator_execute=AsyncMock(),
-        evaluator_propose=AsyncMock(),
-        generator_respond=AsyncMock(),
         evaluator_run=AsyncMock(),
     )
 
@@ -126,8 +116,6 @@ async def test_run_task_explicit_worktree_overrides_config(
         worktree_root=Path("/explicit"),
         planner=AsyncMock(),
         generator_execute=AsyncMock(),
-        evaluator_propose=AsyncMock(),
-        generator_respond=AsyncMock(),
         evaluator_run=AsyncMock(),
     )
 
@@ -158,8 +146,6 @@ async def test_run_task_omits_unspecified_optionals(
         intent="i",
         planner=AsyncMock(),
         generator_execute=AsyncMock(),
-        evaluator_propose=AsyncMock(),
-        generator_respond=AsyncMock(),
         evaluator_run=AsyncMock(),
     )
 
@@ -205,14 +191,6 @@ async def test_run_task_auto_wires_missing_heads(
         "dream.runner.make_generator_head", _make_sentinel("generator")
     )
     monkeypatch.setattr(
-        "dream.runner.make_evaluator_propose_head",
-        _make_sentinel("evaluator_propose"),
-    )
-    monkeypatch.setattr(
-        "dream.runner.make_generator_respond_head",
-        _make_sentinel("generator_respond"),
-    )
-    monkeypatch.setattr(
         "dream.runner.make_evaluator_head", _make_sentinel("evaluator")
     )
 
@@ -221,15 +199,11 @@ async def test_run_task_auto_wires_missing_heads(
 
     assert captured["planner"] == "sentinel-planner"
     assert captured["generator_execute"] == "sentinel-generator"
-    assert captured["evaluator_propose"] == "sentinel-evaluator_propose"
-    assert captured["generator_respond"] == "sentinel-generator_respond"
     assert captured["evaluator_run"] == "sentinel-evaluator"
 
     for name in (
         "planner",
         "generator",
-        "evaluator_propose",
-        "generator_respond",
         "evaluator",
     ):
         assert factory_calls[name]["harness"] is harness
@@ -257,8 +231,6 @@ async def test_run_task_mints_task_id_when_none(
         intent="i",
         planner=AsyncMock(),
         generator_execute=AsyncMock(),
-        evaluator_propose=AsyncMock(),
-        generator_respond=AsyncMock(),
         evaluator_run=AsyncMock(),
     )
 
@@ -280,30 +252,22 @@ async def test_run_task_explicit_heads_override_factory_defaults(
     monkeypatch.setattr("dream.runner._run.run_task", _fake_run_task)
     monkeypatch.setattr("dream.runner.make_planner_head", _boom)
     monkeypatch.setattr("dream.runner.make_generator_head", _boom)
-    monkeypatch.setattr("dream.runner.make_evaluator_propose_head", _boom)
-    monkeypatch.setattr("dream.runner.make_generator_respond_head", _boom)
     monkeypatch.setattr("dream.runner.make_evaluator_head", _boom)
 
     harness = Harness(HarnessConfig(working_dir=Path("/wt")))
     planner = AsyncMock()
     gen_exec = AsyncMock()
-    eval_propose = AsyncMock()
-    gen_respond = AsyncMock()
     eval_run = AsyncMock()
     await harness.run_task(
         task_id="t",
         intent="i",
         planner=planner,
         generator_execute=gen_exec,
-        evaluator_propose=eval_propose,
-        generator_respond=gen_respond,
         evaluator_run=eval_run,
     )
 
     assert captured["planner"] is planner
     assert captured["generator_execute"] is gen_exec
-    assert captured["evaluator_propose"] is eval_propose
-    assert captured["generator_respond"] is gen_respond
     assert captured["evaluator_run"] is eval_run
 
 
@@ -331,8 +295,6 @@ async def test_run_task_forwards_observer_to_runner_and_factories(
     for fn in (
         "make_planner_head",
         "make_generator_head",
-        "make_evaluator_propose_head",
-        "make_generator_respond_head",
         "make_evaluator_head",
     ):
         monkeypatch.setattr(
@@ -350,8 +312,6 @@ async def test_run_task_forwards_observer_to_runner_and_factories(
     for fn in (
         "make_planner_head",
         "make_generator_head",
-        "make_evaluator_propose_head",
-        "make_generator_respond_head",
         "make_evaluator_head",
     ):
         assert isinstance(factory_observers[fn], UsageMeter)
@@ -411,8 +371,6 @@ async def test_run_task_omits_unspecified_optionals_updated(
         intent="i",
         planner=AsyncMock(),
         generator_execute=AsyncMock(),
-        evaluator_propose=AsyncMock(),
-        generator_respond=AsyncMock(),
         evaluator_run=AsyncMock(),
     )
 
@@ -471,8 +429,6 @@ async def test_run_task_populates_usage_by_model(
         intent="ship it",
         planner=AsyncMock(),
         generator_execute=AsyncMock(),
-        evaluator_propose=AsyncMock(),
-        generator_respond=AsyncMock(),
         evaluator_run=AsyncMock(),
     )
 

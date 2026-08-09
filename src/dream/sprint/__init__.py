@@ -1,6 +1,6 @@
 """Sprint orchestration primitives (spec 10 slice F).
 
-Owns the contract artefact, bounded negotiation, evaluator record write
+Owns the contract artefact, its assembly from the plan, evaluator record write
 + outcome→ledger transition, role-isolation lock, and evaluator on/off
 resolution. The runner (slice 10-G) composes these into the
 generator+evaluator loop; this package ships them as deterministic
@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from ._contract import (
     VALID_VERIFICATION_KINDS,
-    NegotiationEntry,
     SprintContract,
     sprint_contract_path,
     tech_debt_path,
@@ -32,15 +31,8 @@ from ._generator import (
     transition_step_to_in_progress,
 )
 from ._lock import RoleAlreadyActive, SprintRole, acquire_role_lock
-from ._negotiation import (
-    EvaluatorPropose,
-    GeneratorRespond,
-    NegotiationResult,
-    build_contract_from_negotiation,
-    negotiate_contract,
-    negotiate_contract_async,
-)
 from ._outcome import NEEDS_CHANGES_LIMIT, append_tech_debt, apply_outcome
+from ._plan_contract import build_contract_from_step
 
 __all__ = [
     "NEEDS_CHANGES_LIMIT",
@@ -48,10 +40,6 @@ __all__ = [
     "EvaluationAlreadyRecorded",
     "EvaluationOutcome",
     "EvaluationRecord",
-    "EvaluatorPropose",
-    "GeneratorRespond",
-    "NegotiationEntry",
-    "NegotiationResult",
     "RoleAlreadyActive",
     "SprintContract",
     "SprintRole",
@@ -59,12 +47,10 @@ __all__ = [
     "acquire_role_lock",
     "append_tech_debt",
     "apply_outcome",
-    "build_contract_from_negotiation",
+    "build_contract_from_step",
     "evaluation_record_path",
     "is_evaluator_enabled_for_sprint",
     "load_pending_carry_items",
-    "negotiate_contract",
-    "negotiate_contract_async",
     "next_sprint_number",
     "pick_next_pending_step",
     "record_evaluation",

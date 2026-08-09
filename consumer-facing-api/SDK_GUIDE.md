@@ -98,8 +98,7 @@ result = await harness.run_task(
     max_sprints=10,
     observer=StdioObserver(sys.stdout),
     # every LLM head is overridable (see §8):
-    planner=None, generator_execute=None,
-    evaluator_propose=None, generator_respond=None, evaluator_run=None,
+    planner=None, generator_execute=None, evaluator_run=None,
 )
 ```
 
@@ -107,10 +106,12 @@ result = await harness.run_task(
 
 1. **Planner** runs once and commits two artifacts to the workspace: a spec
    (markdown) and a ledger (JSON step list) under `docs/exec-plans/active/`.
+   Every step carries its own acceptance criteria — the planner names the work
+   and the bar for it in one pass.
 2. **Sprint loop**, bounded by `max_sprints`. Each sprint:
    - claims the next `pending` step (or resumes a `needs-changes` one);
-   - if the evaluator is enabled, **negotiates a sprint contract** (goal,
-     acceptance criteria, verification steps) — committed to disk;
+   - if the evaluator is enabled, commits a **sprint contract** built from the
+     step's criteria plus anything the last evaluation left unresolved;
    - the **generator** executes the step with real tools;
    - the **evaluator** judges the work against the contract and the outcome
      maps onto the ledger: `pass` → `done`, `fail` → `blocked`,
@@ -401,6 +402,69 @@ Below `run_task` you also have:
 - `await harness.start_session(SessionOptions(...))` — a raw engine session
   (per-session `system_prompt` / `model` / `max_turns` overrides).
 
+### Resuming a session in another process
+
+The harness keeps its own transcript of record under
+`DreamPaths.sessions_dir` (`~/.dream/data/sessions/{id}.json`, `DREAM_HOME`
+honoured). If you are scheduling work in short windows — a control plane that
+wakes an agent, lets it run, and exits — persist the returned handle against
+whatever key you already have for the work, and resume through it:
+
+```python
+session = await harness.start_session(opts, session_id=f"task-{task_id}")
+...                                        # send / stream events
+handle = await harness.save_session(session)
+
+# Store handle.session_id (and handle.usage_delta for per-run billing).
+# Next window:
+try:
+    session = await harness.resume_session(stored_id)
+except SessionResumeError as exc:
+    if not exc.should_clear_handle:
+        raise                                      # intact elsewhere; not yours to replace
+    await harness.reset_session(stored_id)         # spent; frees the name
+    session = await harness.start_session(opts, session_id=stored_id)
+```
+
+`start_session` refuses an id that already names a saved snapshot, so two
+callers picking the same key get an error instead of quietly saving over each
+other. Clearing it first is how you say you meant to.
+
+`run_role` takes the same argument, so a role thread continues across beats
+without the caller touching sessions at all:
+
+```python
+result = await harness.run_role("generator", intent, session_id=f"task-{task_id}-generator")
+handle = result.session_handle          # None when session_id is omitted
+```
+
+A spent snapshot there (never written, or corrupt) starts the thread over under
+the same name rather than failing the run, so one stable key per thread is all
+a caller keeps. A snapshot from another working directory is not spent: the run
+gets a fresh unnamed session and `session_handle` comes back `None`, leaving
+that transcript resumable from the workspace it belongs to.
+
+For a whole task, `run_task` takes a scope instead of a session id and gives
+each role its own thread beneath it:
+
+```python
+await harness.run_task(intent=intent, session_scope=f"task-{task_id}")
+# threads: task-42-planner, task-42-generator, task-42-evaluator
+```
+
+Call it again with the same scope and those conversations continue. Each role
+has one thread — a planner and an evaluator are different conversations and
+never share. Use `dream.runner.role_session_id(scope, role)` to address one
+thread directly, for example to `reset_session` just the generator.
+
+Keep only the handle, not a second copy of the transcript. `usage_delta`
+covers the work since the previous save, so you never have to difference
+cumulative totals. A resume whose snapshot was taken under a different working
+directory raises `working_dir_mismatch` rather than replaying a transcript
+about other files; pass `allow_working_dir_change=True` when that is what you
+want. Give each concurrent agent its own `DREAM_HOME` (or an explicit
+`FileSessionStore`) so their session roots stay isolated.
+
 ## 9. Always-on agents
 
 For long-running agents, wrap the harness in the runtime:
@@ -422,8 +486,8 @@ async with Runtime(harness, RuntimeConfig(...)) as rt:
 
 - Cost accounting (`SessionCost`) is not wired for all gateways; no per-task
   token/$ budgets yet.
-- Sprint-contract negotiation runs even for trivial tasks unless the planner
-  disables the evaluator.
+- A step's acceptance criteria are fixed at plan time; only a `needs-changes`
+  verdict can add to them.
 - Plugin-contributed *skills* don't join the prompt catalogue yet (their
   tools/hooks/providers do).
 - Docker sandbox backend is a refusing seam — subprocess only today.

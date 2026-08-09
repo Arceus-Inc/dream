@@ -6,17 +6,14 @@ Spec 10 §"Sprint contract":
   ``<worktree>/docs/exec-plans/active/{task-id}-sprint-{n}.json``.
 - Written **before** the generator touches any source file in the worktree
   for that sprint (acceptance criterion #7).
-- ``negotiation_log`` is append-only and durable — including the disagreement
-  that led to ``imposed: true``.
 
-Shapes only; the orchestration that writes the contract at the right time
-lives in :mod:`dream.sprint._negotiation` (which assembles it from the
-negotiation result) and ultimately in the runner (slice 10-G).
+Shapes only; :mod:`dream.sprint._plan_contract` assembles one from the ledger
+step, and the runner (slice 10-G) writes it at the right time.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +23,6 @@ from ._checks import checked_sprint_number, checked_task_id
 
 __all__ = [
     "VALID_VERIFICATION_KINDS",
-    "NegotiationEntry",
     "SprintContract",
     "sprint_contract_path",
     "tech_debt_path",
@@ -53,35 +49,8 @@ def _strict_bool(value: Any, *, field: str, default: bool) -> bool:
 
 
 @dataclass(frozen=True)
-class NegotiationEntry:
-    """One message in the contract negotiation log."""
-
-    ts: str
-    from_role: str
-    to_role: str
-    message: str
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "ts": self.ts,
-            "from": self.from_role,
-            "to": self.to_role,
-            "message": self.message,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> NegotiationEntry:
-        return cls(
-            ts=data["ts"],
-            from_role=data["from"],
-            to_role=data["to"],
-            message=data["message"],
-        )
-
-
-@dataclass(frozen=True)
 class SprintContract:
-    """The negotiated, committed plan for one sprint."""
+    """The committed plan for one sprint — the bar the evaluator judges against."""
 
     task_id: str
     sprint_number: int
@@ -91,8 +60,6 @@ class SprintContract:
     scope_includes: tuple[str, ...] = ()
     scope_excludes: tuple[str, ...] = ()
     evaluator_enabled: bool = True
-    imposed: bool = False
-    negotiation_log: tuple[NegotiationEntry, ...] = field(default_factory=tuple)
     rubric: str = ""
 
     def __post_init__(self) -> None:
@@ -106,17 +73,13 @@ class SprintContract:
                     f"expected one of {sorted(VALID_VERIFICATION_KINDS)}"
                 )
 
-    def with_imposed(self, imposed: bool) -> SprintContract:
-        return replace(self, imposed=imposed)
-
     def to_dict(self) -> dict[str, Any]:
         # On-disk JSON shape:
         #   {"task_id": str, "sprint_number": int, "goal": str,
         #    "scope_includes": list[str], "scope_excludes": list[str],
         #    "acceptance_criteria": list[str],
         #    "verification_steps": list[{"kind": "test"|"lint"|"eval", ...}],
-        #    "evaluator_enabled": bool, "imposed": bool,
-        #    "negotiation_log": list[{"ts", "from", "to", "message"}]}
+        #    "evaluator_enabled": bool, "rubric": str}
         return {
             "task_id": self.task_id,
             "sprint_number": self.sprint_number,
@@ -126,8 +89,6 @@ class SprintContract:
             "acceptance_criteria": list(self.acceptance_criteria),
             "verification_steps": [dict(s) for s in self.verification_steps],
             "evaluator_enabled": self.evaluator_enabled,
-            "imposed": self.imposed,
-            "negotiation_log": [e.to_dict() for e in self.negotiation_log],
             "rubric": self.rubric,
         }
 
@@ -143,12 +104,6 @@ class SprintContract:
             verification_steps=tuple(dict(s) for s in data.get("verification_steps", ())),
             evaluator_enabled=_strict_bool(
                 data.get("evaluator_enabled"), field="evaluator_enabled", default=True
-            ),
-            imposed=_strict_bool(
-                data.get("imposed"), field="imposed", default=False
-            ),
-            negotiation_log=tuple(
-                NegotiationEntry.from_dict(e) for e in data.get("negotiation_log", ())
             ),
             rubric=str(data.get("rubric", "")),
         )

@@ -13,6 +13,15 @@ from typing import Literal
 RunPhase = Literal["plan", "sprint", "evaluate"]
 _RUN_PHASES: frozenset[str] = frozenset({"plan", "sprint", "evaluate"})
 
+# Why a saved session could not be resumed. A consumer holding a session
+# handle branches on this to decide *retry fresh* vs *escalate*: every
+# reason except ``working_dir_mismatch`` means the stored handle is spent
+# and should be dropped before the next attempt.
+SessionResumeFailure = Literal["missing", "corrupt", "schema_mismatch", "working_dir_mismatch"]
+_SESSION_RESUME_FAILURES: frozenset[str] = frozenset(
+    {"missing", "corrupt", "schema_mismatch", "working_dir_mismatch"}
+)
+
 
 class DreamError(Exception):
     """Base class for every SDK error. Carries a stable `code`."""
@@ -98,6 +107,42 @@ class RunTaskError(DreamError):
         self.cause = cause
 
 
+class SessionResumeError(DreamError):
+    """A saved session could not be restored.
+
+    Carries the typed :attr:`reason` and the :attr:`session_id` that failed,
+    so a control plane holding the handle can apply the recovery it wants:
+    start a fresh session and drop the stored handle, or escalate. Only
+    ``working_dir_mismatch`` describes a *reusable* snapshot — the session is
+    intact, it just belongs to another working directory.
+    """
+
+    code = "dream.session_resume"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: SessionResumeFailure,
+        session_id: str,
+        cause: BaseException | None = None,
+        code: str | None = None,
+    ) -> None:
+        if reason not in _SESSION_RESUME_FAILURES:
+            raise ValueError(
+                f"reason must be one of {sorted(_SESSION_RESUME_FAILURES)}, got {reason!r}"
+            )
+        super().__init__(message, code=code)
+        self.reason: SessionResumeFailure = reason
+        self.session_id = session_id
+        self.cause = cause
+
+    @property
+    def should_clear_handle(self) -> bool:
+        """Whether the caller's stored handle is spent and must be dropped."""
+        return self.reason != "working_dir_mismatch"
+
+
 __all__ = [
     "CompactionError",
     "DreamError",
@@ -107,5 +152,6 @@ __all__ = [
     "ProviderError",
     "RunTaskError",
     "SandboxError",
+    "SessionResumeError",
     "TaskCancelled",
 ]

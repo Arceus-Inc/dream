@@ -19,7 +19,13 @@ from dream.contracts.hook import Hook
 from dream.contracts.plugin import Plugin
 from dream.contracts.provider import Provider
 from dream.contracts.tool import Tool
-from dream.services.session_store import FileSessionStore
+from dream.errors import SessionResumeError
+from dream.services.session_store import (
+    FileSessionStore,
+    SessionHandle,
+    SessionSnapshot,
+    checked_session_id,
+)
 from dream.session import Session, SessionOptions
 
 if TYPE_CHECKING:
@@ -36,7 +42,6 @@ if TYPE_CHECKING:
         RunTaskResult,
         SprintGoalProvider,
     )
-    from dream.sprint import EvaluatorPropose, GeneratorRespond
     from dream.subagents._async_delegation import AsyncDelegationManager
     from dream.tasks import BackgroundTaskManager
 
@@ -157,7 +162,13 @@ class Harness:
 
     # -- sessions ---------------------------------------------------------
 
-    async def start_session(self, options: SessionOptions | None = None) -> Session:
+    async def start_session(
+        self,
+        options: SessionOptions | None = None,
+        *,
+        session_id: str | None = None,
+        store: FileSessionStore | None = None,
+    ) -> Session:
         """Create a new Session, binding an engine if one is configured.
 
         When ``HarnessConfig._engine_factory`` is set, the factory is
@@ -166,27 +177,58 @@ class Harness:
         Session is returned without an engine binding -- ``send`` will
         raise ``NotImplementedError`` until the production wiring is in
         place.
+
+        ``session_id`` lets a caller mint the id itself so its own records
+        (a task-keyed row in a scheduler) and the harness agree without a
+        round-trip; a random id is generated when omitted. Ids that could
+        escape the sessions root are rejected, and so is an id that already
+        names a saved snapshot — two callers landing on the same key would
+        otherwise save over each other while both still hold a handle. Continue
+        that session with :meth:`resume_session` or clear it with
+        :meth:`reset_session` first.
         """
         import uuid
 
         await self._ensure_open()
         opts = options or SessionOptions()
-        session_id = uuid.uuid4().hex
+        resolved_id = uuid.uuid4().hex if session_id is None else checked_session_id(session_id)
+        if session_id is not None:
+            self._refuse_occupied_id(resolved_id, store)
         engine = None
         if self.config._engine_factory is not None:
-            engine = self.config._engine_factory(session_id, opts)
-        return Session(id=session_id, options=opts, _engine=engine)
+            engine = self.config._engine_factory(resolved_id, opts)
+        return Session(id=resolved_id, options=opts, _engine=engine)
 
-    def _resolve_session_store(self, store: FileSessionStore | None) -> FileSessionStore:
+    def _maybe_session_store(self, store: FileSessionStore | None) -> FileSessionStore | None:
         if store is not None:
             return store
         if self.config.session_store is not None:
             return self.config.session_store
         if self.config.paths is not None:
             return FileSessionStore(self.config.paths.sessions_dir)
+        return None
+
+    def _resolve_session_store(self, store: FileSessionStore | None) -> FileSessionStore:
+        resolved = self._maybe_session_store(store)
+        if resolved is None:
+            raise ValueError(
+                "save_session/resume_session requires store=..., "
+                "HarnessConfig.session_store, or HarnessConfig.paths"
+            )
+        return resolved
+
+    def _refuse_occupied_id(self, session_id: str, store: FileSessionStore | None) -> None:
+        """Keep a caller-minted id off a snapshot that is still someone's.
+
+        Nothing to check when no store is configured: with nowhere to persist,
+        an id collision costs nothing.
+        """
+        resolved = self._maybe_session_store(store)
+        if resolved is None or not resolved.exists(session_id):
+            return
         raise ValueError(
-            "save_session/resume_session requires store=..., "
-            "HarnessConfig.session_store, or HarnessConfig.paths"
+            f"session {session_id!r} already has a saved snapshot; "
+            "resume_session to continue it, or reset_session to discard it"
         )
 
     async def save_session(
@@ -194,11 +236,30 @@ class Harness:
         session: Session,
         *,
         store: FileSessionStore | None = None,
-    ) -> Path:
-        """Persist a session snapshot to disk; return the written path."""
+    ) -> SessionHandle:
+        """Persist a session snapshot; return the handle to resume it.
+
+        The returned :class:`SessionHandle` is the only thing a caller needs to
+        keep: the transcript stays in the harness's own store. ``usage_delta``
+        reports the spend since this session's previous save, so a scheduler can
+        bill per run without differencing totals itself.
+        """
         resolved = self._resolve_session_store(store)
         snapshot = session.snapshot()
-        return resolved.save(snapshot)
+        usage_delta = session._usage_delta()
+        path = resolved.save(snapshot)
+        # Only advance the billing baseline once the bytes are durable, so a
+        # failed write leaves the next save reporting the same delta.
+        session._mark_persisted(snapshot.cost)
+        return SessionHandle(
+            session_id=snapshot.session_id,
+            path=path,
+            working_dir=snapshot.working_dir,
+            schema_version=snapshot.schema_version,
+            saved_at=snapshot.saved_at,
+            usage_delta=usage_delta,
+            usage_total=snapshot.cost,
+        )
 
     async def resume_session(
         self,
@@ -206,15 +267,23 @@ class Harness:
         *,
         options: SessionOptions | None = None,
         store: FileSessionStore | None = None,
+        allow_working_dir_change: bool = False,
     ) -> Session:
         """Load a saved snapshot and bind a fresh engine (process restart).
 
         When ``options`` is omitted, persisted model, prompt, turn budget, and
         JSON-compatible metadata are restored. Response formats and any
         non-JSON metadata must be passed explicitly.
+
+        Raises :class:`SessionResumeError` when the snapshot is missing,
+        unreadable, written by another schema, or belongs to a different
+        working directory — a transcript about other files is worse than no
+        transcript, so that last case needs ``allow_working_dir_change=True``.
         """
         resolved = self._resolve_session_store(store)
         snapshot = resolved.load(session_id)
+        if not allow_working_dir_change:
+            self._check_working_dir(snapshot, session_id)
         await self._ensure_open()
         opts = options or SessionOptions(
             model=snapshot.model,
@@ -229,6 +298,41 @@ class Harness:
         session.restore_from_snapshot(snapshot)
         return session
 
+    def _check_working_dir(self, snapshot: SessionSnapshot, session_id: str) -> None:
+        """Refuse a resume whose snapshot was taken in another directory."""
+        saved = snapshot.working_dir
+        if saved is None:
+            raise SessionResumeError(
+                f"session {session_id!r} has no recorded working directory; "
+                "pass allow_working_dir_change=True to resume anyway",
+                reason="working_dir_mismatch",
+                session_id=session_id,
+            )
+        current = self.config.working_dir
+        if Path(saved).expanduser().resolve() == Path(current).expanduser().resolve():
+            return
+        raise SessionResumeError(
+            f"session was saved under {saved!r} but this harness works in "
+            f"{str(current)!r}; pass allow_working_dir_change=True to resume anyway",
+            reason="working_dir_mismatch",
+            session_id=session_id,
+        )
+
+    async def reset_session(
+        self,
+        session_id: str,
+        *,
+        store: FileSessionStore | None = None,
+    ) -> bool:
+        """Drop a saved snapshot; return whether one was removed.
+
+        The recovery half of the handle contract: after a failed resume, or
+        when a caller decides the context has gone stale, clear the snapshot so
+        the next ``start_session`` under the same id begins clean.
+        """
+        resolved = self._resolve_session_store(store)
+        return resolved.delete(session_id)
+
     async def run_role(
         self,
         role: RoleName | RoleManifest,
@@ -237,6 +341,7 @@ class Harness:
         options: SessionOptions | None = None,
         harness_dir: Path | None = None,
         observer: RunTaskObserver | None = None,
+        session_id: str | None = None,
     ) -> RunRoleResult:
         """Run one session as a named role; return its assistant text + cost.
 
@@ -252,6 +357,10 @@ class Harness:
         The primitive the production planner / generator / evaluator
         heads compose into :func:`dream.runner.run_task` — see spec 10
         slice G2.
+
+        ``session_id`` names the role thread so a later call continues it
+        instead of starting over; the run's :class:`SessionHandle` comes back
+        on the result. Nothing is persisted when it is omitted.
         """
         # Local import keeps the harness <-> runner module graph
         # one-way: ``dream.runner`` imports from ``dream.planner`` /
@@ -266,6 +375,7 @@ class Harness:
             options=options,
             harness_dir=harness_dir,
             observer=observer,
+            session_id=session_id,
         )
 
     async def run_task(
@@ -275,8 +385,6 @@ class Harness:
         intent: str,
         planner: PlannerCallable | None = None,
         generator_execute: GeneratorExecute | None = None,
-        evaluator_propose: EvaluatorPropose | None = None,
-        generator_respond: GeneratorRespond | None = None,
         evaluator_run: EvaluatorRun | None = None,
         worktree_root: Path | None = None,
         harness_dir: Path | None = None,
@@ -286,6 +394,7 @@ class Harness:
         observer: RunTaskObserver | None = None,
         rubric: str | None = None,
         plan_admission: PlanAdmission | None = None,
+        session_scope: str | None = None,
     ) -> RunTaskResult:
         """Run an end-to-end task: planner → bounded sprint loop.
 
@@ -302,6 +411,13 @@ class Harness:
         ``observer`` is forwarded to the runner and to every head so a
         single :class:`~dream.runner.StdioObserver` (or custom hook) sees
         every macro and streaming event.
+
+        ``session_scope`` makes the task's role sessions resumable: each
+        autowired head runs in its own thread under that scope
+        (``{scope}-planner`` and so on), so calling ``run_task`` again with the
+        same scope continues those conversations rather than restarting them.
+        A caller driving the harness in short windows keeps one key per task.
+        Explicitly supplied heads are left alone — they own their own sessions.
         """
         from dataclasses import replace as _replace
 
@@ -317,18 +433,15 @@ class Harness:
         # so the caller's observer still sees every event it expects.
         meter = UsageMeter(observer)
 
-        planner, generator_execute, evaluator_propose, generator_respond, evaluator_run = (
-            self._resolve_heads(
-                planner=planner,
-                generator_execute=generator_execute,
-                evaluator_propose=evaluator_propose,
-                generator_respond=generator_respond,
-                evaluator_run=evaluator_run,
-                intent=intent,
-                harness_dir=harness_dir,
-                observer=meter,
-                worktree_root=root,
-            )
+        planner, generator_execute, evaluator_run = self._resolve_heads(
+            planner=planner,
+            generator_execute=generator_execute,
+            evaluator_run=evaluator_run,
+            intent=intent,
+            harness_dir=harness_dir,
+            observer=meter,
+            worktree_root=root,
+            session_scope=session_scope,
         )
 
         # ``kwargs`` is hand-built (rather than passing real keyword args) so the
@@ -342,8 +455,6 @@ class Harness:
             "worktree_root": root,
             "planner": planner,
             "generator_execute": generator_execute,
-            "evaluator_propose": evaluator_propose,
-            "generator_respond": generator_respond,
             "evaluator_run": evaluator_run,
             "observer": meter,
         }
@@ -365,62 +476,49 @@ class Harness:
         *,
         planner: PlannerCallable | None,
         generator_execute: GeneratorExecute | None,
-        evaluator_propose: EvaluatorPropose | None,
-        generator_respond: GeneratorRespond | None,
         evaluator_run: EvaluatorRun | None,
         intent: str,
         harness_dir: Path | None,
         observer: RunTaskObserver | None,
         worktree_root: Path | None = None,
-    ) -> tuple[
-        PlannerCallable,
-        GeneratorExecute,
-        EvaluatorPropose,
-        GeneratorRespond,
-        EvaluatorRun,
-    ]:
+        session_scope: str | None = None,
+    ) -> tuple[PlannerCallable, GeneratorExecute, EvaluatorRun]:
         """Fill any ``None`` head with its production factory (10-I autowire).
 
         A one-liner ``await harness.run_task(intent=...)`` wires every LLM head
         from the configured engine; explicitly supplied heads pass through
-        untouched. Returns the five resolved heads in run_task argument order.
+        untouched. Returns the three resolved heads in run_task argument order.
+
+        ``session_scope`` is forwarded to each factory so its role runs in a
+        resumable thread under that scope.
         """
         if (
             planner is not None
             and generator_execute is not None
-            and evaluator_propose is not None
-            and generator_respond is not None
             and evaluator_run is not None
         ):
-            return (
-                planner,
-                generator_execute,
-                evaluator_propose,
-                generator_respond,
-                evaluator_run,
-            )
+            return (planner, generator_execute, evaluator_run)
 
         from dream.runner import (
             make_evaluator_head,
-            make_evaluator_propose_head,
             make_generator_head,
-            make_generator_respond_head,
             make_planner_head,
         )
 
         if planner is None:
-            planner = make_planner_head(self, harness_dir=harness_dir, observer=observer)
+            planner = make_planner_head(
+                self,
+                harness_dir=harness_dir,
+                observer=observer,
+                session_scope=session_scope,
+            )
         if generator_execute is None:
             generator_execute = make_generator_head(
-                self, task_intent=intent, harness_dir=harness_dir, observer=observer
-            )
-        if evaluator_propose is None:
-            evaluator_propose = make_evaluator_propose_head(
-                self, intent=intent, harness_dir=harness_dir, observer=observer
-            )
-        if generator_respond is None:
-            generator_respond = make_generator_respond_head(
-                self, intent=intent, harness_dir=harness_dir, observer=observer
+                self,
+                task_intent=intent,
+                harness_dir=harness_dir,
+                observer=observer,
+                session_scope=session_scope,
             )
         if evaluator_run is None:
             evaluator_run = make_evaluator_head(
@@ -428,16 +526,11 @@ class Harness:
                 task_intent=intent,
                 harness_dir=harness_dir,
                 observer=observer,
+                session_scope=session_scope,
                 # worktree_root kept for API compat; evaluator verifies in-session via bash.
                 worktree_root=worktree_root,
             )
-        return (
-            planner,
-            generator_execute,
-            evaluator_propose,
-            generator_respond,
-            evaluator_run,
-        )
+        return (planner, generator_execute, evaluator_run)
 
     # -- lifecycle --------------------------------------------------------
 

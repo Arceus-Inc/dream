@@ -58,6 +58,7 @@ from dream.events import (
 from dream.services.session_store import (
     SCHEMA_VERSION,
     SessionCostFields,
+    SessionCostSnapshot,
     SessionSnapshot,
     cost_snapshot_from_fields,
     extract_tool_calls,
@@ -69,6 +70,16 @@ from dream.services.session_store import (
 
 if TYPE_CHECKING:
     from dream.engine._engine import QueryEngine
+
+
+def _zero_cost() -> SessionCostSnapshot:
+    return SessionCostSnapshot(
+        input_tokens=0,
+        output_tokens=0,
+        cache_read_tokens=0,
+        cache_write_tokens=0,
+        cost_usd=0.0,
+    )
 
 
 def _tool_failed_marker(tool_name: str) -> str:
@@ -155,6 +166,10 @@ class Session:
         # other and ``cancel`` could target the wrong stream. Only one
         # ``send`` may be in flight at a time (#33).
         self._active = False
+        # Cost as of the last persisted snapshot, so each save can report the
+        # work done since the previous one. A resume adopts the restored
+        # totals as the baseline (that spend is already accounted for).
+        self._persisted_cost = _zero_cost()
 
     @property
     def model(self) -> str:
@@ -188,6 +203,37 @@ class Session:
         ``_transcript`` private attribute directly.
         """
         return self._transcript
+
+    def _current_cost(self) -> SessionCostSnapshot:
+        return cost_snapshot_from_fields(
+            SessionCostFields(
+                input_tokens=self.cost.input_tokens,
+                output_tokens=self.cost.output_tokens,
+                cache_read_tokens=self.cost.cache_read_tokens,
+                cache_write_tokens=self.cost.cache_write_tokens,
+                cost_usd=self.cost.cost_usd,
+            )
+        )
+
+    def _usage_delta(self) -> SessionCostSnapshot:
+        """Spend accumulated since the last persisted snapshot."""
+        current = self._current_cost()
+        base = self._persisted_cost
+        return SessionCostSnapshot(
+            input_tokens=current.input_tokens - base.input_tokens,
+            output_tokens=current.output_tokens - base.output_tokens,
+            cache_read_tokens=current.cache_read_tokens - base.cache_read_tokens,
+            cache_write_tokens=current.cache_write_tokens - base.cache_write_tokens,
+            cost_usd=current.cost_usd - base.cost_usd,
+        )
+
+    def _mark_persisted(self, cost: SessionCostSnapshot) -> None:
+        """Adopt ``cost`` as the baseline for the next usage delta."""
+        self._persisted_cost = cost
+
+    def _working_dir(self) -> str | None:
+        engine = self._engine
+        return str(engine.working_dir) if engine is not None else None
 
     def _effective_max_turns(self) -> int | None:
         """Resolved turn budget for durable snapshots.
@@ -229,19 +275,12 @@ class Session:
             session_id=self.id,
             model=model,
             system_prompt=self.options.system_prompt,
-            cost=cost_snapshot_from_fields(
-                SessionCostFields(
-                    input_tokens=self.cost.input_tokens,
-                    output_tokens=self.cost.output_tokens,
-                    cache_read_tokens=self.cost.cache_read_tokens,
-                    cache_write_tokens=self.cost.cache_write_tokens,
-                    cost_usd=self.cost.cost_usd,
-                )
-            ),
+            cost=self._current_cost(),
             messages=[message_to_record(m) for m in consistent],
             tool_calls=extract_tool_calls(consistent),
             saved_at=datetime.now(tz=UTC),
             max_turns=self._effective_max_turns(),
+            working_dir=self._working_dir(),
             metadata=metadata,
         )
 
@@ -254,6 +293,9 @@ class Session:
         self.cost.cache_read_tokens = snapshot.cost.cache_read_tokens
         self.cost.cache_write_tokens = snapshot.cost.cache_write_tokens
         self.cost.cost_usd = snapshot.cost.cost_usd
+        # The restored spend was already reported by the save that produced
+        # this snapshot; the next delta must cover only post-resume work.
+        self._mark_persisted(snapshot.cost)
 
     async def send(self, prompt: str) -> AsyncIterator[Event]:
         """Submit a user prompt and stream typed events back.

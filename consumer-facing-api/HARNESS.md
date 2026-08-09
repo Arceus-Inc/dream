@@ -77,17 +77,18 @@ is crash-safe and resumable.
 - **Spec + ledger** — the planner commits a markdown spec and a JSON step
   ledger (`docs/exec-plans/active/t-*.{md,json}`). `LedgerStep`:
   `id, description, status (pending|in_progress|done|blocked), notes,
-  needs_changes_count`.
+  acceptance_criteria, needs_changes_count`.
 - **Sprint** — one claim-execute-evaluate cycle on one step, lock-protected.
-- **Sprint contract** — negotiated before execution (evaluator *proposes*
-  acceptance criteria, generator *responds* accept/counter), committed to
-  `…-sprint-N.json`. The planner can disable the evaluator per-task.
+- **Sprint contract** — built from the step's plan-time acceptance criteria
+  plus any items a prior `needs-changes` left open, committed to
+  `…-sprint-N.json` before the generator runs. The planner can disable the
+  evaluator per-task.
 - **Evaluation outcomes** — `pass` → `done`; `fail` → `blocked` (+ tech-debt
   entry); `needs-changes` → retry next sprint.
-- **Five overridable LLM heads** — `planner`, `generator_execute`,
-  `evaluator_propose`, `generator_respond`, `evaluator_run`
-  (`src/dream/runner/_*_head.py`): each is a plain async callable; pass your
-  own to `run_task` (deterministic oracles, cheaper models per head).
+- **Three overridable LLM heads** — `planner`, `generator_execute`,
+  `evaluator_run` (`src/dream/runner/_*_head.py`): each is a plain async
+  callable; pass your own to `run_task` (deterministic oracles, cheaper
+  models per head).
 - **Self-healing heads** (`_head_retry.py`) — `ask_until_parsed`: a malformed
   reply is re-prompted with the parse error + the previous reply, up to 3
   attempts, then the last `*HeadParseError` raises unchanged. Engine errors

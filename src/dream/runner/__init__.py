@@ -10,10 +10,10 @@ primitives (slice F) into a complete ``run_task`` loop:
       the next ``pending`` one. Stop when neither exists.
    b. Under the per-task generator role lock (criterion #14):
 
-      - If the evaluator is enabled (ledger-level), run a bounded
-        negotiation (≤ 3 rounds, criterion #9) seeded with the prior
-        sprint's ``needs-changes`` carry items; commit the sprint
-        contract **before** invoking the generator (criterion #7).
+      - If the evaluator is enabled (ledger-level), build the sprint
+        contract from the step's plan-time acceptance criteria plus the
+        prior sprint's ``needs-changes`` carry items, and commit it
+        **before** invoking the generator (criterion #7).
       - Invoke the caller-supplied ``generator_execute`` callable.
       - Emit ``handoff.generator_to_evaluator`` with the contract
         pointer (criterion #20).
@@ -42,12 +42,6 @@ from dream.runner._evaluator_head import (
     make_evaluator_head,
 )
 from dream.runner._generator_head import make_generator_head
-from dream.runner._negotiator_heads import (
-    EvaluatorProposeHeadParseError,
-    GeneratorRespondHeadParseError,
-    make_evaluator_propose_head,
-    make_generator_respond_head,
-)
 from dream.runner._observer import RunTaskObserver, StdioObserver
 from dream.runner._plan_admission import PlanAdmission
 from dream.runner._planner_head import (
@@ -58,6 +52,7 @@ from dream.runner._role_session import (
     RoleSessionError,
     RunRoleResult,
     resolve_role_manifest,
+    role_session_id,
     run_role,
 )
 from dream.runner._run import (
@@ -71,10 +66,8 @@ from dream.runner._run import (
 
 __all__ = [
     "EvaluatorHeadParseError",
-    "EvaluatorProposeHeadParseError",
     "EvaluatorRun",
     "GeneratorExecute",
-    "GeneratorRespondHeadParseError",
     "PlanAdmission",
     "PlannerHeadParseError",
     "RoleSessionError",
@@ -85,11 +78,10 @@ __all__ = [
     "SprintRunResult",
     "StdioObserver",
     "make_evaluator_head",
-    "make_evaluator_propose_head",
     "make_generator_head",
-    "make_generator_respond_head",
     "make_planner_head",
     "resolve_role_manifest",
+    "role_session_id",
     "run_role",
     "run_task",
 ]
