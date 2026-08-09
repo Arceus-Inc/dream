@@ -210,6 +210,9 @@ class SessionConfig:
     session_id: str = "s_default"
     checkpoint: Callable[[TurnRecord], None] | None = None
     now: Callable[[], datetime] = field(default=_default_now)
+    # Volatile, harness-supplied context appended to the initiating user turn.
+    # It is deliberately not a system prompt or transcript entry.
+    initial_context: str | None = None
     orientation: OrientationConfig | None = None
     heartbeat: HeartbeatConfig | None = None
     reviewer: ReviewerConfig | None = None
@@ -704,6 +707,11 @@ async def run_session(
     # right after SESSION_START. Payload carries the prompt text so a hook can
     # log / gate / annotate; observer-only, so it can't rewrite the prompt.
     if user_messages:
+        first = user_messages[0]
+        user_messages = [
+            ConversationMessage(role=first.role, content=list(first.content)),
+            *user_messages[1:],
+        ]
         submit_payload = {
             "session_id": config.session_id,
             "prompt": user_messages[0].text,
@@ -715,11 +723,16 @@ async def run_session(
             HookEvent.USER_PROMPT_SUBMIT,
             submit_payload,
         )
-        if submit_outcome.inject_context:
+        injected_context = "\n\n".join(
+            context
+            for context in (config.initial_context, submit_outcome.inject_context)
+            if context
+        )
+        if injected_context:
             first = user_messages[0]
             first.content = [
                 *first.content,
-                TextBlock(text="\n\n" + submit_outcome.inject_context),
+                TextBlock(text="\n\n" + injected_context),
             ]
 
     # Mirror every FSM transition into the trace (Spec 12a). Registered before
@@ -747,7 +760,6 @@ async def run_session(
     transcript: list[ConversationMessage] = (
         sanitize_conversation_messages(resume_messages) if resume_messages else []
     )
-
     # Orientation ritual: skipped on resume (the prior incarnation
     # already oriented; re-orienting would duplicate the brief and
     # violate "orientation runs exactly once per session").

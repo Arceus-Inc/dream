@@ -79,6 +79,7 @@ class QueryEngine:
     # loop and PRE/POST_TOOL_USE fire around each dispatch. ``None`` disables
     # all firing, leaving the loop byte-for-byte unchanged.
     hook_executor: HookExecutor | None = None
+    initial_context: str | None = None
     # spec 15 §4.2: optional orientation ritual run once at session start (``run_session`` calls it when
     # set). chorus uses it to prepend ``AGENTS.md`` to every beat so an employee reads the cross-child
     # contract before writing. ``None`` leaves the session loop byte-for-byte unchanged (the default).
@@ -116,6 +117,7 @@ class QueryEngine:
             model=self.model,
             limiter=SessionLimiter(self.limits) if self.limits is not None else None,
             hook_executor=self.hook_executor,
+            initial_context=self.initial_context,
             orientation=self.orientation,
             role=self.role,
             delegations=self.delegations,
@@ -144,6 +146,7 @@ def build_query_engine(
     tracer: Tracer | None = None,
     model: str = "",
     hook_executor: HookExecutor | None = None,
+    initial_context: str | None = None,
     orientation: OrientationConfig | None = None,
     delegations: AsyncDelegationManager | None = None,
 ) -> QueryEngine:
@@ -183,6 +186,7 @@ def build_query_engine(
         model=model,
         limits=limits,
         hook_executor=hook_executor,
+        initial_context=initial_context,
         orientation=orientation,
         role=role_raw if isinstance(role_raw, str) else None,
         delegations=delegations,

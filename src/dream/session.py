@@ -166,6 +166,7 @@ class Session:
         # other and ``cancel`` could target the wrong stream. Only one
         # ``send`` may be in flight at a time (#33).
         self._active = False
+        self._has_sent = False
         # Cost as of the last persisted snapshot, so each save can report the
         # work done since the previous one. A resume adopts the restored
         # totals as the baseline (that spend is already accounted for).
@@ -293,6 +294,7 @@ class Session:
         self.cost.cache_read_tokens = snapshot.cost.cache_read_tokens
         self.cost.cache_write_tokens = snapshot.cost.cache_write_tokens
         self.cost.cost_usd = snapshot.cost.cost_usd
+        self._has_sent = False
         # The restored spend was already reported by the save that produced
         # this snapshot; the next delta must cover only post-resume work.
         self._mark_persisted(snapshot.cost)
@@ -324,6 +326,9 @@ class Session:
         self._transcript.append(user_msg)
 
         config = self._engine.make_session_config()
+        if self._has_sent:
+            config.initial_context = None
+        self._has_sent = True
         inner: AsyncGenerator[Any, None] = run_session(  # type: ignore[assignment]
             config, [user_msg], resume_messages=resume
         )

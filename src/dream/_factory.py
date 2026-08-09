@@ -45,6 +45,13 @@ from dream.memory import (
 from dream.observability import JsonlTracer, TraceWriter
 from dream.permissions import SessionLimits, read_sandbox_config
 from dream.plugins import load_enabled_plugins
+from dream.prompts import (
+    ContextPromptBlock,
+    RolePromptBlock,
+    RuntimeContextBlock,
+    StablePromptBlock,
+    assemble_session_system_prompt,
+)
 from dream.prompts.environment import render_runtime_info
 from dream.roles import RoleManifest
 from dream.runner._role_session import ROLE_MANIFEST_METADATA_KEY, ROLE_NAME_METADATA_KEY
@@ -522,32 +529,28 @@ def _select_sandbox_adapter(paths: DreamPaths) -> SandboxAdapter:
 def _assemble_system_prompt(
     *,
     paths: DreamPaths,
-    runtime_info: str,
     catalogue: str,
     memory_catalogue: str,
     system_prompt: str | None,
 ) -> str:
     """Assemble the per-session system prompt from its ordered blocks.
 
-    Order: the governance standing orders FIRST (the constitution outranks
-    everything; Spec 13F AC #21-22, re-extracted every session start), then
-    runtime info (host facts the model must trust), the skill catalogue
-    (capabilities), the memory catalogue (durable workspace facts), and the
-    caller-supplied prompt (task framing). Each block survives if the next is
-    empty.
+    Stable instructions come first, followed by workspace governance and
+    catalogues, then the caller's role prompt. Runtime and beat facts stay in
+    user-turn context.
     """
-    standing_orders = render_standing_orders(
+    workspace_governance = render_standing_orders(
         extract_standing_orders(paths.repo / "docs" / "design-docs" / "core-beliefs.md")
     )
-    parts = [standing_orders] if standing_orders else []
-    parts.append(runtime_info)
-    if catalogue:
-        parts.append(catalogue)
-    if memory_catalogue:
-        parts.append(memory_catalogue)
-    if system_prompt:
-        parts.append(system_prompt)
-    return "\n\n".join(parts)
+    return assemble_session_system_prompt(
+        stable=StablePromptBlock(),
+        context=ContextPromptBlock(
+            workspace_governance=workspace_governance,
+            skill_catalogue=catalogue,
+            memory_catalogue=memory_catalogue,
+        ),
+        role=RolePromptBlock(instructions=system_prompt),
+    )
 
 
 def _session_extra_params(
@@ -673,7 +676,6 @@ def _build_session_engine(
     )
     system_prompt = _assemble_system_prompt(
         paths=paths,
-        runtime_info=runtime_info,
         catalogue=catalogue,
         memory_catalogue=memory_catalogue,
         system_prompt=options.system_prompt,
@@ -819,5 +821,6 @@ def _build_session_engine(
         tracer=tracer,
         model=options.model or model,
         hook_executor=hook_executor,
+        initial_context=RuntimeContextBlock(runtime_info).render(),
         delegations=harness.config.delegations,
     )
