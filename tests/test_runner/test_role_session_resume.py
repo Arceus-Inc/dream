@@ -29,6 +29,7 @@ from dream.engine._events import ErrorEvent, StreamEvent
 from dream.engine._messages import ConversationMessage
 from dream.harness import Harness, HarnessConfig
 from dream.runner import RoleSessionError
+from dream.runner._observer import _CapturingObserver
 from dream.services.session_store import FileSessionStore, TextBlockRecord
 from dream.session import SessionOptions
 from tests.test_engine._fakes import FakeDispatcher, FakeStreamer, FakeTurn
@@ -115,14 +116,32 @@ async def test_corrupt_snapshot_starts_thread_over_under_same_id(tmp_path: Path)
     harness, store = _harness(tmp_path, streamer)
     store.path_for("beat-1").parent.mkdir(parents=True, exist_ok=True)
     store.path_for("beat-1").write_text("{truncated", encoding="utf-8")
+    observer = _CapturingObserver()
 
-    result = await harness.run_role("generator", "do the thing", session_id="beat-1")
+    result = await harness.run_role(
+        "generator",
+        "do the thing",
+        session_id="beat-1",
+        observer=observer,
+    )
 
     assert result.session_id == "beat-1"
     # Fresh thread: the model saw only the new intent.
     assert [m.text for m in streamer.calls[0]] == ["do the thing"]
     # The unusable snapshot was replaced, not left to fail every later run.
     assert store.load("beat-1").session_id == "beat-1"
+    recovered = [event for event in observer.events if event.get("kind") == "role.session.recovered"]
+    assert recovered == [
+        {
+            "kind": "role.session.recovered",
+            "role": "generator",
+            "session_id": "beat-1",
+            "requested_session_id": "beat-1",
+            "reason": "corrupt",
+            "action": "reset",
+            "snapshot_preserved": False,
+        }
+    ]
 
 
 async def test_snapshot_from_another_working_dir_runs_fresh_and_unsaved(
@@ -154,7 +173,13 @@ async def test_snapshot_from_another_working_dir_runs_fresh_and_unsaved(
             _engine_factory=harness.config._engine_factory,
         )
     )
-    result = await moved.run_role("generator", "second ask", session_id="beat-1")
+    observer = _CapturingObserver()
+    result = await moved.run_role(
+        "generator",
+        "second ask",
+        session_id="beat-1",
+        observer=observer,
+    )
 
     # A transcript about other files is not continuity — the thread restarts.
     assert [m.text for m in streamer.calls[1]] == ["second ask"]
@@ -162,6 +187,21 @@ async def test_snapshot_from_another_working_dir_runs_fresh_and_unsaved(
     assert result.session_handle is None
     assert store.load("beat-1").saved_at == original.saved_at
     assert store.load("beat-1").messages == original.messages
+    recovered = [event for event in observer.events if event.get("kind") == "role.session.recovered"]
+    assert len(recovered) == 1
+    event = recovered[0]
+    assert event == {
+        "kind": "role.session.recovered",
+        "role": "generator",
+        "session_id": result.session_id,
+        "requested_session_id": "beat-1",
+        "reason": "working_dir_mismatch",
+        "action": "bypass",
+        "snapshot_preserved": True,
+    }
+    kinds = [item.get("kind") for item in observer.events]
+    assert kinds.index("role.session.opened") < kinds.index("role.session.recovered")
+    assert kinds.index("role.session.recovered") < kinds.index("role.session.closed")
 
     # The original workspace can still pick its thread back up.
     resumed = await harness.run_role("generator", "third ask", session_id="beat-1")

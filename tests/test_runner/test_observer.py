@@ -164,6 +164,17 @@ def test_stdio_observer_writes_role_session_and_tool_lines() -> None:
     )
     obs.on_event(
         {
+            "kind": "role.session.recovered",
+            "role": "generator",
+            "session_id": "sess-1",
+            "requested_session_id": "sess-1",
+            "reason": "corrupt",
+            "action": "reset",
+            "snapshot_preserved": False,
+        }
+    )
+    obs.on_event(
+        {
             "kind": "role.tool.start",
             "role": "generator",
             "tool": "write_file",
@@ -190,6 +201,9 @@ def test_stdio_observer_writes_role_session_and_tool_lines() -> None:
 
     out = buf.getvalue()
     assert "[generator] session open" in out
+    assert "[generator] session recovered" in out
+    assert "reason='corrupt'" in out
+    assert "action='reset'" in out
     assert "[generator] tool\u2192 write_file" in out  # tool→
     assert "[generator] tool\u2190 write_file [ok]" in out  # tool←
     assert "wrote 42 bytes" in out

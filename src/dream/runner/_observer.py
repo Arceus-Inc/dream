@@ -35,6 +35,8 @@ Event kinds emitted today (additions are non-breaking):
 * ``evaluator.started``— sprint_number, step_id
 * ``evaluator.completed`` — sprint_number, outcome, score, notes
 * ``role.session.opened`` — role, session_id
+* ``role.session.recovered`` — role, session_id, requested_session_id, reason, action,
+  snapshot_preserved
 * ``role.session.closed`` — role, session_id, cost_usd
 * ``role.text``        — role, text   (streamed deltas during run_role)
 * ``role.tool.start``  — role, tool, input
@@ -381,6 +383,18 @@ def _on_role_session_opened(event: dict[str, Any], obs: StdioObserver) -> str:
     return obs._c(_DIM + colour, line)
 
 
+def _on_role_session_recovered(event: dict[str, object], obs: StdioObserver) -> str:
+    role = str(event.get("role", "?"))
+    colour = _ROLE_COLOUR.get(role, "")
+    line = (
+        f"{_INDENT_ROLE}[{role}] session recovered "
+        f"id={event.get('session_id')!r} requested={event.get('requested_session_id')!r} "
+        f"reason={event.get('reason')!r} "
+        f"action={event.get('action')!r}"
+    )
+    return obs._c(_YELLOW + colour, line)
+
+
 def _on_role_session_closed(event: dict[str, Any], obs: StdioObserver) -> str:
     role = str(event.get("role", "?"))
     colour = _ROLE_COLOUR.get(role, "")
@@ -455,6 +469,7 @@ _HANDLERS: dict[str, Any] = {
     "evaluator.started": _on_evaluator_started,
     "evaluator.completed": _on_evaluator_completed,
     "role.session.opened": _on_role_session_opened,
+    "role.session.recovered": _on_role_session_recovered,
     "role.session.closed": _on_role_session_closed,
     "role.text": _on_role_text,
     "role.tool.start": _on_role_tool_start,

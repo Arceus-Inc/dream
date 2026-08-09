@@ -26,10 +26,11 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from dream.errors import SessionResumeError
+from dream.errors import SessionResumeError, SessionResumeFailure
 from dream.events import Error, Event, TextDelta, ToolUseResult, ToolUseStart
 from dream.roles import (
     RoleManifest,
@@ -63,6 +64,32 @@ ROLE_MANIFEST_METADATA_KEY = "dream.role_manifest"
 
 class RoleSessionError(RuntimeError):
     """Raised when a role-bound session errored mid-stream."""
+
+
+class SessionRecoveryAction(StrEnum):
+    """How Dream kept a role runnable after a persisted snapshot failed to resume."""
+
+    RESET = "reset"
+    BYPASS = "bypass"
+
+
+@dataclass(frozen=True)
+class SessionRecoveryNotice:
+    """Typed recovery fact emitted at the observer serialization boundary."""
+
+    requested_session_id: str
+    reason: SessionResumeFailure
+    action: SessionRecoveryAction
+    snapshot_preserved: bool
+
+
+@dataclass(frozen=True)
+class OpenedRoleSession:
+    """The active session plus ownership and any recovery that selected it."""
+
+    session: Session
+    owns_requested_id: bool
+    recovery: SessionRecoveryNotice | None = None
 
 
 def role_session_id(scope: str, role: RoleName | str) -> str:
@@ -197,13 +224,14 @@ async def run_role(
         metadata=metadata,
     )
 
-    session, owns_session_id = await _open_role_session(harness, effective, session_id)
-
     role_label = str(manifest.name)
 
     def _emit(event: dict[str, Any]) -> None:
         if observer is not None:
             observer.on_event(event)
+
+    opened = await _open_role_session(harness, effective, session_id)
+    session = opened.session
 
     _emit(
         {
@@ -212,6 +240,19 @@ async def run_role(
             "session_id": session.id,
         }
     )
+    if opened.recovery is not None:
+        recovery = opened.recovery
+        _emit(
+            {
+                "kind": "role.session.recovered",
+                "role": role_label,
+                "session_id": session.id,
+                "requested_session_id": recovery.requested_session_id,
+                "reason": recovery.reason,
+                "action": recovery.action.value,
+                "snapshot_preserved": recovery.snapshot_preserved,
+            }
+        )
 
     text_chunks: list[str] = []
     captured: list[Event] = []
@@ -277,7 +318,7 @@ async def run_role(
     # holds the history explaining why, which the next run of this thread
     # should see. A hard crash (an exception, not an ``Error`` event) skips
     # this and leaves the previous snapshot standing.
-    handle = await harness.save_session(session) if owns_session_id else None
+    handle = await harness.save_session(session) if opened.owns_requested_id else None
 
     if error is not None:
         raise RoleSessionError(
@@ -298,25 +339,49 @@ async def _open_role_session(
     harness: Harness,
     options: SessionOptions,
     session_id: str | None,
-) -> tuple[Session, bool]:
+) -> OpenedRoleSession:
     """Open the named role thread; say whether this run may save under it.
 
     Returns the session and whether it owns ``session_id``. Only a run that
     owns the name is allowed to write a snapshot there.
     """
     if session_id is None:
-        return await harness.start_session(options), False
+        return OpenedRoleSession(
+            session=await harness.start_session(options),
+            owns_requested_id=False,
+        )
     try:
-        return await harness.resume_session(session_id, options=options), True
+        return OpenedRoleSession(
+            session=await harness.resume_session(session_id, options=options),
+            owns_requested_id=True,
+        )
     except SessionResumeError as exc:
         if not exc.should_clear_handle:
             # A working-directory mismatch leaves the snapshot intact and still
             # resumable from the workspace that wrote it. Run the role on an
             # anonymous session so finishing here can't save over it.
-            return await harness.start_session(options), False
+            return OpenedRoleSession(
+                session=await harness.start_session(options),
+                owns_requested_id=False,
+                recovery=SessionRecoveryNotice(
+                    requested_session_id=exc.session_id,
+                    reason=exc.reason,
+                    action=SessionRecoveryAction.BYPASS,
+                    snapshot_preserved=True,
+                ),
+            )
         # One retry with a clean thread, the same fallback a coding CLI makes
         # when ``--resume`` is refused: losing continuity beats stranding the
         # role. Drop the spent snapshot so the name is free and later runs
         # don't re-pay the failure.
         await harness.reset_session(session_id)
-        return await harness.start_session(options, session_id=session_id), True
+        return OpenedRoleSession(
+            session=await harness.start_session(options, session_id=session_id),
+            owns_requested_id=True,
+            recovery=SessionRecoveryNotice(
+                requested_session_id=exc.session_id,
+                reason=exc.reason,
+                action=SessionRecoveryAction.RESET,
+                snapshot_preserved=False,
+            ),
+        )
