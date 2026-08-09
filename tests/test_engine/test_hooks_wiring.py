@@ -24,6 +24,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import pytest
 from pydantic import BaseModel
 
 from dream.contracts.hook import HookEvent, HookResult, HookSpec
@@ -138,6 +139,7 @@ def _config_with_executor(
     executor: HookExecutor,
     working_dir: Path,
     session_id: str = "s_hooks",
+    role: str | None = None,
 ) -> SessionConfig:
     engine = build_query_engine(
         streamer=streamer,
@@ -156,6 +158,7 @@ def _config_with_executor(
         session_id=cfg.session_id,
         hook_executor=cfg.hook_executor,
         now=_ticking_clock(),
+        role=role,
     )
 
 
@@ -371,6 +374,30 @@ async def test_user_prompt_submit_fires_with_prompt(tmp_path: Path) -> None:
     assert dict(hook.seen)[HookEvent.USER_PROMPT_SUBMIT] == {
         "session_id": "s_prompt",
         "prompt": "do the thing",
+    }
+
+
+@pytest.mark.parametrize("role", ["planner", "generator", "evaluator"])
+async def test_user_prompt_submit_carries_the_configured_role(
+    tmp_path: Path, role: str
+) -> None:
+    hook = _RecordingHook((HookEvent.USER_PROMPT_SUBMIT,))
+    executor = HookExecutor(hooks=[hook])
+    cfg = _config_with_executor(
+        registry=_registry_with(_EchoTool()),
+        streamer=FakeStreamer(turns=[FakeTurn(text_chunks=["hi"])]),
+        executor=executor,
+        working_dir=tmp_path,
+        session_id="session-without-a-role",
+        role=role,
+    )
+
+    await _drain(run_session(cfg, [_user("do the thing")]))
+
+    assert dict(hook.seen)[HookEvent.USER_PROMPT_SUBMIT] == {
+        "session_id": "session-without-a-role",
+        "prompt": "do the thing",
+        "role": role,
     }
 
 

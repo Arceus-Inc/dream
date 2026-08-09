@@ -87,6 +87,7 @@ class SprintRunResult:
     eval_path: Path | None
     outcome: EvaluationOutcome | None
     events: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    evaluation: EvaluationRecord | None = None
 
 
 @dataclass(frozen=True)
@@ -146,6 +147,7 @@ class _EvaluatorPhaseResult:
 
     eval_path: Path | None
     outcome: EvaluationOutcome | None
+    evaluation: EvaluationRecord | None
     ledger: PlannerLedger
     events: list[dict[str, Any]]
 
@@ -293,7 +295,11 @@ async def _run_evaluator_phase(
         ledger = _mark_step_done(ledger, step.id)
         ledger.save(ledger_path)
         return _EvaluatorPhaseResult(
-            eval_path=None, outcome=None, ledger=ledger, events=events
+            eval_path=None,
+            outcome=None,
+            evaluation=None,
+            ledger=ledger,
+            events=events,
         )
 
     assert contract is not None
@@ -336,7 +342,11 @@ async def _run_evaluator_phase(
         )
     )
     return _EvaluatorPhaseResult(
-        eval_path=eval_path, outcome=outcome, ledger=ledger, events=events
+        eval_path=eval_path,
+        outcome=outcome,
+        evaluation=record,
+        ledger=ledger,
+        events=events,
     )
 
 
@@ -500,6 +510,7 @@ async def run_task(
                 eval_path=evl.eval_path,
                 outcome=evl.outcome,
                 events=tuple(sprint_events),
+                evaluation=evl.evaluation,
             )
         )
         events.extend(sprint_events)

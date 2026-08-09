@@ -704,10 +704,16 @@ async def run_session(
     # right after SESSION_START. Payload carries the prompt text so a hook can
     # log / gate / annotate; observer-only, so it can't rewrite the prompt.
     if user_messages:
+        submit_payload = {
+            "session_id": config.session_id,
+            "prompt": user_messages[0].text,
+        }
+        if config.role is not None:
+            submit_payload["role"] = config.role
         submit_outcome = await _fire_event(
             config.hook_executor,
             HookEvent.USER_PROMPT_SUBMIT,
-            {"session_id": config.session_id, "prompt": user_messages[0].text},
+            submit_payload,
         )
         if submit_outcome.inject_context:
             first = user_messages[0]

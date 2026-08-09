@@ -118,6 +118,45 @@ async def test_run_task_event_stream_starts_with_planner_events(tmp_path: Path) 
     assert types[1] == "handoff.planner_to_generator"
 
 
+async def test_run_task_exposes_the_evaluator_record(tmp_path: Path) -> None:
+    from dream.planner import LedgerStep
+    from dream.runner import run_task
+    from dream.sprint import EvaluationRecord, SprintContract
+
+    record = EvaluationRecord(
+        task_id="t1",
+        sprint_number=1,
+        step_id="s1",
+        outcome="pass",
+        score=0.9,
+    )
+
+    async def evaluator_run(
+        task_id: str,
+        sprint_number: int,
+        contract: SprintContract,
+        step: LedgerStep,
+    ) -> EvaluationRecord:
+        assert (task_id, sprint_number, contract.goal, step.id) == (
+            "t1",
+            1,
+            "do step 1",
+            "s1",
+        )
+        return record
+
+    result = await run_task(
+        task_id="t1",
+        intent="x",
+        worktree_root=tmp_path,
+        planner=_make_planner(steps=1),
+        generator_execute=_noop_execute,
+        evaluator_run=evaluator_run,
+    )
+
+    assert result.sprints[0].evaluation is record
+
+
 # --- criterion #7: contract before code ---------------------------------
 
 
@@ -302,6 +341,7 @@ async def test_run_task_evaluator_disabled_skips_contract_and_record(
     assert result.sprints[0].outcome is None
     assert result.sprints[0].contract_path is None
     assert result.sprints[0].eval_path is None
+    assert result.sprints[0].evaluation is None
 
 
 # --- termination --------------------------------------------------------
