@@ -535,18 +535,23 @@ def _assemble_system_prompt(
     system_prompt: str | None,
     role: str | None = None,
     working_dir: Path | None = None,
+    system_prompt_mode: str = "default",
 ) -> str:
     """Assemble the per-session system prompt from its ordered blocks.
 
     Stable standing orders (common + phase chapter) come first, then context
     (AGENTS.md, workspace governance, catalogues), then an optional caller
-    addendum. Runtime and beat facts stay in user-turn context.
+    addendum. ``system_prompt_mode="replace"`` omits packaged standing orders.
+    Runtime and beat facts stay in user-turn context.
     """
     workspace_governance = render_standing_orders(
         extract_standing_orders(paths.repo / "docs" / "design-docs" / "core-beliefs.md")
     )
     return assemble_session_system_prompt(
-        stable=StablePromptBlock(role=role),
+        stable=StablePromptBlock(
+            role=role,
+            include=system_prompt_mode != "replace",
+        ),
         context=ContextPromptBlock(
             workspace_governance=workspace_governance,
             skill_catalogue=catalogue,
@@ -679,6 +684,9 @@ def _build_session_engine(
         else None
     )
     role_name = options.metadata.get(ROLE_NAME_METADATA_KEY)
+    prompt_mode = "default"
+    if isinstance(manifest, RoleManifest):
+        prompt_mode = manifest.system_prompt_mode
     system_prompt = _assemble_system_prompt(
         paths=paths,
         catalogue=catalogue,
@@ -686,6 +694,7 @@ def _build_session_engine(
         system_prompt=options.system_prompt,
         role=role_name if isinstance(role_name, str) else None,
         working_dir=working_dir,
+        system_prompt_mode=prompt_mode,
     )
     # Failover harvest + Spec-02 pool: every beat rides FailoverStreamer with a
     # CredentialPool (single env key by default; ``.harness/credentials.toml``

@@ -36,11 +36,18 @@ def load_agents_md(working_dir: Path | None) -> str:
 
 @dataclass(frozen=True)
 class StablePromptBlock:
-    """Cache-stable standing orders; phase chapter selected by ``role``."""
+    """Cache-stable standing orders; phase chapter selected by ``role``.
+
+    Set ``include=False`` when a role manifest uses ``system_prompt_mode=
+    "replace"`` so packaged standing orders are omitted.
+    """
 
     role: str | None = None
+    include: bool = True
 
     def render(self) -> str:
+        if not self.include:
+            return ""
         return _render_block("stable", packaged_standing_orders(role=self.role))
 
 

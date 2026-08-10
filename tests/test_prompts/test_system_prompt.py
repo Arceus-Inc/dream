@@ -126,6 +126,24 @@ def test_agents_md_lives_in_context_not_stable() -> None:
     assert prompt.index("<stable>") < prompt.index("Employee identity only.")
 
 
+def test_replace_mode_omits_packaged_standing_orders() -> None:
+    prompt = assemble_session_system_prompt(
+        stable=StablePromptBlock(role="planner", include=False),
+        context=ContextPromptBlock(
+            workspace_governance="GOV",
+            skill_catalogue="",
+            memory_catalogue="",
+        ),
+        role=RolePromptBlock(instructions="CUSTOM ROLE ONLY"),
+    )
+
+    assert "<stable>" not in prompt
+    assert "Planner phase" not in prompt
+    assert "Dream standing orders" not in prompt
+    assert "CUSTOM ROLE ONLY" in prompt
+    assert "GOV" in prompt
+
+
 def test_runtime_facts_are_a_user_context_block_not_system_prompt_content() -> None:
     runtime_context = RuntimeContextBlock(runtime_info="RUNTIME")
     prompt = assemble_session_system_prompt(
