@@ -11,7 +11,7 @@ from collections.abc import Sequence
 
 from dream.skills._types import SkillMeta
 
-_HEADER = "# Available skills"
+_HEADER = "# Skills"
 _INTRO = "Load a skill's playbook with the `skill` tool when its guidance applies:"
 
 

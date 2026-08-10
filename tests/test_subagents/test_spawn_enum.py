@@ -55,7 +55,7 @@ def test_build_spawn_parameters_sets_enum_only() -> None:
     patched = build_spawn_parameters(base, _set())
     prop = patched["properties"]["subagent_type"]
     assert prop["enum"] == [GENERAL_PURPOSE, "reviewer"]
-    assert prop["description"] == "Name from Available subagents."
+    assert prop["description"] == "Name from Subagent definitions."
     assert "WHEN TO USE" not in prop["description"]
     assert "Reviews code" not in prop["description"]
     assert patched["$defs"]["SpawnTaskInput"]["properties"]["subagent_type"][

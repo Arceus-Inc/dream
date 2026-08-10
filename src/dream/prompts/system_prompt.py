@@ -66,6 +66,8 @@ class ContextPromptBlock:
         agents = (
             f"# AGENTS.md\n\n{self.agents_md.strip()}" if self.agents_md.strip() else ""
         )
+        # Cursor pie order inside <context>: rules → tool defs → MCP/dynamic
+        # → skills → memory → subagent definitions.
         content = _join(
             agents,
             self.workspace_governance,

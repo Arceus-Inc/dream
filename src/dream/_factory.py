@@ -638,7 +638,6 @@ def _build_session_engine(
     # TurnStreamer Protocol has no tools parameter (only messages), so we
     # smuggle the schema through ``httpx_chat_completion_stream``'s
     # ``extra_params`` — splatted verbatim into every request body.
-    tools = tool_registry.list_tools()
     # Spec 10-H: when the caller stamped a RoleManifest on
     # ``options.metadata[ROLE_MANIFEST_METADATA_KEY]`` (the runner does
     # this in ``open_role_session``), intersect with the active sandbox
@@ -656,13 +655,13 @@ def _build_session_engine(
     effective_subagents: SubagentSet | None = (
         inherited if isinstance(inherited, SubagentSet) else subagents
     )
-    advertised_tools = [
-        tool
-        for tool in tools
+    advertised_sourced = [
+        (tool, source)
+        for tool, source in tool_registry.iter_with_source()
         if _tool_advertised_to_model(name=tool.name, role_allowed=role_allowed)
     ]
     tools_wire: list[dict[str, Any]] = []
-    for tool in advertised_tools:
+    for tool, _source in advertised_sourced:
         params = tool.input_schema()
         if tool.name == "spawn_subagent":
             from dream.tools.builtin.spawn_subagent import build_spawn_parameters
@@ -680,7 +679,7 @@ def _build_session_engine(
         )
     # Built per session too, so the available-tool set the `skill` tool
     # checks ``tools_required`` against includes late (MCP) registrations.
-    advertised = frozenset(tool.name for tool in advertised_tools)
+    advertised = frozenset(tool.name for tool, _source in advertised_sourced)
     skill_context = (
         SkillContext(
             registry=skill_registry,
@@ -694,7 +693,7 @@ def _build_session_engine(
     prompt_mode = "default"
     if isinstance(manifest, RoleManifest):
         prompt_mode = manifest.system_prompt_mode
-    tool_catalogue = ToolCatalogue.from_tools(advertised_tools)
+    tool_catalogue = ToolCatalogue.from_sourced(advertised_sourced)
     subagent_catalogue = SubagentCatalogue.for_set(effective_subagents)
     system_prompt = _assemble_system_prompt(
         paths=paths,

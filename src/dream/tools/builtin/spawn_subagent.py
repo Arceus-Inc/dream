@@ -92,7 +92,7 @@ def resolve_spawn_goal(goal: str | None, prompt: str | None) -> str:
 def unknown_subagent_result(type_name: str, available: tuple[str, ...]) -> ToolResult:
     """Fail-closed when subagent_type is not in the beat enum."""
     return ToolResult(
-        content=f"Subagent {type_name!r} not found. Available subagents: {available}",
+        content=f"Subagent {type_name!r} not found. Subagent definitions: {available}",
         is_error=True,
         metadata={
             "root_cause": f"unknown_subagent: {type_name}",
@@ -127,7 +127,7 @@ class _SpawnTypeEnumProperty:
         return {
             "type": "string",
             "enum": list(self.names),
-            "description": "Name from Available subagents.",
+            "description": "Name from Subagent definitions.",
         }
 
 
@@ -187,7 +187,7 @@ class SpawnSubagentInput(BaseModel):
 
     subagent_type: str | None = Field(
         default=None,
-        description="Name from Available subagents.",
+        description="Name from Subagent definitions.",
     )
     name: str | None = Field(
         default=None,

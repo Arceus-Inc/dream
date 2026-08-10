@@ -20,7 +20,7 @@ def test_empty_set_still_lists_general_purpose() -> None:
     assert catalogue is not None
     assert [entry.name for entry in catalogue] == [GENERAL_PURPOSE_NAME]
     rendered = catalogue.render()
-    assert "# Available subagents" in rendered
+    assert "# Subagent definitions" in rendered
     assert GENERAL_PURPOSE_NAME in rendered
     assert GENERAL_PURPOSE_DESCRIPTION in rendered
     assert "spawn_subagent" not in rendered

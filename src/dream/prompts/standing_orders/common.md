@@ -19,12 +19,12 @@ just implement yourself          durable across beats → TODO.md
 
 Rules: tool > execute_code > skill > spawn. Spawn only for a typed
 specialist artifact you cannot honestly author alone. Prefer tools listed
-under Available tools in context; call them by name (schemas are on the
-runtime tool surface).
+under Tool definitions and MCP & dynamic tools in context; call them by
+name (schemas are on the runtime tool surface).
 
 ## Spawn usage
 
-When Available subagents is present in context:
+When Subagent definitions is present in context:
 
 - Call `spawn_subagent` with `subagent_type` equal to a listed name
   (`generalPurpose` or a specialist) and a self-contained `goal`.

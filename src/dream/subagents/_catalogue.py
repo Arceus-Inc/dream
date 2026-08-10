@@ -55,7 +55,7 @@ class SubagentCatalogue:
         return cls(entries=(general, *specialists))
 
     def render(self) -> str:
-        lines = ["# Available subagents", ""]
+        lines = ["# Subagent definitions", ""]
         lines.extend(entry.render_line() for entry in self.entries)
         return "\n".join(lines)
 
