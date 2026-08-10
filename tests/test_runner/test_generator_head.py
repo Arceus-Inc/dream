@@ -311,8 +311,10 @@ async def test_generator_head_embeds_task_intent_as_source_of_truth() -> None:
 
     prompt = streamer.last_user_text
     assert "audience, offer, and one CTA" in prompt
-    assert "TASK INTENT" in prompt or "task intent" in prompt.lower()
-    assert "source of truth" in prompt.lower() or "must not weaken" in prompt.lower()
+    assert "TASK INTENT" in prompt
+    # Coaching lives in standing orders; user turn is data-only.
+    assert "source of truth" not in prompt.lower()
+    assert "must not weaken" not in prompt.lower()
 
 
 async def test_generator_head_intent_includes_review_rubric_when_set() -> None:

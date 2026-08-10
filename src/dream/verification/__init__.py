@@ -14,6 +14,7 @@ from dream.verification._config import (
     parse_verification_config,
     read_verification_config,
 )
+from dream.verification._oracle import OracleResult, run_oracle
 from dream.verification._report import write_report
 from dream.verification._runner import run_verification
 from dream.verification._tech_debt import (
@@ -36,6 +37,7 @@ from dream.verification._ui import SkipUiVerifier, UiVerifier
 __all__ = [
     "FilingResult",
     "Matcher",
+    "OracleResult",
     "RepoVerificationStep",
     "SkipUiVerifier",
     "TechDebtMatcherError",
@@ -50,6 +52,7 @@ __all__ = [
     "parse_matchers",
     "parse_verification_config",
     "read_verification_config",
+    "run_oracle",
     "run_verification",
     "write_report",
 ]

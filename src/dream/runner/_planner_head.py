@@ -45,7 +45,7 @@ if TYPE_CHECKING:
     from dream.runner._role_session import RunRoleResult
 
 __all__ = [
-    "PLANNER_INSTRUCTION_TEMPLATE",
+    "PLANNER_USER_ENVELOPE_TEMPLATE",
     "PlannerHeadParseError",
     "make_planner_head",
 ]
@@ -71,7 +71,7 @@ _LEDGER_EXAMPLE = """\
 }"""
 
 
-PLANNER_INSTRUCTION_TEMPLATE = (
+PLANNER_USER_ENVELOPE_TEMPLATE = (
     "Sprint plan request for task {task_id}.\n"
     "\n"
     "USER INTENT\n"
@@ -83,9 +83,12 @@ PLANNER_INSTRUCTION_TEMPLATE = (
     "{example}\n"
 )
 
+# Back-compat alias for older imports / tests.
+PLANNER_INSTRUCTION_TEMPLATE = PLANNER_USER_ENVELOPE_TEMPLATE
 
-def _build_intent(task_id: str, intent: str) -> str:
-    return PLANNER_INSTRUCTION_TEMPLATE.format(
+
+def _build_user_envelope(task_id: str, intent: str) -> str:
+    return PLANNER_USER_ENVELOPE_TEMPLATE.format(
         task_id=task_id, intent=intent, example=_LEDGER_EXAMPLE
     )
 
@@ -161,7 +164,7 @@ def make_planner_head(
     )
 
     async def planner(task_id: str, intent: str) -> PlannerOutput:
-        prompt = _build_intent(task_id, intent)
+        prompt = _build_user_envelope(task_id, intent)
 
         async def _ask(p: str) -> RunRoleResult:
             return await harness.run_role(
@@ -193,6 +196,7 @@ def make_planner_head(
             prompt=prompt,
             parse_error=PlannerHeadParseError,
             on_retry=_on_retry,
+            session_reuse=session_id is not None,
         )
 
     return planner

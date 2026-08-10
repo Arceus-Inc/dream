@@ -25,7 +25,7 @@ from dream.engine._messages import ConversationMessage, TextBlock
 from dream.harness import Harness, HarnessConfig
 from dream.planner import LedgerStep
 from dream.runner import make_evaluator_head
-from dream.runner._oracle import run_oracle
+from dream.verification import run_oracle
 from dream.session import SessionOptions
 from dream.sprint import SprintContract
 from tests.test_engine._fakes import FakeDispatcher
@@ -167,7 +167,7 @@ async def test_evaluator_head_does_not_run_oracle_or_downgrade(
     The evaluator session runs them via bash; the head only asks for a verdict.
     """
     harness, streamer = _harness_with_reply(_pass_verdict())
-    head = make_evaluator_head(harness, worktree_root=tmp_path)
+    head = make_evaluator_head(harness)
     record = await head(
         "task-001",
         1,
@@ -182,7 +182,7 @@ async def test_evaluator_head_does_not_run_oracle_or_downgrade(
 @pytest.mark.asyncio
 async def test_verification_steps_listed_for_evaluator_to_run(tmp_path: Path) -> None:
     harness, streamer = _harness_with_reply(_pass_verdict())
-    head = make_evaluator_head(harness, worktree_root=tmp_path)
+    head = make_evaluator_head(harness)
     await head(
         "task-001",
         1,

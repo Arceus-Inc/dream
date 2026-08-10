@@ -1,11 +1,9 @@
-"""Oracle execution — run the contract's verification steps for real (spec 15 P3 §1).
+"""Optional harness-side verification oracle (experimental).
 
-The evaluator LLM cannot run commands; before spec 15 it was shown the
-contract's ``verification_steps`` as text and asked to judge — vibes.
-The oracle closes that gap: the harness executes the steps itself
-(subprocess, per-step timeout, via :func:`dream.verification.run_verification`)
-and hands the evaluator *evidence*. The head then enforces the hard
-rule: when verification steps exist, ``pass`` requires the oracle green.
+Executes a sprint contract's ``verification_steps`` via
+:func:`dream.verification.run_verification`. The production evaluator head
+verifies in-session with ``bash`` instead; this module remains for callers
+that want a sidecar evidence block.
 """
 
 from __future__ import annotations
@@ -14,11 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dream.sprint import SprintContract
-from dream.verification import (
-    VerificationReport,
-    VerificationStepSpec,
-    run_verification,
-)
+from dream.verification._runner import run_verification
+from dream.verification._types import VerificationReport, VerificationStepSpec
 
 __all__ = ["OracleResult", "run_oracle"]
 

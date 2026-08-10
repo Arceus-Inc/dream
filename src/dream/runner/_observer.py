@@ -40,6 +40,9 @@ Event kinds emitted today (additions are non-breaking):
 * ``role.tool.start``  — role, tool, input
 * ``role.tool.result`` — role, tool, is_error, content_preview
 * ``role.error``       — role, message
+* ``head.retry``       — role, attempt, error
+* ``planner.skipped``  — task_id, reason
+* ``sprint.escalated`` — sprint_number, step_id, reason
 """
 
 from __future__ import annotations
@@ -442,18 +445,43 @@ def _on_role_error(event: dict[str, Any], obs: StdioObserver) -> str:
     return obs._c(_RED + _BOLD, line)
 
 
+def _on_head_retry(event: dict[str, Any], obs: StdioObserver) -> str:
+    role = str(event.get("role", "?"))
+    attempt = event.get("attempt", "?")
+    error = _truncate(str(event.get("error", "")), limit=80)
+    line = f"{_INDENT_ROLE}[{role}] retry#{attempt} {error}"
+    return obs._c(_YELLOW, line)
+
+
+def _on_planner_skipped(event: dict[str, Any], obs: StdioObserver) -> str:
+    reason = _truncate(str(event.get("reason", "")), limit=80)
+    line = f"[planner] skipped {reason}"
+    return obs._c(_DIM, line)
+
+
+def _on_sprint_escalated(event: dict[str, Any], obs: StdioObserver) -> str:
+    n = event.get("sprint_number", "?")
+    step = event.get("step_id", "?")
+    reason = _truncate(str(event.get("reason", "")), limit=80)
+    line = f"[sprint {n}] escalated step={step} {reason}"
+    return obs._c(_RED + _BOLD, line)
+
+
 _HANDLERS: dict[str, Any] = {
     "task.started": _on_task_started,
     "task.completed": _on_task_completed,
     "planner.started": _on_planner_started,
     "planner.completed": _on_planner_completed,
+    "planner.skipped": _on_planner_skipped,
     "sprint.started": _on_sprint_started,
     "sprint.completed": _on_sprint_completed,
+    "sprint.escalated": _on_sprint_escalated,
     "contract.written": _on_contract_written,
     "generator.started": _on_generator_started,
     "generator.completed": _on_generator_completed,
     "evaluator.started": _on_evaluator_started,
     "evaluator.completed": _on_evaluator_completed,
+    "head.retry": _on_head_retry,
     "role.session.opened": _on_role_session_opened,
     "role.session.closed": _on_role_session_closed,
     "role.text": _on_role_text,

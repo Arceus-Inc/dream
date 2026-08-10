@@ -5,11 +5,9 @@ evaluator-bound session through :meth:`Harness.run_role` with a native
 ``response_format`` JSON schema and parses the model's verdict into an
 :class:`EvaluationRecord`.
 
-The typed contract is :class:`EvaluatorVerdict` (JSON object). The optional
-``<verdict>...</verdict>`` wrapper remains accepted for parse tolerance, but
-the prompt asks for bare JSON under constrained decode.
-
-Verification runs **inside** the evaluator session via ``bash``.
+Phase protocol lives in standing orders. This head builds a data envelope
+and parses constrained JSON. Verification runs **inside** the evaluator
+session via ``bash``.
 """
 
 from __future__ import annotations
@@ -26,6 +24,7 @@ from dream.api.response_format import ResponseFormat
 from dream.runner._evaluator_schema import EVALUATOR_VERDICT_SCHEMA, EvaluatorVerdict
 from dream.runner._head_retry import ask_until_parsed
 from dream.runner._role_session import role_session_id
+from dream.runner._sprint_beat import format_sprint_beat
 from dream.session import SessionOptions
 from dream.sprint import EvaluationRecord
 
@@ -37,7 +36,7 @@ if TYPE_CHECKING:
     from dream.sprint import SprintContract
 
 __all__ = [
-    "EVALUATOR_INSTRUCTION_TEMPLATE",
+    "EVALUATOR_USER_ENVELOPE_TEMPLATE",
     "EvaluatorHeadParseError",
     "make_evaluator_head",
 ]
@@ -59,80 +58,24 @@ _VERDICT_EXAMPLE = """\
 }"""
 
 
-EVALUATOR_INSTRUCTION_TEMPLATE = (
-    "Verify sprint {sprint_number} of task {task_id}.\n"
-    "\n"
-    "{intent_block}"
-    "{contract_block}\n"
-    "\n"
-    "STEP UNDER REVIEW\n"
-    "-----------------\n"
-    "{step_id}: {step_description}\n"
-    "\n"
+# Kept for tests / callers that inspect the envelope suffix; beat body comes
+# from :func:`format_sprint_beat`.
+EVALUATOR_USER_ENVELOPE_TEMPLATE = (
+    "{beat}\n"
     "OUTPUT SCHEMA (reply with ONE JSON object after tools; no fences):\n"
     "\n"
     "{example}\n"
 )
+
+# Back-compat alias for older imports.
+EVALUATOR_INSTRUCTION_TEMPLATE = EVALUATOR_USER_ENVELOPE_TEMPLATE
 
 
 _VERDICT_RE = re.compile(r"<verdict>\s*(.*?)\s*</verdict>", re.DOTALL | re.IGNORECASE)
 _FENCE_RE = re.compile(r"^```(?:[A-Za-z0-9_+\-]+)?\s*\n(.*?)\n```\s*$", re.DOTALL)
 
 
-def _format_contract_block(contract: SprintContract) -> str:
-    parts: list[str] = ["GOAL", "----", contract.goal]
-
-    parts += [
-        "",
-        "ACCEPTANCE CRITERIA  (every one must hold for a 'pass' outcome)",
-        "-" * 60,
-    ]
-    parts += [f"- {ac}" for ac in contract.acceptance_criteria]
-
-    if contract.rubric:
-        parts += [
-            "",
-            "REVIEW RUBRIC  (judge the artefact against this; it must hold for a 'pass')",
-            "-" * 60,
-            contract.rubric,
-        ]
-
-    if contract.verification_steps:
-        parts += [
-            "",
-            "VERIFICATION STEPS  (run these yourself via bash against the generator's output)",
-            "-" * 60,
-        ]
-        for vs in contract.verification_steps:
-            kind = str(vs.get("kind", "?"))
-            command = str(vs.get("command", ""))
-            parts.append(f"- [{kind}] {command}")
-
-    if contract.scope_includes:
-        parts += ["", "SCOPE INCLUDES", "-" * 14]
-        parts += [f"- {p}" for p in contract.scope_includes]
-
-    if contract.scope_excludes:
-        parts += ["", "SCOPE EXCLUDES", "-" * 14]
-        parts += [f"- {p}" for p in contract.scope_excludes]
-
-    return "\n".join(parts)
-
-
-def _format_task_intent_block(task_intent: str) -> str:
-    """Render TASK INTENT for the evaluator prompt (empty when unset)."""
-    text = task_intent.strip()
-    if not text:
-        return ""
-    return (
-        "TASK INTENT  (source of truth — do not accept a weaker substitute)\n"
-        "------------------------------------------------------------------\n"
-        f"{text}\n"
-        "\n"
-    )
-
-
-def _build_intent(
+def _build_user_envelope(
     *,
     task_id: str,
     sprint_number: int,
@@ -140,15 +83,15 @@ def _build_intent(
     step: LedgerStep,
     task_intent: str = "",
 ) -> str:
-    return EVALUATOR_INSTRUCTION_TEMPLATE.format(
+    beat = format_sprint_beat(
         task_id=task_id,
         sprint_number=sprint_number,
-        intent_block=_format_task_intent_block(task_intent),
-        contract_block=_format_contract_block(contract),
-        step_id=step.id,
-        step_description=step.description,
-        example=_VERDICT_EXAMPLE,
+        contract=contract,
+        step=step,
+        task_intent=task_intent,
+        audience="evaluator",
     )
+    return EVALUATOR_USER_ENVELOPE_TEMPLATE.format(beat=beat, example=_VERDICT_EXAMPLE)
 
 
 def _extract_verdict_json_text(reply: str) -> str:
@@ -214,8 +157,6 @@ def make_evaluator_head(
     harness_dir: Path | None = None,
     evaluator_version: str = DEFAULT_EVALUATOR_VERSION,
     observer: RunTaskObserver | None = None,
-    worktree_root: Path | None = None,
-    oracle_timeout_seconds: float = 300.0,
     session_scope: str | None = None,
 ) -> Callable[
     [str, int, SprintContract, LedgerStep],
@@ -229,7 +170,6 @@ def make_evaluator_head(
     ``session_scope`` names the task's evaluator thread, so successive sprints
     are judged by an evaluator that remembers what it already accepted.
     """
-    del worktree_root, oracle_timeout_seconds
     session_id = (
         None if session_scope is None else role_session_id(session_scope, "evaluator")
     )
@@ -245,7 +185,7 @@ def make_evaluator_head(
         contract: SprintContract,
         step: LedgerStep,
     ) -> EvaluationRecord:
-        prompt = _build_intent(
+        prompt = _build_user_envelope(
             task_id=task_id,
             sprint_number=sprint_number,
             contract=contract,
@@ -289,6 +229,7 @@ def make_evaluator_head(
             prompt=prompt,
             parse_error=EvaluatorHeadParseError,
             on_retry=_on_retry,
+            session_reuse=session_id is not None,
         )
 
     return evaluator

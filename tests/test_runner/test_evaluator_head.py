@@ -593,10 +593,9 @@ async def test_intent_teaches_durable_outcome_semantics() -> None:
 
 
 async def test_intent_rejects_weaker_substitute_than_task_intent() -> None:
-    """Done-looking work that weakens the Intent is not pass.
+    """User turn embeds Intent as data; fidelity coaching lives in standing orders."""
+    from dream.prompts.system_prompt import packaged_standing_orders
 
-    Embed the task Intent and require fidelity to it (domain-agnostic).
-    """
     harness, streamer = _harness_with_reply(_verdict())
     head = make_evaluator_head(
         harness,
@@ -605,14 +604,13 @@ async def test_intent_rejects_weaker_substitute_than_task_intent() -> None:
 
     await head("task-001", 1, _contract(), _step())
 
-    prompt = streamer.last_user_text.lower()
-    assert "audience, offer, and a single cta" in prompt or "task intent" in prompt
-    assert (
-        "weaker" in prompt
-        or "weaken" in prompt
-        or "fidelity" in prompt
-        or "source of truth" in prompt
-    )
+    prompt = streamer.last_user_text
+    assert "TASK INTENT" in prompt
+    assert "audience, offer, and a single CTA" in prompt
+    assert "weaker" not in prompt.lower()
+    assert "source of truth" not in prompt.lower()
+    orders = packaged_standing_orders(role="evaluator").lower()
+    assert "intent" in orders and ("weaker" in orders or "fidelity" in orders)
 
 
 # --------------------------------------------------------------------------

@@ -4,9 +4,10 @@ You are the planner. Read the brief (AGENTS.md / project context), the ledger,
 and the relevant code; produce the sprint contract under docs/exec-plans/active.
 Do not modify source files.
 
-PLANNER PHASE — you have NO tools. Context below describes what the generator
-will do later; do not emit tool calls yourself (including recall). Emit the
-sprint plan as structured output only.
+PLANNER PHASE — read-only explore is OK (read_file / git / grep / glob). Do not
+write, patch, run shell, or spawn. Context below describes what the generator
+will do later; emit the sprint plan as structured output only — no tool calls
+that mutate the worktree.
 
 ## Planning protocol
 

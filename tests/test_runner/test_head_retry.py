@@ -278,6 +278,37 @@ async def test_ask_until_parsed_second_prompt_has_previous_reply_tag() -> None:
 
     assert "<previous-reply>" in prompts_seen[1]
     assert "</previous-reply>" in prompts_seen[1]
+    assert "JSON matching the response schema" in prompts_seen[1]
+    assert "envelope" not in prompts_seen[1].lower()
+
+
+async def test_ask_until_parsed_session_reuse_sends_short_correction() -> None:
+    """With a shared session, retry is a short correction (no full re-paste)."""
+    from dream.runner._head_retry import ask_until_parsed
+
+    prompts_seen: list[str] = []
+
+    async def _capturing_ask(prompt: str) -> _FakeResult:
+        prompts_seen.append(prompt)
+        if len(prompts_seen) == 1:
+            return _FakeResult("BAD response")
+        return _FakeResult("GOOD response")
+
+    await ask_until_parsed(
+        _capturing_ask,
+        _good_parse,
+        prompt="ORIGINAL BEAT PACKET",
+        parse_error=_ParseError,
+        session_reuse=True,
+    )
+
+    assert prompts_seen[0] == "ORIGINAL BEAT PACKET"
+    assert "ORIGINAL BEAT PACKET" not in prompts_seen[1]
+    assert "<previous-reply>" not in prompts_seen[1]
+    assert "JSON matching the response schema" in prompts_seen[1]
+    assert "expected GOOD prefix" in prompts_seen[1]
+    # Short correction: do not re-quote the rejected body as a previous-reply block.
+    assert prompts_seen[1].count("BAD response") == 1  # only inside the error str
 
 
 async def test_ask_until_parsed_on_retry_called_with_attempt_and_error() -> None:

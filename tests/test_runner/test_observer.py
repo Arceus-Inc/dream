@@ -257,3 +257,40 @@ def test_stdio_observer_falls_back_for_unknown_kind() -> None:
     obs.on_event({"kind": "future.event", "x": 1})
 
     assert "[?] future.event" in buf.getvalue()
+
+
+def test_stdio_observer_formats_head_retry_planner_skipped_sprint_escalated() -> None:
+    buf = io.StringIO()
+    obs = StdioObserver(stream=buf)
+
+    obs.on_event(
+        {
+            "kind": "head.retry",
+            "role": "planner",
+            "attempt": 1,
+            "error": "bad json",
+        }
+    )
+    obs.on_event(
+        {
+            "kind": "planner.skipped",
+            "task_id": "t1",
+            "reason": "ledger already present",
+        }
+    )
+    obs.on_event(
+        {
+            "kind": "sprint.escalated",
+            "sprint_number": 2,
+            "step_id": "s1",
+            "reason": "strike limit",
+        }
+    )
+
+    out = buf.getvalue()
+    assert "[planner] retry#1" in out
+    assert "bad json" in out
+    assert "[planner] skipped" in out
+    assert "ledger already present" in out
+    assert "[sprint 2] escalated" in out
+    assert "step=s1" in out
