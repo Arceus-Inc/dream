@@ -36,6 +36,7 @@ from dream.runner import (
     make_evaluator_head,
     make_planner_head,
 )
+from dream.runner.events import HeadRetry
 from dream.runner.observe import CapturingObserver
 from dream.session import SessionOptions
 from dream.sprint import EvaluationRecord, SprintContract
@@ -126,10 +127,9 @@ def _valid_planner_reply(
 
 
 def _valid_verdict_reply(outcome: str = "pass") -> str:
-    body = json.dumps(
+    return json.dumps(
         {"outcome": outcome, "score": 0.0, "notes": "", "items": []}
     )
-    return f"<verdict>{body}</verdict>"
 
 
 def _invalid_planner_reply() -> str:
@@ -588,7 +588,7 @@ async def test_planner_head_emits_head_retry_observer_event() -> None:
 
     await head("task-001", "ship it")
 
-    retry_events = [e for e in observer.events if e.kind == "head.retry"]
+    retry_events = [e for e in observer.events if isinstance(e, HeadRetry)]
     assert len(retry_events) == 1
     ev = retry_events[0]
     assert ev.role == "planner"
@@ -604,7 +604,7 @@ async def test_planner_head_no_retry_event_when_first_try_succeeds() -> None:
 
     await head("task-001", "ship it")
 
-    retry_events = [e for e in observer.events if e.kind == "head.retry"]
+    retry_events = [e for e in observer.events if isinstance(e, HeadRetry)]
     assert retry_events == []
 
 
@@ -653,7 +653,7 @@ async def test_evaluator_head_emits_head_retry_observer_event() -> None:
 
     await head("task-001", 1, _contract(), _step())
 
-    retry_events = [e for e in observer.events if e.kind == "head.retry"]
+    retry_events = [e for e in observer.events if isinstance(e, HeadRetry)]
     assert len(retry_events) == 1
     assert retry_events[0].role == "evaluator"
 
@@ -700,8 +700,7 @@ async def test_head_retry_event_has_required_keys() -> None:
 
     await head("task-001", "ship it")
 
-    ev = next(e for e in observer.events if e.kind == "head.retry")
-    assert ev.kind == "head.retry"
+    ev = next(e for e in observer.events if isinstance(e, HeadRetry))
     assert ev.role == "planner"
     assert ev.attempt == 1
     assert isinstance(ev.error, str)
@@ -717,7 +716,7 @@ async def test_head_retry_event_error_is_string() -> None:
 
     await head("task-001", "ship it")
 
-    ev = next(e for e in observer.events if e.kind == "head.retry")
+    ev = next(e for e in observer.events if isinstance(e, HeadRetry))
     assert isinstance(ev.error, str)
     assert len(ev.error) > 0
 

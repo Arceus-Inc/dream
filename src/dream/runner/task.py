@@ -21,6 +21,7 @@ from dream.planner import (
     LedgerStep,
     PlannerCallable,
     PlannerLedger,
+    PlannerStreamEvent,
     planner_ledger_path,
     planner_spec_path,
     run_planner,
@@ -59,7 +60,7 @@ from dream.sprint import (
 )
 from dream.sprint._evaluation import EvaluationRecord
 from dream.sprint._outcome import NEEDS_CHANGES_LIMIT
-from dream.swarm._handoff import HandoffArtefact, HandoffEvent, handoff_event
+from dream.swarm._handoff import HandoffArtefact, handoff_event
 
 __all__ = [
     "EvaluatorRun",
@@ -68,7 +69,6 @@ __all__ = [
     "RunTaskResult",
     "SprintGoalProvider",
     "SprintRunResult",
-    "TaskStreamEvent",
     "run_task",
 ]
 
@@ -85,10 +85,6 @@ class PlanAdmission(StrEnum):
 
     RESUME = "resume"
     """Skip the planner when a ledger already exists; otherwise plan once."""
-
-
-# Planner stream payloads (``planner.run.completed``) plus typed handoffs.
-TaskStreamEvent = Mapping[str, object] | HandoffEvent
 
 
 GeneratorExecute = Callable[
@@ -120,7 +116,7 @@ class SprintRunResult:
     contract_path: Path | None
     eval_path: Path | None
     outcome: EvaluationOutcome | None
-    events: tuple[TaskStreamEvent, ...] = field(default_factory=tuple)
+    events: tuple[PlannerStreamEvent, ...] = field(default_factory=tuple)
     evaluation: EvaluationRecord | None = None
 
 
@@ -133,7 +129,7 @@ class RunTaskResult:
     ledger_path: Path
     final_ledger: PlannerLedger
     sprints: tuple[SprintRunResult, ...]
-    events: tuple[TaskStreamEvent, ...] = field(default_factory=tuple)
+    events: tuple[PlannerStreamEvent, ...] = field(default_factory=tuple)
     usage_by_model: Mapping[str, UsageSnapshot] = field(default_factory=dict)
 
 
@@ -167,7 +163,7 @@ class _GeneratorPhaseResult:
     contract: SprintContract | None
     contract_path: Path | None
     ledger: PlannerLedger
-    events: list[TaskStreamEvent]
+    events: list[PlannerStreamEvent]
 
 
 @dataclass(frozen=True)
@@ -178,7 +174,7 @@ class _EvaluatorPhaseResult:
     outcome: EvaluationOutcome | None
     evaluation: EvaluationRecord | None
     ledger: PlannerLedger
-    events: list[TaskStreamEvent]
+    events: list[PlannerStreamEvent]
 
 
 async def _run_generator_phase(
@@ -198,7 +194,7 @@ async def _run_generator_phase(
     the plan already implies (if the evaluator is enabled), and run the
     generator seam.
     """
-    events: list[TaskStreamEvent] = []
+    events: list[PlannerStreamEvent] = []
     contract: SprintContract | None = None
     contract_path: Path | None = None
     with acquire_role_lock(root, task_id=task_id, role="generator"):
@@ -305,7 +301,7 @@ async def _run_evaluator_phase(
     emit: Callable[[RunTaskEvent], None],
 ) -> _EvaluatorPhaseResult:
     """Phase 2c (lock-protected evaluator) or 2d (disabled → implicit pass)."""
-    events: list[TaskStreamEvent] = []
+    events: list[PlannerStreamEvent] = []
     if not enabled:
         ledger = _mark_step_done(ledger, step.id)
         ledger.save(ledger_path)
@@ -419,7 +415,7 @@ async def run_task(
 
     ledger_path = planner_ledger_path(root, task_id)
     spec_path = planner_spec_path(root, task_id)
-    events: list[TaskStreamEvent] = []
+    events: list[PlannerStreamEvent] = []
     resume = plan_admission is PlanAdmission.RESUME and ledger_path.is_file()
 
     if resume:

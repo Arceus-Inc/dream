@@ -37,12 +37,12 @@ or a remote backend.
 
 from __future__ import annotations
 
+from dream.runner.envelopes import make_generator_head
 from dream.runner.evaluator import (
     EvaluatorHeadParseError,
     make_evaluator_head,
 )
 from dream.runner.events import RunTaskObserver
-from dream.runner.generator import make_generator_head
 from dream.runner.observe import StdioObserver
 from dream.runner.planner import (
     PlannerHeadParseError,

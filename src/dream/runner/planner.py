@@ -26,7 +26,6 @@ if TYPE_CHECKING:
     from dream.harness import Harness
 
 __all__ = [
-    "PLANNER_INSTRUCTION_TEMPLATE",
     "PLANNER_RESPONSE_SCHEMA",
     "PLANNER_USER_ENVELOPE_TEMPLATE",
     "PlannerHeadParseError",
@@ -102,9 +101,6 @@ PLANNER_USER_ENVELOPE_TEMPLATE = (
     "\n"
     "{example}\n"
 )
-
-# Back-compat alias for older imports / tests.
-PLANNER_INSTRUCTION_TEMPLATE = PLANNER_USER_ENVELOPE_TEMPLATE
 
 
 def _build_user_envelope(task_id: str, intent: str) -> str:

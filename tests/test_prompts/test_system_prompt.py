@@ -7,12 +7,11 @@ from pathlib import Path
 
 from dream.prompts.system_prompt import (
     ContextPromptBlock,
-    RolePromptBlock,
-    RuntimeContextBlock,
     StablePromptBlock,
     assemble_session_system_prompt,
     load_agents_md,
     packaged_standing_orders,
+    render_runtime_context,
 )
 
 
@@ -25,7 +24,7 @@ def test_assembly_orders_explicit_blocks_with_a_stable_prefix() -> None:
             memory_catalogue="MEMORY",
             agents_md="I am the craft employee.",
         ),
-        role=RolePromptBlock(instructions="ADDENDUM"),
+        role_instructions="ADDENDUM",
     )
 
     assert prompt.index("<stable>") < prompt.index("<context>") < prompt.index("<role>")
@@ -72,7 +71,7 @@ def test_context_or_addendum_changes_do_not_change_the_stable_prefix() -> None:
             memory_catalogue="",
             agents_md="BRIEF A",
         ),
-        role=RolePromptBlock(instructions="ROLE"),
+        role_instructions="ROLE",
     )
     second = assemble_session_system_prompt(
         stable=stable,
@@ -82,7 +81,7 @@ def test_context_or_addendum_changes_do_not_change_the_stable_prefix() -> None:
             memory_catalogue="MEMORY",
             agents_md="BRIEF B",
         ),
-        role=RolePromptBlock(instructions="OTHER ROLE"),
+        role_instructions="OTHER ROLE",
     )
 
     stable_prefix = stable.render()
@@ -117,7 +116,7 @@ def test_agents_md_lives_in_context_not_stable() -> None:
             memory_catalogue="",
             agents_md="Employee identity only.",
         ),
-        role=RolePromptBlock(instructions=None),
+        role_instructions=None,
     )
     stable = StablePromptBlock(role="planner").render()
 
@@ -134,7 +133,7 @@ def test_replace_mode_omits_packaged_standing_orders() -> None:
             skill_catalogue="",
             memory_catalogue="",
         ),
-        role=RolePromptBlock(instructions="CUSTOM ROLE ONLY"),
+        role_instructions="CUSTOM ROLE ONLY",
     )
 
     assert "<stable>" not in prompt
@@ -145,7 +144,7 @@ def test_replace_mode_omits_packaged_standing_orders() -> None:
 
 
 def test_runtime_facts_are_a_user_context_block_not_system_prompt_content() -> None:
-    runtime_context = RuntimeContextBlock(runtime_info="RUNTIME")
+    runtime_context = render_runtime_context("RUNTIME")
     prompt = assemble_session_system_prompt(
         stable=StablePromptBlock(),
         context=ContextPromptBlock(
@@ -153,10 +152,10 @@ def test_runtime_facts_are_a_user_context_block_not_system_prompt_content() -> N
             skill_catalogue="",
             memory_catalogue="",
         ),
-        role=RolePromptBlock(instructions=None),
+        role_instructions=None,
     )
 
-    assert "RUNTIME" in runtime_context.render()
+    assert "RUNTIME" in runtime_context
     assert "RUNTIME" not in prompt
     assert "<context>" not in prompt
     assert "<role>" not in prompt

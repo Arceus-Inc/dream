@@ -8,8 +8,6 @@ evaluator-bound session through :meth:`Harness.run_role` with a native
 
 from __future__ import annotations
 
-import json
-import re
 from collections.abc import Awaitable, Callable
 from enum import StrEnum
 from pathlib import Path
@@ -30,7 +28,6 @@ if TYPE_CHECKING:
     from dream.sprint import SprintContract
 
 __all__ = [
-    "EVALUATOR_INSTRUCTION_TEMPLATE",
     "EVALUATOR_USER_ENVELOPE_TEMPLATE",
     "EVALUATOR_VERDICT_SCHEMA",
     "EvaluatorHeadParseError",
@@ -86,13 +83,6 @@ EVALUATOR_USER_ENVELOPE_TEMPLATE = (
     "{example}\n"
 )
 
-# Back-compat alias for older imports.
-EVALUATOR_INSTRUCTION_TEMPLATE = EVALUATOR_USER_ENVELOPE_TEMPLATE
-
-
-_VERDICT_RE = re.compile(r"<verdict>\s*(.*?)\s*</verdict>", re.DOTALL | re.IGNORECASE)
-_FENCE_RE = re.compile(r"^```(?:[A-Za-z0-9_+\-]+)?\s*\n(.*?)\n```\s*$", re.DOTALL)
-
 
 def _build_user_envelope(
     *,
@@ -113,35 +103,6 @@ def _build_user_envelope(
     return EVALUATOR_USER_ENVELOPE_TEMPLATE.format(beat=beat, example=_VERDICT_EXAMPLE)
 
 
-def _extract_verdict_json_text(reply: str) -> str:
-    """Extract a JSON object text from the reply (tagged, fenced, bare, or embedded)."""
-    match = _VERDICT_RE.search(reply)
-    raw = match.group(1).strip() if match is not None else reply.strip()
-    text = _unwrap_json_object_text(raw)
-    if text is None:
-        raise EvaluatorHeadParseError("evaluator reply did not contain a JSON verdict object")
-    return text
-
-
-def _unwrap_json_object_text(text: str) -> str | None:
-    candidate = text.strip()
-    fence = _FENCE_RE.match(candidate)
-    if fence is not None:
-        candidate = fence.group(1).strip()
-    start, end = candidate.find("{"), candidate.rfind("}")
-    sliced = candidate[start : end + 1] if start != -1 and end > start else ""
-    for attempt in (candidate, sliced):
-        if not attempt:
-            continue
-        try:
-            loaded: object = json.loads(attempt)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(loaded, dict):
-            return attempt
-    return None
-
-
 def parse_evaluator_verdict(
     reply: str,
     *,
@@ -151,11 +112,12 @@ def parse_evaluator_verdict(
     evaluator_version: str,
 ) -> EvaluationRecord:
     """Parse evaluator final text into an :class:`EvaluationRecord`."""
-    text = _extract_verdict_json_text(reply)
     try:
-        verdict = EvaluatorVerdict.model_validate_json(text)
+        verdict = EvaluatorVerdict.model_validate_json(reply.strip())
     except ValidationError as exc:
         raise EvaluatorHeadParseError(f"evaluator verdict failed schema validation: {exc}") from exc
+    except ValueError as exc:
+        raise EvaluatorHeadParseError(f"evaluator reply is not valid JSON: {exc}") from exc
 
     return EvaluationRecord(
         task_id=task_id,

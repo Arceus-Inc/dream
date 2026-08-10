@@ -15,7 +15,7 @@ way to consume.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
@@ -66,25 +66,16 @@ class HandoffArtefact:
         if self.path and self.ref:
             raise ValueError("HandoffArtefact accepts path OR ref, not both")
 
-    def to_dict(self) -> dict[str, str]:
-        out: dict[str, str] = {"kind": self.kind}
-        if self.path is not None:
-            out["path"] = self.path
-        if self.ref is not None:
-            out["ref"] = self.ref
-        return out
-
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class HandoffEvent:
     """Cross-role transition payload (repo-only artefact pointers)."""
 
-    kind: Literal["handoff"] = "handoff"
     type: str
     ts: str
     from_role: str
     to_role: str
-    artefacts: tuple[Mapping[str, str], ...]
+    artefacts: tuple[HandoffArtefact, ...]
 
 
 def handoff_event(
@@ -116,5 +107,5 @@ def handoff_event(
         ts=datetime.now(UTC).isoformat(timespec="microseconds"),
         from_role=from_role,
         to_role=to_role,
-        artefacts=tuple(a.to_dict() for a in artefacts),
+        artefacts=tuple(artefacts),
     )

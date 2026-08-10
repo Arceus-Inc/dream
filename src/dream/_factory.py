@@ -47,11 +47,10 @@ from dream.permissions import SessionLimits, read_sandbox_config
 from dream.plugins import load_enabled_plugins
 from dream.prompts import (
     ContextPromptBlock,
-    RolePromptBlock,
-    RuntimeContextBlock,
     StablePromptBlock,
     assemble_session_system_prompt,
     load_agents_md,
+    render_runtime_context,
 )
 from dream.prompts.environment import render_runtime_info
 from dream.roles import RoleManifest
@@ -558,7 +557,7 @@ def _assemble_system_prompt(
             memory_catalogue=memory_catalogue,
             agents_md=load_agents_md(working_dir),
         ),
-        role=RolePromptBlock(instructions=system_prompt),
+        role_instructions=system_prompt,
     )
 
 
@@ -837,6 +836,6 @@ def _build_session_engine(
         tracer=tracer,
         model=options.model or model,
         hook_executor=hook_executor,
-        initial_context=RuntimeContextBlock(runtime_info).render(),
+        initial_context=render_runtime_context(runtime_info),
         delegations=harness.config.delegations,
     )

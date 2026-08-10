@@ -73,36 +73,21 @@ class ContextPromptBlock:
         return _render_block("context", content) if content else ""
 
 
-@dataclass(frozen=True)
-class RolePromptBlock:
-    """Optional caller addendum. Phase identity lives in standing orders."""
-
-    instructions: str | None
-
-    def render(self) -> str:
-        content = _join(self.instructions)
-        return _render_block("role", content) if content else ""
-
-
-@dataclass(frozen=True)
-class RuntimeContextBlock:
+def render_runtime_context(runtime_info: str) -> str:
     """Volatile host facts injected before the first user turn."""
-
-    runtime_info: str
-
-    def render(self) -> str:
-        return _render_block("runtime-context", self.runtime_info)
+    return _render_block("runtime-context", runtime_info)
 
 
 def assemble_session_system_prompt(
     *,
     stable: StablePromptBlock,
     context: ContextPromptBlock,
-    role: RolePromptBlock,
+    role_instructions: str | None = None,
 ) -> str:
     """Render the deterministic stable-first system-prompt sequence."""
+    role = _render_block("role", role_instructions) if role_instructions else ""
     return "\n\n".join(
-        block for block in (stable.render(), context.render(), role.render()) if block
+        block for block in (stable.render(), context.render(), role) if block
     )
 
 
@@ -116,10 +101,9 @@ def _render_block(name: str, content: str) -> str:
 
 __all__ = [
     "ContextPromptBlock",
-    "RolePromptBlock",
-    "RuntimeContextBlock",
     "StablePromptBlock",
     "assemble_session_system_prompt",
     "load_agents_md",
     "packaged_standing_orders",
+    "render_runtime_context",
 ]

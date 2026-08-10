@@ -5,7 +5,6 @@ Ships:
 * :class:`StdioObserver` — default human-readable progress lines
 * :class:`CapturingObserver` — test helper that records typed events
 * :class:`UsageMeter` — wraps an observer and folds role-session usage
-* ANSI helpers used by the stdio formatter
 """
 
 from __future__ import annotations
@@ -48,17 +47,13 @@ __all__ = [
     "CYAN",
     "DIM",
     "GREEN",
-    "MAGENTA",
     "RED",
     "RESET",
     "YELLOW",
     "CapturingObserver",
     "StdioObserver",
     "UsageMeter",
-    "_CapturingObserver",
     "c",
-    "flatten",
-    "usage_from_event",
     "use_colour",
 ]
 
@@ -69,7 +64,6 @@ RED = "\x1b[31m"
 GREEN = "\x1b[32m"
 YELLOW = "\x1b[33m"
 BLUE = "\x1b[34m"
-MAGENTA = "\x1b[35m"
 CYAN = "\x1b[36m"
 
 _ROLE_COLOUR: dict[str, str] = {
@@ -88,9 +82,9 @@ _INDENT_ROLE = "  "
 _INDENT_TOOL = "    "
 
 
-def use_colour(stream: TextIO, *, respect_no_color: bool = False) -> bool:
-    """Return True only when ``stream`` is a real terminal."""
-    if respect_no_color and os.environ.get("NO_COLOR"):
+def use_colour(stream: TextIO) -> bool:
+    """Return True only when ``stream`` is a real terminal and ``NO_COLOR`` is unset."""
+    if os.environ.get("NO_COLOR"):
         return False
     return stream.isatty()
 
@@ -100,11 +94,6 @@ def c(code: str, text: str, *, use: bool) -> str:
     if not use or not code:
         return text
     return f"{code}{text}{RESET}"
-
-
-def flatten(s: str) -> str:
-    """Collapse newlines/tabs so a tool blob renders on one tidy line."""
-    return s.replace("\r", "").replace("\n", " ⏎ ").replace("\t", "  ")
 
 
 def _truncate(text: str, *, limit: int = 160) -> str:
@@ -170,7 +159,7 @@ class StdioObserver:
     _colour: bool = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        self._colour = use_colour(self.stream, respect_no_color=True)
+        self._colour = use_colour(self.stream)
 
     def _c(self, code: str, text: str) -> str:
         return c(code, text, use=self._colour)
@@ -300,7 +289,7 @@ class StdioObserver:
                 return self._c(colour, line)
             case RoleToolResult():
                 flag = "error" if event.is_error else "ok"
-                preview = _truncate(event.content_preview)
+                preview = _truncate(event.content)
                 role_colour = _ROLE_COLOUR.get(event.role, "")
                 flag_colour = RED if event.is_error else GREEN
                 head = self._c(role_colour, f"{_INDENT_TOOL}[{event.role}] tool← {event.tool}")
@@ -313,8 +302,7 @@ class StdioObserver:
 
     def _format_role_session_closed(self, event: RoleSessionClosed) -> str:
         colour = _ROLE_COLOUR.get(event.role, "")
-        cost = event.cost_usd
-        cost_str = f"${cost:.4f}" if isinstance(cost, (int, float)) and cost > 0 else "$0"
+        cost_str = f"${event.cost_usd:.4f}" if event.cost_usd > 0 else "$0"
         reply_block = ""
         if self.role_text_buffering:
             chunks = self._text_buffers.pop(event.role, None)
@@ -328,7 +316,7 @@ class StdioObserver:
                     )
         line = (
             f"{_INDENT_ROLE}╰ [{event.role}] session close "
-            f"id={event.session_id!r} cost_usd={cost} ({cost_str})"
+            f"id={event.session_id!r} cost_usd={event.cost_usd} ({cost_str})"
         )
         return self._c(DIM + colour, line) + reply_block
 
@@ -343,19 +331,6 @@ class CapturingObserver:
         self.events.append(event)
 
 
-# Back-compat alias used by older tests.
-_CapturingObserver = CapturingObserver
-
-
-def usage_from_event(event: RunTaskEvent) -> tuple[str, UsageSnapshot] | None:
-    """(model, usage) for a meterable ``RoleSessionClosed``, else None."""
-    if not isinstance(event, RoleSessionClosed):
-        return None
-    if not event.model:
-        return None
-    return event.model, event.usage
-
-
 class UsageMeter:
     """Wraps an optional observer; accumulates per-model token usage."""
 
@@ -364,10 +339,10 @@ class UsageMeter:
         self._by_model: dict[str, UsageSnapshot] = {}
 
     def on_event(self, event: RunTaskEvent) -> None:
-        metered = usage_from_event(event)
-        if metered is not None:
-            model, usage = metered
-            self._by_model[model] = self._by_model.get(model, UsageSnapshot()) + usage
+        if isinstance(event, RoleSessionClosed) and event.model:
+            self._by_model[event.model] = (
+                self._by_model.get(event.model, UsageSnapshot()) + event.usage
+            )
         if self._inner is not None:
             self._inner.on_event(event)
 

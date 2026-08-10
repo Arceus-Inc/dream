@@ -19,10 +19,11 @@ wires the production one through ``dream.repl session --role planner``.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 from dream.planner._artefacts import (
     PlannerLedger,
@@ -39,8 +40,24 @@ __all__ = [
     "PlannerCallable",
     "PlannerOutput",
     "PlannerResult",
+    "PlannerRunCompleted",
+    "PlannerStreamEvent",
     "run_planner",
 ]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PlannerRunCompleted:
+    """Stream payload emitted after planner artefacts are committed."""
+
+    type: Literal["planner.run.completed"] = "planner.run.completed"
+    ts: str
+    task_id: str
+    spec_path: str
+    ledger_path: str
+
+
+PlannerStreamEvent = PlannerRunCompleted | HandoffEvent
 
 
 @dataclass(frozen=True)
@@ -66,7 +83,7 @@ class PlannerResult:
     task_id: str
     spec_path: Path
     ledger_path: Path
-    events: tuple[Mapping[str, object] | HandoffEvent, ...]
+    events: tuple[PlannerStreamEvent, ...]
 
 
 class PlannerAlreadyRan(RuntimeError):
@@ -149,15 +166,14 @@ async def _write_artefacts(
 
 def _build_events(
     task_id: str, *, spec_rel: str, ledger_rel: str
-) -> tuple[Mapping[str, object] | HandoffEvent, ...]:
+) -> tuple[PlannerStreamEvent, ...]:
     """The ordered stream payloads: ``planner.run.completed`` then handoff."""
-    completed: dict[str, object] = {
-        "type": "planner.run.completed",
-        "ts": _now_iso(),
-        "task_id": task_id,
-        "spec_path": spec_rel,
-        "ledger_path": ledger_rel,
-    }
+    completed = PlannerRunCompleted(
+        ts=_now_iso(),
+        task_id=task_id,
+        spec_path=spec_rel,
+        ledger_path=ledger_rel,
+    )
     handoff = handoff_event(
         from_role="planner",
         to_role="generator",

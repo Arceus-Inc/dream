@@ -23,7 +23,6 @@ def test_handoff_type_string_matches_spec() -> None:
         artefacts=[HandoffArtefact(kind="spec", path="docs/exec-plans/active/T1.md")],
     )
     assert isinstance(ev, HandoffEvent)
-    assert ev.kind == "handoff"
     assert ev.type == "handoff.planner_to_generator"
 
 
@@ -49,7 +48,7 @@ def test_handoff_has_iso_timestamp() -> None:
     assert ev.ts.count("-") >= 2
 
 
-def test_handoff_artefacts_serialise_to_dicts() -> None:
+def test_handoff_keeps_typed_artefacts() -> None:
     ev = handoff_event(
         from_role="planner",
         to_role="generator",
@@ -58,10 +57,10 @@ def test_handoff_artefacts_serialise_to_dicts() -> None:
             HandoffArtefact(kind="ledger", path="docs/exec-plans/active/T1.json"),
         ],
     )
-    assert list(ev.artefacts) == [
-        {"kind": "spec", "path": "docs/exec-plans/active/T1.md"},
-        {"kind": "ledger", "path": "docs/exec-plans/active/T1.json"},
-    ]
+    assert ev.artefacts == (
+        HandoffArtefact(kind="spec", path="docs/exec-plans/active/T1.md"),
+        HandoffArtefact(kind="ledger", path="docs/exec-plans/active/T1.json"),
+    )
 
 
 def test_handoff_artefact_accepts_ref_instead_of_path() -> None:
@@ -71,7 +70,7 @@ def test_handoff_artefact_accepts_ref_instead_of_path() -> None:
         artefacts=[HandoffArtefact(kind="diff", ref="sidecar://abc")],
     )
     [art] = ev.artefacts
-    assert art == {"kind": "diff", "ref": "sidecar://abc"}
+    assert art == HandoffArtefact(kind="diff", ref="sidecar://abc")
 
 
 def test_handoff_artefact_requires_path_or_ref() -> None:

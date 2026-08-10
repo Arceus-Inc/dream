@@ -113,7 +113,7 @@ async def test_run_task_event_stream_starts_with_planner_events(tmp_path: Path) 
         evaluator_run=_make_evaluator_run(outcome="pass"),
     )
 
-    types = [e["type"] if isinstance(e, dict) else e.type for e in result.events]
+    types = [e.type for e in result.events]
     assert types[0] == "planner.run.completed"
     assert types[1] == "handoff.planner_to_generator"
 
@@ -200,7 +200,7 @@ async def test_run_task_emits_generator_then_evaluator_handoffs_per_sprint(
         evaluator_run=_make_evaluator_run(outcome="pass"),
     )
 
-    types = [e["type"] if isinstance(e, dict) else e.type for e in result.events]
+    types = [e.type for e in result.events]
     g2e = types.index("handoff.generator_to_evaluator")
     e2g = types.index("handoff.evaluator_to_generator")
     assert g2e < e2g
@@ -218,9 +218,9 @@ async def test_run_task_handoff_events_carry_artefact_pointers(tmp_path: Path) -
         evaluator_run=_make_evaluator_run(outcome="pass"),
     )
     for e in result.events:
-        typ = e["type"] if isinstance(e, dict) else e.type
+        typ = e.type
         if typ.startswith("handoff."):
-            arts = e["artefacts"] if isinstance(e, dict) else e.artefacts
+            arts = e.artefacts
             assert arts, f"empty artefacts in handoff: {e}"
 
 
@@ -485,19 +485,19 @@ async def test_run_task_dispatches_macro_events_in_order(tmp_path: Path) -> None
         observer=observer,
     )
 
-    kinds = [e.kind for e in observer.events]
-    assert kinds == [
-        "task.started",
-        "planner.started",
-        "planner.completed",
-        "sprint.started",
-        "contract.written",
-        "generator.started",
-        "generator.completed",
-        "evaluator.started",
-        "evaluator.completed",
-        "sprint.completed",
-        "task.completed",
+    names = [type(e).__name__ for e in observer.events]
+    assert names == [
+        "TaskStarted",
+        "PlannerStarted",
+        "PlannerCompleted",
+        "SprintStarted",
+        "ContractWritten",
+        "GeneratorStarted",
+        "GeneratorCompleted",
+        "EvaluatorStarted",
+        "EvaluatorCompleted",
+        "SprintCompleted",
+        "TaskCompleted",
     ]
 
 
@@ -517,17 +517,28 @@ async def test_run_task_observer_carries_payloads(tmp_path: Path) -> None:
         observer=observer,
     )
 
-    by_kind = {e.kind: e for e in observer.events}
-    assert by_kind["task.started"].task_id == "t1"
-    assert by_kind["task.started"].intent == "ship"
-    assert by_kind["planner.completed"].step_count == 1
-    assert by_kind["sprint.started"].sprint_number == 1
-    assert by_kind["sprint.started"].step_id == "s1"
-    assert by_kind["contract.written"].path
-    assert by_kind["generator.started"].has_contract is True
-    assert by_kind["evaluator.completed"].outcome == "pass"
-    assert by_kind["sprint.completed"].outcome == "pass"
-    assert by_kind["task.completed"].sprint_count == 1
+    by_type = {type(e): e for e in observer.events}
+    from dream.runner.events import (
+        ContractWritten,
+        EvaluatorCompleted,
+        GeneratorStarted,
+        PlannerCompleted,
+        SprintCompleted,
+        SprintStarted,
+        TaskCompleted,
+        TaskStarted,
+    )
+
+    assert by_type[TaskStarted].task_id == "t1"
+    assert by_type[TaskStarted].intent == "ship"
+    assert by_type[PlannerCompleted].step_count == 1
+    assert by_type[SprintStarted].sprint_number == 1
+    assert by_type[SprintStarted].step_id == "s1"
+    assert by_type[ContractWritten].path
+    assert by_type[GeneratorStarted].has_contract is True
+    assert by_type[EvaluatorCompleted].outcome == "pass"
+    assert by_type[SprintCompleted].outcome == "pass"
+    assert by_type[TaskCompleted].sprint_count == 1
 
 
 async def test_run_task_observer_marks_generator_without_contract_when_eval_off(
@@ -548,11 +559,18 @@ async def test_run_task_observer_marks_generator_without_contract_when_eval_off(
         observer=observer,
     )
 
-    kinds = [e.kind for e in observer.events]
-    assert "contract.written" not in kinds
-    assert "evaluator.started" not in kinds
-    assert "evaluator.completed" not in kinds
-    gen_start = next(e for e in observer.events if e.kind == "generator.started")
+    from dream.runner.events import (
+        ContractWritten,
+        EvaluatorCompleted,
+        EvaluatorStarted,
+        GeneratorStarted,
+    )
+
+    types = {type(e) for e in observer.events}
+    assert ContractWritten not in types
+    assert EvaluatorStarted not in types
+    assert EvaluatorCompleted not in types
+    gen_start = next(e for e in observer.events if isinstance(e, GeneratorStarted))
     assert gen_start.has_contract is False
 
 
@@ -639,7 +657,8 @@ async def test_two_needs_changes_emits_sprint_escalated_event(
         observer=observer,
     )
 
-    escalated = [e for e in observer.events if e.kind == "sprint.escalated"]
+    from dream.runner.events import SprintEscalated
+    escalated = [e for e in observer.events if isinstance(e, SprintEscalated)]
     assert len(escalated) == 1
     assert escalated[0].task_id == "t1"
     assert escalated[0].step_id == "s1"
@@ -678,7 +697,8 @@ async def test_sprint_escalated_not_emitted_on_first_needs_changes(
         observer=observer,
     )
 
-    escalated = [e for e in observer.events if e.kind == "sprint.escalated"]
+    from dream.runner.events import SprintEscalated
+    escalated = [e for e in observer.events if isinstance(e, SprintEscalated)]
     assert escalated == []
 
 
@@ -732,7 +752,8 @@ async def test_resume_skips_planner_and_continues_in_progress_step(
         plan_admission=PlanAdmission.RESUME,
         observer=observer,
     )
-    skipped = [e for e in observer.events if e.kind == "planner.skipped"]
+    from dream.runner.events import PlannerSkipped
+    skipped = [e for e in observer.events if isinstance(e, PlannerSkipped)]
     assert len(skipped) == 1
     assert skipped[0].reason == "resume"
     assert second.final_ledger.steps[0].status == "done"

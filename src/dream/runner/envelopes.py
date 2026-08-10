@@ -1,17 +1,20 @@
-"""Sprint beat envelopes and self-healing head retry helper.
+"""Sprint beat envelopes, generator head, and self-healing head retry.
 
 ``format_sprint_beat`` renders data-only user turns for generator /
-evaluator. ``ask_until_parsed`` re-prompts parse-strict heads on malformed
-JSON instead of killing the whole task.
+evaluator. ``make_generator_head`` forwards that beat into ``run_role``.
+``ask_until_parsed`` re-prompts parse-strict heads on malformed JSON.
 """
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Literal, Protocol, TypeVar, runtime_checkable
+from pathlib import Path
+from typing import TYPE_CHECKING, Literal, Protocol, TypeVar
 
 if TYPE_CHECKING:
+    from dream.harness import Harness
     from dream.planner import LedgerStep
+    from dream.runner.events import RunTaskObserver
     from dream.sprint import SprintContract
 
 Audience = Literal["generator", "evaluator"]
@@ -20,8 +23,7 @@ __all__ = [
     "DEFAULT_RETRIES",
     "ask_until_parsed",
     "format_sprint_beat",
-    "format_step",
-    "format_task_intent",
+    "make_generator_head",
 ]
 
 # Default retry budget: 2 retries = 3 total attempts.
@@ -30,16 +32,14 @@ DEFAULT_RETRIES: int = 2
 T = TypeVar("T")
 
 
-def format_task_intent(task_intent: str) -> str:
-    """Render the TASK INTENT data block (empty when unset)."""
+def _format_task_intent(task_intent: str) -> str:
     text = task_intent.strip()
     if not text:
         return ""
     return f"TASK INTENT\n-----------\n{text}\n\n"
 
 
-def format_step(step: LedgerStep) -> str:
-    """Render STEP / NOTES data blocks."""
+def _format_step(step: LedgerStep) -> str:
     lines = [
         "STEP",
         "----",
@@ -62,7 +62,7 @@ def format_sprint_beat(
     """Build a data-only user envelope for a generator or evaluator beat."""
     if audience == "generator":
         header = f"Execute sprint {sprint_number} of task {task_id}.\n"
-        step_block = format_step(step)
+        step_block = _format_step(step)
     else:
         header = f"Verify sprint {sprint_number} of task {task_id}.\n"
         step_block = (
@@ -71,7 +71,7 @@ def format_sprint_beat(
             f"{step.id}: {step.description}"
         )
 
-    intent_block = format_task_intent(task_intent)
+    intent_block = _format_task_intent(task_intent)
     if contract is None:
         return (
             f"{header}\n"
@@ -117,7 +117,53 @@ def _format_contract(contract: SprintContract) -> str:
     return "\n".join(parts)
 
 
-@runtime_checkable
+def make_generator_head(
+    harness: Harness,
+    *,
+    task_intent: str = "",
+    harness_dir: Path | None = None,
+    observer: RunTaskObserver | None = None,
+    session_scope: str | None = None,
+) -> Callable[
+    [str, int, SprintContract | None, LedgerStep],
+    Awaitable[None],
+]:
+    """Build a :data:`GeneratorExecute` driven by :meth:`Harness.run_role`.
+
+    ``task_intent`` is embedded as a data block so the original Intent stays
+    visible beside the sprint contract. Phase protocol lives in standing orders.
+    """
+    from dream.runner.role import role_session_id
+
+    session_id = (
+        None if session_scope is None else role_session_id(session_scope, "generator")
+    )
+
+    async def generator(
+        task_id: str,
+        sprint_number: int,
+        contract: SprintContract | None,
+        step: LedgerStep,
+    ) -> None:
+        prompt = format_sprint_beat(
+            task_id=task_id,
+            sprint_number=sprint_number,
+            contract=contract,
+            step=step,
+            task_intent=task_intent,
+            audience="generator",
+        )
+        await harness.run_role(
+            "generator",
+            prompt,
+            harness_dir=harness_dir,
+            observer=observer,
+            session_id=session_id,
+        )
+
+    return generator
+
+
 class _HasFinalText(Protocol):
     """Minimal interface the helper requires from an ask() result."""
 

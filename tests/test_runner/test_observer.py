@@ -41,7 +41,7 @@ def test_capturing_observer_records_events_in_order() -> None:
     obs.on_event(TaskStarted(task_id="t1", intent="hi"))
     obs.on_event(TaskCompleted(task_id="t1", sprint_count=0))
 
-    assert [e.kind for e in obs.events] == ["task.started", "task.completed"]
+    assert [type(e).__name__ for e in obs.events] == ["TaskStarted", "TaskCompleted"]
 
 
 def test_stdio_observer_writes_task_lifecycle_lines() -> None:
@@ -182,7 +182,6 @@ def test_stdio_observer_writes_role_session_and_tool_lines() -> None:
             tool="write_file",
             is_error=False,
             content="wrote 42 bytes",
-            content_preview="wrote 42 bytes",
         )
     )
     obs.on_event(
