@@ -195,6 +195,49 @@ class Session:
             preserve_recent=engine.compaction_preserve_recent,
         )
 
+    def context_breakdown(self) -> Any:
+        """Cursor/Hermes-style token pie for the next request (REPL ``/context``).
+
+        Returns ``None`` when no engine is bound. Uses the assembled system
+        prompt, registry tool schemas, and the live transcript.
+        """
+        from dream.context import compute_context_breakdown
+
+        engine = self._engine
+        if engine is None:
+            return None
+        streamer = getattr(engine, "streamer", None)
+        system_prompt = str(
+            getattr(streamer, "_system_prompt", None)
+            or getattr(streamer, "system_prompt", None)
+            or ""
+        )
+        tools: list[dict[str, object]] = []
+        dispatcher = getattr(engine, "dispatcher", None)
+        registry = getattr(dispatcher, "registry", None)
+        if registry is not None:
+            for tool in registry.list_tools():
+                tools.append(
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": tool.name,
+                            "description": tool.description,
+                            "parameters": tool.input_schema(),
+                        },
+                    }
+                )
+        window = None
+        caps = getattr(engine, "compaction_capabilities", None)
+        if caps is not None:
+            window = getattr(caps, "max_context_tokens", None)
+        return compute_context_breakdown(
+            system_prompt=system_prompt,
+            tools=tools,
+            messages=self._transcript,
+            context_window=window if isinstance(window, int) else None,
+        )
+
     @property
     def transcript(self) -> list[ConversationMessage]:
         """The live conversation transcript (mutable; persists across sends).
