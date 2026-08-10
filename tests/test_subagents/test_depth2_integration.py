@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 
-from dream.runner._role_session import RunRoleResult
+from dream.runner.role import RunRoleResult
 from dream.session import SessionCost, SessionOptions
 from dream.subagents._declaration import Subagent
 from dream.subagents._inline_executor import run_subagent_session

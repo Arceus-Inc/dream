@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -33,12 +33,12 @@ if TYPE_CHECKING:
     from dream.engine._engine import QueryEngine
     from dream.planner import PlannerCallable
     from dream.roles import RoleManifest, RoleName
-    from dream.runner._observer import RunTaskObserver
-    from dream.runner._plan_admission import PlanAdmission
-    from dream.runner._role_session import RunRoleResult
-    from dream.runner._run import (
+    from dream.runner.events import RunTaskObserver
+    from dream.runner.role import RunRoleResult
+    from dream.runner.task import (
         EvaluatorRun,
         GeneratorExecute,
+        PlanAdmission,
         RunTaskResult,
         SprintGoalProvider,
     )
@@ -366,7 +366,7 @@ class Harness:
         # one-way: ``dream.runner`` imports from ``dream.planner`` /
         # ``dream.sprint`` / ``dream.swarm``; pulling it in at module
         # scope here would add those to every Harness import.
-        from dream.runner._role_session import run_role as _run_role
+        from dream.runner.role import run_role as _run_role
 
         return await _run_role(
             self,
@@ -389,7 +389,7 @@ class Harness:
         worktree_root: Path | None = None,
         harness_dir: Path | None = None,
         max_sprints: int | None = None,
-        verification_steps: tuple[dict[str, str], ...] | None = None,
+        verification_steps: tuple[Mapping[str, str], ...] | None = None,
         goal_for_step: SprintGoalProvider | None = None,
         observer: RunTaskObserver | None = None,
         rubric: str | None = None,
@@ -421,8 +421,8 @@ class Harness:
         """
         from dataclasses import replace as _replace
 
-        from dream.runner._run import run_task as _run_task
-        from dream.runner._usage import UsageMeter
+        from dream.runner.observe import UsageMeter
+        from dream.runner.task import run_task as _run_task
 
         root = worktree_root if worktree_root is not None else self.config.working_dir
         effective_task_id = task_id if task_id is not None else _mint_task_id()

@@ -37,7 +37,7 @@ from dream.events import TextDelta
 from dream.harness import Harness, HarnessConfig
 from dream.roles import RoleManifest, default_role_manifest
 from dream.runner import RoleSessionError, RunRoleResult
-from dream.runner._role_session import (
+from dream.runner.role import (
     ROLE_MANIFEST_METADATA_KEY,
     ROLE_NAME_METADATA_KEY,
     resolve_role_manifest,
@@ -382,54 +382,52 @@ def _harness_with_model(model: str) -> Harness:
 
 
 async def test_role_session_closed_event_includes_model() -> None:
-    from dream.runner._observer import _CapturingObserver
+    from dream.runner.observe import CapturingObserver
 
     harness = _harness_with_model("claude-3-5-sonnet")
-    observer = _CapturingObserver()
+    observer = CapturingObserver()
 
     await harness.run_role("planner", "intent", observer=observer)
 
-    closed_events = [e for e in observer.events if e.get("kind") == "role.session.closed"]
+    closed_events = [e for e in observer.events if e.kind == "role.session.closed"]
     assert len(closed_events) == 1
-    assert closed_events[0]["model"] == "claude-3-5-sonnet"
+    assert closed_events[0].model == "claude-3-5-sonnet"
 
 
 async def test_role_session_closed_event_includes_usage_dict() -> None:
-    from dream.runner._observer import _CapturingObserver
+    from dream.runner.observe import CapturingObserver
 
     harness = _harness_with_model("gpt-4o")
-    observer = _CapturingObserver()
+    observer = CapturingObserver()
 
     await harness.run_role("planner", "intent", observer=observer)
 
-    closed_events = [e for e in observer.events if e.get("kind") == "role.session.closed"]
+    closed_events = [e for e in observer.events if e.kind == "role.session.closed"]
     assert len(closed_events) == 1
     ev = closed_events[0]
-    usage = ev["usage"]
-    assert isinstance(usage, dict)
-    assert usage["input_tokens"] == 10
-    assert usage["output_tokens"] == 5
-    assert usage["cache_read_tokens"] == 2
-    assert usage["cache_write_tokens"] == 1
+    usage = ev.usage
+    assert usage.input_tokens == 10
+    assert usage.output_tokens == 5
+    assert usage.cache_read_tokens == 2
+    assert usage.cache_write_tokens == 1
 
 
 async def test_role_session_closed_event_includes_cost_usd() -> None:
-    from dream.runner._observer import _CapturingObserver
+    from dream.runner.observe import CapturingObserver
 
     harness = _harness_with_model("m")
-    observer = _CapturingObserver()
+    observer = CapturingObserver()
 
     await harness.run_role("planner", "intent", observer=observer)
 
-    closed_events = [e for e in observer.events if e.get("kind") == "role.session.closed"]
+    closed_events = [e for e in observer.events if e.kind == "role.session.closed"]
     assert len(closed_events) == 1
     ev = closed_events[0]
-    assert "cost_usd" in ev
-    assert ev["cost_usd"] == 0.0
+    assert ev.cost_usd == 0.0
 
 
 async def test_role_tool_result_observer_preserves_full_content() -> None:
-    from dream.runner._observer import _CapturingObserver
+    from dream.runner.observe import CapturingObserver
 
     full_content = "result:" + ("x" * 400)
     streamer = FakeStreamer(
@@ -458,29 +456,31 @@ async def test_role_tool_result_observer_preserves_full_content() -> None:
         )
 
     harness = Harness(HarnessConfig(_engine_factory=_factory))  # type: ignore[call-arg]
-    observer = _CapturingObserver()
+    observer = CapturingObserver()
 
     await harness.run_role("planner", "intent", observer=observer)
 
-    result = next(event for event in observer.events if event["kind"] == "role.tool.result")
-    assert result["content"] == full_content
-    assert result["content_preview"] == full_content[:240]
+    result = next(event for event in observer.events if event.kind == "role.tool.result")
+    assert result.content == full_content
+    assert result.content_preview == full_content[:240]
 
 
 async def test_role_session_closed_event_no_getattr_used() -> None:
     """Behavioural: all four token keys are present via direct field access."""
-    from dream.runner._observer import _CapturingObserver
+    from dream.runner.observe import CapturingObserver
 
     harness = _harness_with_model("m")
-    observer = _CapturingObserver()
+    observer = CapturingObserver()
 
     await harness.run_role("planner", "intent", observer=observer)
 
-    closed_events = [e for e in observer.events if e.get("kind") == "role.session.closed"]
+    closed_events = [e for e in observer.events if e.kind == "role.session.closed"]
     ev = closed_events[0]
-    # All four sub-keys must be present under "usage"
-    for key in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"):
-        assert key in ev["usage"], f"missing key: {key}"
+    usage = ev.usage
+    assert usage.input_tokens >= 0
+    assert usage.output_tokens >= 0
+    assert usage.cache_read_tokens >= 0
+    assert usage.cache_write_tokens >= 0
 
 
 # --- observer propagation (depth-2 visibility) ------------------------------

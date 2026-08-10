@@ -36,7 +36,7 @@ from dream.runner import (
     make_evaluator_head,
     make_planner_head,
 )
-from dream.runner._observer import _CapturingObserver
+from dream.runner.observe import CapturingObserver
 from dream.session import SessionOptions
 from dream.sprint import EvaluationRecord, SprintContract
 from tests.test_engine._fakes import FakeDispatcher
@@ -182,7 +182,7 @@ def _good_parse(text: str) -> str:
 
 async def test_ask_until_parsed_success_first_try_calls_ask_once() -> None:
     """On immediate parse success, ask is called exactly once."""
-    from dream.runner._head_retry import ask_until_parsed
+    from dream.runner.envelopes import ask_until_parsed
 
     ask = AsyncMock(return_value=_FakeResult("GOOD response"))
     result = await ask_until_parsed(
@@ -194,7 +194,7 @@ async def test_ask_until_parsed_success_first_try_calls_ask_once() -> None:
 
 async def test_ask_until_parsed_success_first_try_no_on_retry_called() -> None:
     """on_retry is never invoked when the first attempt parses cleanly."""
-    from dream.runner._head_retry import ask_until_parsed
+    from dream.runner.envelopes import ask_until_parsed
 
     on_retry = MagicMock()
     ask = AsyncMock(return_value=_FakeResult("GOOD first"))
@@ -206,7 +206,7 @@ async def test_ask_until_parsed_success_first_try_no_on_retry_called() -> None:
 
 async def test_ask_until_parsed_fails_once_then_succeeds() -> None:
     """First ask fails parse; second ask succeeds. Two total calls."""
-    from dream.runner._head_retry import ask_until_parsed
+    from dream.runner.envelopes import ask_until_parsed
 
     ask = AsyncMock(
         side_effect=[_FakeResult("BAD response"), _FakeResult("GOOD response")]
@@ -220,7 +220,7 @@ async def test_ask_until_parsed_fails_once_then_succeeds() -> None:
 
 async def test_ask_until_parsed_second_prompt_contains_error_message() -> None:
     """The retry prompt must include the parse error message."""
-    from dream.runner._head_retry import ask_until_parsed
+    from dream.runner.envelopes import ask_until_parsed
 
     prompts_seen: list[str] = []
 
@@ -242,7 +242,7 @@ async def test_ask_until_parsed_second_prompt_contains_error_message() -> None:
 
 async def test_ask_until_parsed_second_prompt_contains_previous_reply() -> None:
     """The retry prompt must include the previous (bad) reply."""
-    from dream.runner._head_retry import ask_until_parsed
+    from dream.runner.envelopes import ask_until_parsed
 
     prompts_seen: list[str] = []
 
@@ -262,7 +262,7 @@ async def test_ask_until_parsed_second_prompt_contains_previous_reply() -> None:
 
 async def test_ask_until_parsed_second_prompt_has_previous_reply_tag() -> None:
     """The retry prompt wraps the previous reply in <previous-reply> tags."""
-    from dream.runner._head_retry import ask_until_parsed
+    from dream.runner.envelopes import ask_until_parsed
 
     prompts_seen: list[str] = []
 
@@ -284,7 +284,7 @@ async def test_ask_until_parsed_second_prompt_has_previous_reply_tag() -> None:
 
 async def test_ask_until_parsed_session_reuse_sends_short_correction() -> None:
     """With a shared session, retry is a short correction (no full re-paste)."""
-    from dream.runner._head_retry import ask_until_parsed
+    from dream.runner.envelopes import ask_until_parsed
 
     prompts_seen: list[str] = []
 
@@ -313,7 +313,7 @@ async def test_ask_until_parsed_session_reuse_sends_short_correction() -> None:
 
 async def test_ask_until_parsed_on_retry_called_with_attempt_and_error() -> None:
     """on_retry receives (1, error_instance) on first retry."""
-    from dream.runner._head_retry import ask_until_parsed
+    from dream.runner.envelopes import ask_until_parsed
 
     on_retry_calls: list[tuple[int, _ParseError]] = []
 
@@ -339,7 +339,7 @@ async def test_ask_until_parsed_on_retry_called_with_attempt_and_error() -> None
 
 async def test_ask_until_parsed_exhausted_raises_last_error() -> None:
     """After retries=2 (3 total asks) all failing, last ParseError is re-raised."""
-    from dream.runner._head_retry import ask_until_parsed
+    from dream.runner.envelopes import ask_until_parsed
 
     ask = AsyncMock(
         side_effect=[
@@ -357,7 +357,7 @@ async def test_ask_until_parsed_exhausted_raises_last_error() -> None:
 
 async def test_ask_until_parsed_exhausted_reraises_last_not_first() -> None:
     """The LAST ParseError is re-raised (not the first)."""
-    from dream.runner._head_retry import ask_until_parsed
+    from dream.runner.envelopes import ask_until_parsed
 
     errors: list[_ParseError] = []
     original_parse = _good_parse
@@ -387,7 +387,7 @@ async def test_ask_until_parsed_exhausted_reraises_last_not_first() -> None:
 
 async def test_ask_until_parsed_on_retry_called_twice_on_two_failures() -> None:
     """With retries=2, on_retry is called twice (attempt 1 and 2)."""
-    from dream.runner._head_retry import ask_until_parsed
+    from dream.runner.envelopes import ask_until_parsed
 
     on_retry_calls: list[int] = []
 
@@ -415,7 +415,7 @@ async def test_ask_until_parsed_on_retry_called_twice_on_two_failures() -> None:
 
 async def test_ask_until_parsed_non_parse_exception_propagates_immediately() -> None:
     """A non-ParseError exception from ask propagates without any retry."""
-    from dream.runner._head_retry import ask_until_parsed
+    from dream.runner.envelopes import ask_until_parsed
 
     on_retry = MagicMock()
     ask = AsyncMock(side_effect=ValueError("network failure"))
@@ -434,7 +434,7 @@ async def test_ask_until_parsed_non_parse_exception_propagates_immediately() -> 
 
 async def test_ask_until_parsed_non_parse_exception_from_ask_on_retry_propagates() -> None:
     """If ask raises a non-parse error on a retry attempt, it propagates immediately."""
-    from dream.runner._head_retry import ask_until_parsed
+    from dream.runner.envelopes import ask_until_parsed
 
     ask = AsyncMock(
         side_effect=[
@@ -451,7 +451,7 @@ async def test_ask_until_parsed_non_parse_exception_from_ask_on_retry_propagates
 
 async def test_ask_until_parsed_retries_zero_raises_immediately_on_first_failure() -> None:
     """With retries=0, a single failure raises immediately (one total ask)."""
-    from dream.runner._head_retry import ask_until_parsed
+    from dream.runner.envelopes import ask_until_parsed
 
     ask = AsyncMock(side_effect=[_FakeResult("BAD")])
     with pytest.raises(_ParseError):
@@ -463,7 +463,7 @@ async def test_ask_until_parsed_retries_zero_raises_immediately_on_first_failure
 
 async def test_ask_until_parsed_default_retries_is_2() -> None:
     """Default retries constant is 2 (3 total asks before exhaustion)."""
-    from dream.runner._head_retry import DEFAULT_RETRIES
+    from dream.runner.envelopes import DEFAULT_RETRIES
 
     assert DEFAULT_RETRIES == 2
 
@@ -583,28 +583,28 @@ async def test_planner_head_emits_head_retry_observer_event() -> None:
     harness, _streamer = _harness_with_multi_replies(
         [_invalid_planner_reply(), _valid_planner_reply()]
     )
-    observer = _CapturingObserver()
+    observer = CapturingObserver()
     head = make_planner_head(harness, observer=observer)
 
     await head("task-001", "ship it")
 
-    retry_events = [e for e in observer.events if e.get("kind") == "head.retry"]
+    retry_events = [e for e in observer.events if e.kind == "head.retry"]
     assert len(retry_events) == 1
     ev = retry_events[0]
-    assert ev["role"] == "planner"
-    assert ev["attempt"] == 1
-    assert "error" in ev
+    assert ev.role == "planner"
+    assert ev.attempt == 1
+    assert isinstance(ev.error, str)
 
 
 async def test_planner_head_no_retry_event_when_first_try_succeeds() -> None:
     """No head.retry event is emitted when the first ask succeeds."""
     harness, _streamer = _harness_with_multi_replies([_valid_planner_reply()])
-    observer = _CapturingObserver()
+    observer = CapturingObserver()
     head = make_planner_head(harness, observer=observer)
 
     await head("task-001", "ship it")
 
-    retry_events = [e for e in observer.events if e.get("kind") == "head.retry"]
+    retry_events = [e for e in observer.events if e.kind == "head.retry"]
     assert retry_events == []
 
 
@@ -648,14 +648,14 @@ async def test_evaluator_head_emits_head_retry_observer_event() -> None:
     harness, _streamer = _harness_with_multi_replies(
         [_invalid_verdict_reply(), _valid_verdict_reply()]
     )
-    observer = _CapturingObserver()
+    observer = CapturingObserver()
     head = make_evaluator_head(harness, observer=observer)
 
     await head("task-001", 1, _contract(), _step())
 
-    retry_events = [e for e in observer.events if e.get("kind") == "head.retry"]
+    retry_events = [e for e in observer.events if e.kind == "head.retry"]
     assert len(retry_events) == 1
-    assert retry_events[0]["role"] == "evaluator"
+    assert retry_events[0].role == "evaluator"
 
 
 async def test_evaluator_head_role_session_error_propagates_without_retry() -> None:
@@ -695,16 +695,16 @@ async def test_head_retry_event_has_required_keys() -> None:
     harness, _streamer = _harness_with_multi_replies(
         [_invalid_planner_reply(), _valid_planner_reply()]
     )
-    observer = _CapturingObserver()
+    observer = CapturingObserver()
     head = make_planner_head(harness, observer=observer)
 
     await head("task-001", "ship it")
 
-    ev = next(e for e in observer.events if e.get("kind") == "head.retry")
-    assert ev["kind"] == "head.retry"
-    assert "role" in ev
-    assert "attempt" in ev
-    assert "error" in ev
+    ev = next(e for e in observer.events if e.kind == "head.retry")
+    assert ev.kind == "head.retry"
+    assert ev.role == "planner"
+    assert ev.attempt == 1
+    assert isinstance(ev.error, str)
 
 
 async def test_head_retry_event_error_is_string() -> None:
@@ -712,14 +712,14 @@ async def test_head_retry_event_error_is_string() -> None:
     harness, _streamer = _harness_with_multi_replies(
         [_invalid_planner_reply(), _valid_planner_reply()]
     )
-    observer = _CapturingObserver()
+    observer = CapturingObserver()
     head = make_planner_head(harness, observer=observer)
 
     await head("task-001", "ship it")
 
-    ev = next(e for e in observer.events if e.get("kind") == "head.retry")
-    assert isinstance(ev["error"], str)
-    assert len(ev["error"]) > 0
+    ev = next(e for e in observer.events if e.kind == "head.retry")
+    assert isinstance(ev.error, str)
+    assert len(ev.error) > 0
 
 
 async def test_no_observer_does_not_raise() -> None:

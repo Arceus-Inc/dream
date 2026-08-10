@@ -13,13 +13,13 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from dream.runner._role_session import role_session_id
-from dream.runner._sprint_beat import format_sprint_beat
+from dream.runner.envelopes import format_sprint_beat
+from dream.runner.events import RunTaskObserver
+from dream.runner.role import role_session_id
 
 if TYPE_CHECKING:
     from dream.harness import Harness
     from dream.planner import LedgerStep
-    from dream.runner._observer import RunTaskObserver
     from dream.sprint import SprintContract
 
 __all__ = ["make_generator_head"]

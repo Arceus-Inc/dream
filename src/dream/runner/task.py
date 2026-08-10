@@ -12,8 +12,8 @@ import asyncio
 from collections.abc import Awaitable, Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
+from enum import StrEnum
 from pathlib import Path
-from typing import Any
 
 from dream.engine._cost import UsageSnapshot
 from dream.errors import RunPhase, RunTaskError, TaskCancelled
@@ -25,8 +25,23 @@ from dream.planner import (
     planner_spec_path,
     run_planner,
 )
-from dream.runner._observer import RunTaskObserver
-from dream.runner._plan_admission import PlanAdmission
+from dream.runner.events import (
+    ContractWritten,
+    EvaluatorCompleted,
+    EvaluatorStarted,
+    GeneratorCompleted,
+    GeneratorStarted,
+    PlannerCompleted,
+    PlannerSkipped,
+    PlannerStarted,
+    RunTaskEvent,
+    RunTaskObserver,
+    SprintCompleted,
+    SprintEscalated,
+    SprintStarted,
+    TaskCompleted,
+    TaskStarted,
+)
 from dream.sprint import (
     EvaluationOutcome,
     SprintContract,
@@ -44,7 +59,7 @@ from dream.sprint import (
 )
 from dream.sprint._evaluation import EvaluationRecord
 from dream.sprint._outcome import NEEDS_CHANGES_LIMIT
-from dream.swarm._handoff import HandoffArtefact, handoff_event
+from dream.swarm._handoff import HandoffArtefact, HandoffEvent, handoff_event
 
 __all__ = [
     "EvaluatorRun",
@@ -53,8 +68,27 @@ __all__ = [
     "RunTaskResult",
     "SprintGoalProvider",
     "SprintRunResult",
+    "TaskStreamEvent",
     "run_task",
 ]
+
+
+class PlanAdmission(StrEnum):
+    """Admission policy for the planner phase of :func:`run_task`.
+
+    Using a str Enum (not free-form strings) keeps call sites typed and
+    serialisable without a parallel stringly vocabulary.
+    """
+
+    FRESH = "fresh"
+    """Always invoke the planner. Raises ``PlannerAlreadyRan`` if artefacts exist."""
+
+    RESUME = "resume"
+    """Skip the planner when a ledger already exists; otherwise plan once."""
+
+
+# Planner stream payloads (``planner.run.completed``) plus typed handoffs.
+TaskStreamEvent = Mapping[str, object] | HandoffEvent
 
 
 GeneratorExecute = Callable[
@@ -86,7 +120,7 @@ class SprintRunResult:
     contract_path: Path | None
     eval_path: Path | None
     outcome: EvaluationOutcome | None
-    events: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    events: tuple[TaskStreamEvent, ...] = field(default_factory=tuple)
     evaluation: EvaluationRecord | None = None
 
 
@@ -99,7 +133,7 @@ class RunTaskResult:
     ledger_path: Path
     final_ledger: PlannerLedger
     sprints: tuple[SprintRunResult, ...]
-    events: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    events: tuple[TaskStreamEvent, ...] = field(default_factory=tuple)
     usage_by_model: Mapping[str, UsageSnapshot] = field(default_factory=dict)
 
 
@@ -126,35 +160,25 @@ def _mark_step_done(ledger: PlannerLedger, step_id: str) -> PlannerLedger:
 
 @dataclass(frozen=True)
 class _GeneratorPhaseResult:
-    """Outcome of the lock-protected generator phase (2a + 2b) of one sprint.
-
-    ``step is None`` signals the loop should stop (no pending work). Otherwise
-    the claimed step, whether the evaluator is enabled, the (optionally written)
-    contract, the re-loaded+saved ledger, and the events accumulated so far.
-    """
+    """Outcome of the lock-protected generator phase (2a + 2b) of one sprint."""
 
     step: LedgerStep | None
     enabled: bool
     contract: SprintContract | None
     contract_path: Path | None
     ledger: PlannerLedger
-    events: list[dict[str, Any]]
+    events: list[TaskStreamEvent]
 
 
 @dataclass(frozen=True)
 class _EvaluatorPhaseResult:
-    """Outcome of the evaluator phase (2c) or the disabled-evaluator branch (2d).
-
-    ``evaluation`` is the typed evaluator record when the phase ran, or ``None``
-    when the evaluator is disabled (implicit pass; ``eval_path``/``outcome`` are
-    also ``None`` in that branch).
-    """
+    """Outcome of the evaluator phase (2c) or the disabled-evaluator branch (2d)."""
 
     eval_path: Path | None
     outcome: EvaluationOutcome | None
     evaluation: EvaluationRecord | None
     ledger: PlannerLedger
-    events: list[dict[str, Any]]
+    events: list[TaskStreamEvent]
 
 
 async def _run_generator_phase(
@@ -165,20 +189,16 @@ async def _run_generator_phase(
     sprint_number: int,
     ledger: PlannerLedger,
     generator_execute: GeneratorExecute,
-    verification_steps: tuple[dict[str, str], ...],
+    verification_steps: tuple[Mapping[str, str], ...],
     goal_provider: SprintGoalProvider,
-    emit: Callable[[dict[str, Any]], None],
+    emit: Callable[[RunTaskEvent], None],
     rubric: str = "",
 ) -> _GeneratorPhaseResult:
     """Phase 2a+2b: claim a step under the generator lock, commit the contract
     the plan already implies (if the evaluator is enabled), and run the
     generator seam.
-
-    Selection + claim of the next step happen *inside* the lock on a freshly
-    re-loaded ledger (criterion #14), so two overlapping ``run_task`` calls
-    can't both pick the same pending step from a stale snapshot.
     """
-    events: list[dict[str, Any]] = []
+    events: list[TaskStreamEvent] = []
     contract: SprintContract | None = None
     contract_path: Path | None = None
     with acquire_role_lock(root, task_id=task_id, role="generator"):
@@ -196,12 +216,11 @@ async def _run_generator_phase(
         enabled = is_evaluator_enabled_for_sprint(ledger, sprint_override=None)
 
         emit(
-            {
-                "kind": "sprint.started",
-                "sprint_number": sprint_number,
-                "step_id": step.id,
-                "step_description": step.description,
-            }
+            SprintStarted(
+                sprint_number=sprint_number,
+                step_id=step.id,
+                step_description=step.description,
+            )
         )
 
         if step.status == "pending":
@@ -214,7 +233,7 @@ async def _run_generator_phase(
                 task_id=task_id,
                 sprint_number=sprint_number,
                 goal=goal_provider(step, sprint_number),
-                verification_steps=verification_steps,
+                verification_steps=tuple(dict(s) for s in verification_steps),
                 carry_items=load_pending_carry_items(
                     root, task_id=task_id, step_id=step.id
                 ),
@@ -227,29 +246,25 @@ async def _run_generator_phase(
             # Criterion #7: contract committed BEFORE generator touches sources.
             contract.save(contract_path)
             emit(
-                {
-                    "kind": "contract.written",
-                    "sprint_number": sprint_number,
-                    "path": str(contract_path),
-                }
+                ContractWritten(
+                    sprint_number=sprint_number,
+                    path=str(contract_path),
+                )
             )
 
-        # 2b. Generator execute (caller-supplied seam).
         emit(
-            {
-                "kind": "generator.started",
-                "sprint_number": sprint_number,
-                "step_id": step.id,
-                "has_contract": contract is not None,
-            }
+            GeneratorStarted(
+                sprint_number=sprint_number,
+                step_id=step.id,
+                has_contract=contract is not None,
+            )
         )
         await generator_execute(task_id, sprint_number, contract, step)
         emit(
-            {
-                "kind": "generator.completed",
-                "sprint_number": sprint_number,
-                "step_id": step.id,
-            }
+            GeneratorCompleted(
+                sprint_number=sprint_number,
+                step_id=step.id,
+            )
         )
 
         if enabled and contract_path is not None:
@@ -287,17 +302,11 @@ async def _run_evaluator_phase(
     contract: SprintContract | None,
     ledger: PlannerLedger,
     evaluator_run: EvaluatorRun,
-    emit: Callable[[dict[str, Any]], None],
+    emit: Callable[[RunTaskEvent], None],
 ) -> _EvaluatorPhaseResult:
-    """Phase 2c (lock-protected evaluator) or 2d (disabled → implicit pass).
-
-    Independent of the generator lock. Returns the eval-artefact path, outcome,
-    and typed ``evaluation`` record (all ``None`` in the disabled branch) plus
-    the saved ledger.
-    """
-    events: list[dict[str, Any]] = []
+    """Phase 2c (lock-protected evaluator) or 2d (disabled → implicit pass)."""
+    events: list[TaskStreamEvent] = []
     if not enabled:
-        # 2d. Disabled-evaluator branch: implicit pass advances the step.
         ledger = _mark_step_done(ledger, step.id)
         ledger.save(ledger_path)
         return _EvaluatorPhaseResult(
@@ -310,11 +319,10 @@ async def _run_evaluator_phase(
 
     assert contract is not None
     emit(
-        {
-            "kind": "evaluator.started",
-            "sprint_number": sprint_number,
-            "step_id": step.id,
-        }
+        EvaluatorStarted(
+            sprint_number=sprint_number,
+            step_id=step.id,
+        )
     )
     with acquire_role_lock(root, task_id=task_id, role="evaluator"):
         record = await evaluator_run(task_id, sprint_number, contract, step)
@@ -326,13 +334,12 @@ async def _run_evaluator_phase(
         outcome = record.outcome
 
     emit(
-        {
-            "kind": "evaluator.completed",
-            "sprint_number": sprint_number,
-            "outcome": record.outcome,
-            "score": record.score,
-            "notes": record.notes,
-        }
+        EvaluatorCompleted(
+            sprint_number=sprint_number,
+            outcome=record.outcome,
+            score=record.score,
+            notes=record.notes,
+        )
     )
 
     events.append(
@@ -358,13 +365,7 @@ async def _run_evaluator_phase(
 
 @contextmanager
 def _phase(phase: RunPhase) -> Iterator[None]:
-    """Surface any loop fault as a typed :class:`RunTaskError` naming ``phase``.
-
-    A cooperative :class:`TaskCancelled`, an ``asyncio.CancelledError``, and an
-    already-typed :class:`RunTaskError` propagate untouched — they are not
-    loop faults to relabel. Every other exception is wrapped with its original
-    ``cause`` attached (chorus spec 05 §5).
-    """
+    """Surface any loop fault as a typed :class:`RunTaskError` naming ``phase``."""
     try:
         yield
     except (asyncio.CancelledError, TaskCancelled, RunTaskError):
@@ -382,7 +383,7 @@ async def run_task(
     generator_execute: GeneratorExecute,
     evaluator_run: EvaluatorRun,
     max_sprints: int = 10,
-    verification_steps: tuple[dict[str, str], ...] = (),
+    verification_steps: tuple[Mapping[str, str], ...] = (),
     goal_for_step: SprintGoalProvider | None = None,
     observer: RunTaskObserver | None = None,
     rubric: str = "",
@@ -390,23 +391,15 @@ async def run_task(
 ) -> RunTaskResult:
     """Compose a full task: planner → bounded sprint loop → done/blocked.
 
-    See module docstring for the per-sprint algorithm. When ``observer``
-    is supplied, a progress event is dispatched at every boundary
-    (planner start/end, sprint start/end, contract written, generator /
-    evaluator start/end, role-session opened/closed + streamed text & tool
-    calls). See :mod:`dream.runner._observer`.
+    When ``observer`` is supplied, a progress event is dispatched at every
+    boundary. See :mod:`dream.runner.events`.
 
     ``plan_admission`` controls whether the planner may run:
 
     - :attr:`PlanAdmission.FRESH` — always plan (default; raises if artefacts exist).
     - :attr:`PlanAdmission.RESUME` — skip planning when a ledger already exists so
       a later call with the same ``task_id`` can continue needs-changes repair
-      without minting a new Dream identity (Hermes-simple same-session recovery).
-
-    Per-invocation ``needs-changes`` strikes are counted in this call only. After
-    :data:`~dream.sprint.NEEDS_CHANGES_LIMIT` consecutive rejections the loop
-    stops for *this* ``run_task`` while the step stays ``in_progress``, so a
-    later RESUME can continue. Only outcome ``fail`` durable-blocks a step.
+      without minting a new Dream identity.
     """
     if max_sprints < 0:
         raise ValueError(f"max_sprints must be >= 0, got {max_sprints}")
@@ -418,25 +411,24 @@ async def run_task(
     root = Path(worktree_root)
     goal_provider = goal_for_step or (lambda step, _sprint_number: step.description)
 
-    def _emit(event: dict[str, Any]) -> None:
+    def _emit(event: RunTaskEvent) -> None:
         if observer is not None:
             observer.on_event(event)
 
-    _emit({"kind": "task.started", "task_id": task_id, "intent": intent})
+    _emit(TaskStarted(task_id=task_id, intent=intent))
 
     ledger_path = planner_ledger_path(root, task_id)
     spec_path = planner_spec_path(root, task_id)
-    events: list[dict[str, Any]] = []
+    events: list[TaskStreamEvent] = []
     resume = plan_admission is PlanAdmission.RESUME and ledger_path.is_file()
 
     if resume:
         _emit(
-            {
-                "kind": "planner.skipped",
-                "task_id": task_id,
-                "reason": "resume",
-                "ledger_path": str(ledger_path),
-            }
+            PlannerSkipped(
+                task_id=task_id,
+                reason="resume",
+                ledger_path=str(ledger_path),
+            )
         )
         ledger = PlannerLedger.load(ledger_path)
         if not spec_path.is_file():
@@ -445,7 +437,7 @@ async def run_task(
                 phase="plan",
             )
     else:
-        _emit({"kind": "planner.started", "task_id": task_id})
+        _emit(PlannerStarted(task_id=task_id, intent=intent))
         with _phase("plan"):
             planner_result = await run_planner(
                 task_id=task_id,
@@ -458,13 +450,12 @@ async def run_task(
         spec_path = planner_result.spec_path
         ledger = PlannerLedger.load(ledger_path)
         _emit(
-            {
-                "kind": "planner.completed",
-                "task_id": task_id,
-                "spec_path": str(spec_path),
-                "ledger_path": str(ledger_path),
-                "step_count": len(ledger.steps),
-            }
+            PlannerCompleted(
+                task_id=task_id,
+                spec_path=str(spec_path),
+                ledger_path=str(ledger_path),
+                step_count=len(ledger.steps),
+            )
         )
 
     sprints: list[SprintRunResult] = []
@@ -521,12 +512,11 @@ async def run_task(
         )
         events.extend(sprint_events)
         _emit(
-            {
-                "kind": "sprint.completed",
-                "sprint_number": sprint_number,
-                "step_id": step.id,
-                "outcome": evl.outcome,
-            }
+            SprintCompleted(
+                sprint_number=sprint_number,
+                step_id=step.id,
+                outcome=evl.outcome,
+            )
         )
 
         if evl.outcome == "needs-changes":
@@ -535,24 +525,24 @@ async def run_task(
             if strikes >= NEEDS_CHANGES_LIMIT:
                 updated = next((s for s in ledger.steps if s.id == step.id), None)
                 _emit(
-                    {
-                        "kind": "sprint.escalated",
-                        "task_id": task_id,
-                        "step_id": step.id,
-                        "needs_changes_count": (
+                    SprintEscalated(
+                        task_id=task_id,
+                        step_id=step.id,
+                        sprint_number=sprint_number,
+                        needs_changes_count=(
                             updated.needs_changes_count if updated is not None else strikes
                         ),
-                        "strikes_this_run": strikes,
-                    }
+                        strikes_this_run=strikes,
+                        reason=f"needs-changes strike limit ({strikes})",
+                    )
                 )
                 break
 
     _emit(
-        {
-            "kind": "task.completed",
-            "task_id": task_id,
-            "sprint_count": len(sprints),
-        }
+        TaskCompleted(
+            task_id=task_id,
+            sprint_count=len(sprints),
+        )
     )
     return RunTaskResult(
         task_id=task_id,

@@ -39,7 +39,7 @@ async def test_run_task_forwards_all_kwargs(monkeypatch: pytest.MonkeyPatch) -> 
         captured.update(kwargs)
         return _make_minimal_run_task_result()
 
-    monkeypatch.setattr("dream.runner._run.run_task", _fake_run_task)
+    monkeypatch.setattr("dream.runner.task.run_task", _fake_run_task)
 
     harness = Harness(HarnessConfig(working_dir=Path("/wt")))
     planner = AsyncMock()
@@ -82,7 +82,7 @@ async def test_run_task_defaults_worktree_to_config_working_dir(
         captured.update(kwargs)
         return _make_minimal_run_task_result()
 
-    monkeypatch.setattr("dream.runner._run.run_task", _fake_run_task)
+    monkeypatch.setattr("dream.runner.task.run_task", _fake_run_task)
 
     harness = Harness(HarnessConfig(working_dir=Path("/my/wt")))
 
@@ -106,7 +106,7 @@ async def test_run_task_explicit_worktree_overrides_config(
         captured.update(kwargs)
         return _make_minimal_run_task_result()
 
-    monkeypatch.setattr("dream.runner._run.run_task", _fake_run_task)
+    monkeypatch.setattr("dream.runner.task.run_task", _fake_run_task)
 
     harness = Harness(HarnessConfig(working_dir=Path("/my/wt")))
 
@@ -129,7 +129,7 @@ async def test_run_task_omits_unspecified_optionals(
     what the caller actually passed (so a future change to a default lives
     in one place). After the metering change the facade always forwards a
     UsageMeter as observer, so 'observer' IS always in captured."""
-    from dream.runner._usage import UsageMeter
+    from dream.runner.observe import UsageMeter
 
     captured: dict[str, Any] = {}
 
@@ -137,7 +137,7 @@ async def test_run_task_omits_unspecified_optionals(
         captured.update(kwargs)
         return _make_minimal_run_task_result()
 
-    monkeypatch.setattr("dream.runner._run.run_task", _fake_run_task)
+    monkeypatch.setattr("dream.runner.task.run_task", _fake_run_task)
 
     harness = Harness(HarnessConfig(working_dir=Path("/wt")))
 
@@ -167,7 +167,7 @@ async def test_run_task_auto_wires_missing_heads(
     """When a head kwarg is None the corresponding production factory is
     invoked against the harness so a one-liner ``await harness.run_task(
     intent=...)`` wires every LLM head from the configured engine."""
-    from dream.runner._usage import UsageMeter
+    from dream.runner.observe import UsageMeter
 
     captured: dict[str, Any] = {}
     factory_calls: dict[str, dict[str, Any]] = {}
@@ -183,7 +183,7 @@ async def test_run_task_auto_wires_missing_heads(
 
         return factory
 
-    monkeypatch.setattr("dream.runner._run.run_task", _fake_run_task)
+    monkeypatch.setattr("dream.runner.task.run_task", _fake_run_task)
     monkeypatch.setattr(
         "dream.runner.make_planner_head", _make_sentinel("planner")
     )
@@ -224,7 +224,7 @@ async def test_run_task_mints_task_id_when_none(
         captured.update(kwargs)
         return _make_minimal_run_task_result()
 
-    monkeypatch.setattr("dream.runner._run.run_task", _fake_run_task)
+    monkeypatch.setattr("dream.runner.task.run_task", _fake_run_task)
 
     harness = Harness(HarnessConfig(working_dir=Path("/wt")))
     await harness.run_task(
@@ -249,7 +249,7 @@ async def test_run_task_explicit_heads_override_factory_defaults(
     def _boom(*_a: Any, **_kw: Any) -> Any:
         raise AssertionError("factory must not run when head is supplied")
 
-    monkeypatch.setattr("dream.runner._run.run_task", _fake_run_task)
+    monkeypatch.setattr("dream.runner.task.run_task", _fake_run_task)
     monkeypatch.setattr("dream.runner.make_planner_head", _boom)
     monkeypatch.setattr("dream.runner.make_generator_head", _boom)
     monkeypatch.setattr("dream.runner.make_evaluator_head", _boom)
@@ -274,8 +274,8 @@ async def test_run_task_explicit_heads_override_factory_defaults(
 async def test_run_task_forwards_observer_to_runner_and_factories(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from dream.runner._observer import _CapturingObserver
-    from dream.runner._usage import UsageMeter
+    from dream.runner.observe import CapturingObserver
+    from dream.runner.observe import UsageMeter
 
     captured: dict[str, Any] = {}
     factory_observers: dict[str, Any] = {}
@@ -291,7 +291,7 @@ async def test_run_task_forwards_observer_to_runner_and_factories(
 
         return factory
 
-    monkeypatch.setattr("dream.runner._run.run_task", _fake_run_task)
+    monkeypatch.setattr("dream.runner.task.run_task", _fake_run_task)
     for fn in (
         "make_planner_head",
         "make_generator_head",
@@ -301,7 +301,7 @@ async def test_run_task_forwards_observer_to_runner_and_factories(
             f"dream.runner.{fn}", _make_sentinel(fn)
         )
 
-    observer = _CapturingObserver()
+    observer = CapturingObserver()
     harness = Harness(HarnessConfig(working_dir=Path("/wt")))
     await harness.run_task(task_id="t", intent="i", observer=observer)
 
@@ -324,7 +324,7 @@ async def test_run_task_forwards_observer_to_runner_and_factories(
 def _make_minimal_run_task_result() -> Any:
     """Build a minimal RunTaskResult for use in fake runners."""
     from dream.planner import LedgerStep, PlannerLedger
-    from dream.runner._run import RunTaskResult
+    from dream.runner.task import RunTaskResult
 
     ledger = PlannerLedger(
         task_id="t-test",
@@ -354,7 +354,7 @@ async def test_run_task_omits_unspecified_optionals_updated(
     """After the metering change the facade ALWAYS forwards a UsageMeter as observer,
     so 'observer' is now always in captured. max_sprints/verification_steps/goal_for_step
     are still NOT forwarded when not given."""
-    from dream.runner._usage import UsageMeter
+    from dream.runner.observe import UsageMeter
 
     captured: dict[str, Any] = {}
 
@@ -362,7 +362,7 @@ async def test_run_task_omits_unspecified_optionals_updated(
         captured.update(kwargs)
         return _make_minimal_run_task_result()
 
-    monkeypatch.setattr("dream.runner._run.run_task", _fake_run_task)
+    monkeypatch.setattr("dream.runner.task.run_task", _fake_run_task)
 
     harness = Harness(HarnessConfig(working_dir=Path("/wt")))
 
@@ -389,38 +389,39 @@ async def test_run_task_populates_usage_by_model(
 ) -> None:
     """Facade wires a UsageMeter, fires role.session.closed events through it,
     and stitches usage_by_model into RunTaskResult."""
-    from dream.runner._run import RunTaskResult
+    from dream.runner.task import RunTaskResult
 
     async def _fake_run_task(**kwargs: Any) -> RunTaskResult:
         # Fire two role.session.closed events for model "gpt-x"
+        from dream.engine._cost import UsageSnapshot
+        from dream.runner.events import RoleSessionClosed
+
         observer = kwargs["observer"]
         observer.on_event(
-            {
-                "kind": "role.session.closed",
-                "model": "gpt-x",
-                "usage": {
-                    "input_tokens": 10,
-                    "output_tokens": 5,
-                    "cache_read_tokens": 0,
-                    "cache_write_tokens": 0,
-                },
-            }
+            RoleSessionClosed(
+                role="planner",
+                session_id="s1",
+                model="gpt-x",
+                usage=UsageSnapshot(input_tokens=10, output_tokens=5),
+                cost_usd=0.0,
+            )
         )
         observer.on_event(
-            {
-                "kind": "role.session.closed",
-                "model": "gpt-x",
-                "usage": {
-                    "input_tokens": 20,
-                    "output_tokens": 7,
-                    "cache_read_tokens": 3,
-                    "cache_write_tokens": 0,
-                },
-            }
+            RoleSessionClosed(
+                role="generator",
+                session_id="s2",
+                model="gpt-x",
+                usage=UsageSnapshot(
+                    input_tokens=20,
+                    output_tokens=7,
+                    cache_read_tokens=3,
+                ),
+                cost_usd=0.0,
+            )
         )
         return _make_minimal_run_task_result()
 
-    monkeypatch.setattr("dream.runner._run.run_task", _fake_run_task)
+    monkeypatch.setattr("dream.runner.task.run_task", _fake_run_task)
 
     harness = Harness(HarnessConfig(working_dir=Path("/wt")))
 

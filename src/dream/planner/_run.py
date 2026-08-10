@@ -19,18 +19,17 @@ wires the production one through ``dream.repl session --role planner``.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 from dream.planner._artefacts import (
     PlannerLedger,
     planner_ledger_path,
     planner_spec_path,
 )
-from dream.swarm._handoff import HandoffArtefact, handoff_event
+from dream.swarm._handoff import HandoffArtefact, HandoffEvent, handoff_event
 from dream.utils.file_lock import exclusive_file_lock
 from dream.utils.fs import atomic_write_text
 from dream.utils.identifiers import checked_task_id as _checked_task_id
@@ -67,7 +66,7 @@ class PlannerResult:
     task_id: str
     spec_path: Path
     ledger_path: Path
-    events: tuple[dict[str, Any], ...]
+    events: tuple[Mapping[str, object] | HandoffEvent, ...]
 
 
 class PlannerAlreadyRan(RuntimeError):
@@ -150,9 +149,9 @@ async def _write_artefacts(
 
 def _build_events(
     task_id: str, *, spec_rel: str, ledger_rel: str
-) -> tuple[dict[str, Any], ...]:
+) -> tuple[Mapping[str, object] | HandoffEvent, ...]:
     """The ordered stream payloads: ``planner.run.completed`` then handoff."""
-    completed = {
+    completed: dict[str, object] = {
         "type": "planner.run.completed",
         "ts": _now_iso(),
         "task_id": task_id,

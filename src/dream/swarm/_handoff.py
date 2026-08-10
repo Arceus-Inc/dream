@@ -15,11 +15,18 @@ way to consume.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Literal
 
-__all__ = ["ArtefactKind", "HandoffArtefact", "Role", "handoff_event"]
+__all__ = [
+    "ArtefactKind",
+    "HandoffArtefact",
+    "HandoffEvent",
+    "Role",
+    "handoff_event",
+]
 
 
 # Spec 10 §1 enumerates the role set.
@@ -68,13 +75,25 @@ class HandoffArtefact:
         return out
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class HandoffEvent:
+    """Cross-role transition payload (repo-only artefact pointers)."""
+
+    kind: Literal["handoff"] = "handoff"
+    type: str
+    ts: str
+    from_role: str
+    to_role: str
+    artefacts: tuple[Mapping[str, str], ...]
+
+
 def handoff_event(
     *,
     from_role: str,
     to_role: str,
-    artefacts: list[HandoffArtefact],
-) -> dict[str, Any]:
-    """Build the jsonl payload for a cross-role transition.
+    artefacts: Sequence[HandoffArtefact],
+) -> HandoffEvent:
+    """Build the handoff payload for a cross-role transition.
 
     Raises:
         ValueError: if either role is unknown or ``artefacts`` is empty.
@@ -92,10 +111,10 @@ def handoff_event(
         # the next session has nothing to read.
         raise ValueError("handoff_event requires at least one artefact pointer")
 
-    return {
-        "type": f"handoff.{from_role}_to_{to_role}",
-        "ts": datetime.now(UTC).isoformat(timespec="microseconds"),
-        "from_role": from_role,
-        "to_role": to_role,
-        "artefacts": [a.to_dict() for a in artefacts],
-    }
+    return HandoffEvent(
+        type=f"handoff.{from_role}_to_{to_role}",
+        ts=datetime.now(UTC).isoformat(timespec="microseconds"),
+        from_role=from_role,
+        to_role=to_role,
+        artefacts=tuple(a.to_dict() for a in artefacts),
+    )

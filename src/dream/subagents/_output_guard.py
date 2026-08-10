@@ -17,7 +17,7 @@ import jsonschema
 from dream.api.response_format import JsonSchema, resolve_structured_output
 from dream.api.structured import JsonValue
 from dream.roles._manifest import RoleManifest
-from dream.runner._role_session import RoleSessionError
+from dream.runner.role import RoleSessionError
 from dream.session import SessionOptions
 
 if TYPE_CHECKING:

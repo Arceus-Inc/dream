@@ -55,7 +55,7 @@ from dream.prompts import (
 )
 from dream.prompts.environment import render_runtime_info
 from dream.roles import RoleManifest
-from dream.runner._role_session import ROLE_MANIFEST_METADATA_KEY, ROLE_NAME_METADATA_KEY
+from dream.runner.role import ROLE_MANIFEST_METADATA_KEY, ROLE_NAME_METADATA_KEY
 from dream.sandbox import SANDBOX_CONTEXT_KEY, SandboxAdapter, select_backend
 from dream.services import cron as cron_service
 from dream.services.compact._carryover_state import CarryoverMetadata

@@ -113,7 +113,7 @@ async def test_run_task_event_stream_starts_with_planner_events(tmp_path: Path) 
         evaluator_run=_make_evaluator_run(outcome="pass"),
     )
 
-    types = [e["type"] for e in result.events]
+    types = [e["type"] if isinstance(e, dict) else e.type for e in result.events]
     assert types[0] == "planner.run.completed"
     assert types[1] == "handoff.planner_to_generator"
 
@@ -200,7 +200,7 @@ async def test_run_task_emits_generator_then_evaluator_handoffs_per_sprint(
         evaluator_run=_make_evaluator_run(outcome="pass"),
     )
 
-    types = [e["type"] for e in result.events]
+    types = [e["type"] if isinstance(e, dict) else e.type for e in result.events]
     g2e = types.index("handoff.generator_to_evaluator")
     e2g = types.index("handoff.evaluator_to_generator")
     assert g2e < e2g
@@ -218,8 +218,10 @@ async def test_run_task_handoff_events_carry_artefact_pointers(tmp_path: Path) -
         evaluator_run=_make_evaluator_run(outcome="pass"),
     )
     for e in result.events:
-        if e["type"].startswith("handoff."):
-            assert e["artefacts"], f"empty artefacts in handoff: {e}"
+        typ = e["type"] if isinstance(e, dict) else e.type
+        if typ.startswith("handoff."):
+            arts = e["artefacts"] if isinstance(e, dict) else e.artefacts
+            assert arts, f"empty artefacts in handoff: {e}"
 
 
 # --- outcome rules ------------------------------------------------------
@@ -417,7 +419,7 @@ async def test_run_task_selects_step_after_acquiring_generator_lock(
     same pending step. We assert the ordering structurally — every in-loop
     ledger re-load is bracketed by a held generator lock.
     """
-    from dream.runner import _run
+    from dream.runner import task as _run
 
     lock_depth = 0
     loads_under_lock: list[bool] = []
@@ -469,9 +471,9 @@ async def test_run_task_dispatches_macro_events_in_order(tmp_path: Path) -> None
     """A capturing observer sees task/planner/sprint/contract/generator/
     evaluator lifecycle events in the order they fire."""
     from dream.runner import run_task
-    from dream.runner._observer import _CapturingObserver
+    from dream.runner.observe import CapturingObserver
 
-    observer = _CapturingObserver()
+    observer = CapturingObserver()
 
     await run_task(
         task_id="t1",
@@ -483,7 +485,7 @@ async def test_run_task_dispatches_macro_events_in_order(tmp_path: Path) -> None
         observer=observer,
     )
 
-    kinds = [e["kind"] for e in observer.events]
+    kinds = [e.kind for e in observer.events]
     assert kinds == [
         "task.started",
         "planner.started",
@@ -501,9 +503,9 @@ async def test_run_task_dispatches_macro_events_in_order(tmp_path: Path) -> None
 
 async def test_run_task_observer_carries_payloads(tmp_path: Path) -> None:
     from dream.runner import run_task
-    from dream.runner._observer import _CapturingObserver
+    from dream.runner.observe import CapturingObserver
 
-    observer = _CapturingObserver()
+    observer = CapturingObserver()
 
     await run_task(
         task_id="t1",
@@ -515,26 +517,26 @@ async def test_run_task_observer_carries_payloads(tmp_path: Path) -> None:
         observer=observer,
     )
 
-    by_kind = {e["kind"]: e for e in observer.events}
-    assert by_kind["task.started"]["task_id"] == "t1"
-    assert by_kind["task.started"]["intent"] == "ship"
-    assert by_kind["planner.completed"]["step_count"] == 1
-    assert by_kind["sprint.started"]["sprint_number"] == 1
-    assert by_kind["sprint.started"]["step_id"] == "s1"
-    assert "path" in by_kind["contract.written"]
-    assert by_kind["generator.started"]["has_contract"] is True
-    assert by_kind["evaluator.completed"]["outcome"] == "pass"
-    assert by_kind["sprint.completed"]["outcome"] == "pass"
-    assert by_kind["task.completed"]["sprint_count"] == 1
+    by_kind = {e.kind: e for e in observer.events}
+    assert by_kind["task.started"].task_id == "t1"
+    assert by_kind["task.started"].intent == "ship"
+    assert by_kind["planner.completed"].step_count == 1
+    assert by_kind["sprint.started"].sprint_number == 1
+    assert by_kind["sprint.started"].step_id == "s1"
+    assert by_kind["contract.written"].path
+    assert by_kind["generator.started"].has_contract is True
+    assert by_kind["evaluator.completed"].outcome == "pass"
+    assert by_kind["sprint.completed"].outcome == "pass"
+    assert by_kind["task.completed"].sprint_count == 1
 
 
 async def test_run_task_observer_marks_generator_without_contract_when_eval_off(
     tmp_path: Path,
 ) -> None:
     from dream.runner import run_task
-    from dream.runner._observer import _CapturingObserver
+    from dream.runner.observe import CapturingObserver
 
-    observer = _CapturingObserver()
+    observer = CapturingObserver()
 
     await run_task(
         task_id="t1",
@@ -546,12 +548,12 @@ async def test_run_task_observer_marks_generator_without_contract_when_eval_off(
         observer=observer,
     )
 
-    kinds = [e["kind"] for e in observer.events]
+    kinds = [e.kind for e in observer.events]
     assert "contract.written" not in kinds
     assert "evaluator.started" not in kinds
     assert "evaluator.completed" not in kinds
-    gen_start = next(e for e in observer.events if e["kind"] == "generator.started")
-    assert gen_start["has_contract"] is False
+    gen_start = next(e for e in observer.events if e.kind == "generator.started")
+    assert gen_start.has_contract is False
 
 
 async def test_run_task_with_no_observer_does_not_break(tmp_path: Path) -> None:
@@ -620,9 +622,9 @@ async def test_two_needs_changes_emits_sprint_escalated_event(
 ) -> None:
     """When the per-invocation strike limit is hit, emit sprint.escalated."""
     from dream.runner import run_task
-    from dream.runner._observer import _CapturingObserver
+    from dream.runner.observe import CapturingObserver
 
-    observer = _CapturingObserver()
+    observer = CapturingObserver()
 
     await run_task(
         task_id="t1",
@@ -637,12 +639,12 @@ async def test_two_needs_changes_emits_sprint_escalated_event(
         observer=observer,
     )
 
-    escalated = [e for e in observer.events if e.get("kind") == "sprint.escalated"]
+    escalated = [e for e in observer.events if e.kind == "sprint.escalated"]
     assert len(escalated) == 1
-    assert escalated[0]["task_id"] == "t1"
-    assert escalated[0]["step_id"] == "s1"
-    assert escalated[0]["needs_changes_count"] == 2
-    assert escalated[0]["strikes_this_run"] == 2
+    assert escalated[0].task_id == "t1"
+    assert escalated[0].step_id == "s1"
+    assert escalated[0].needs_changes_count == 2
+    assert escalated[0].strikes_this_run == 2
 
 
 async def test_sprint_escalated_not_emitted_on_first_needs_changes(
@@ -650,10 +652,10 @@ async def test_sprint_escalated_not_emitted_on_first_needs_changes(
 ) -> None:
     """Escalation fires only at the per-invocation limit — not on first NC."""
     from dream.runner import run_task
-    from dream.runner._observer import _CapturingObserver
+    from dream.runner.observe import CapturingObserver
     from dream.sprint import EvaluationRecord
 
-    observer = _CapturingObserver()
+    observer = CapturingObserver()
     outcomes = iter(["needs-changes", "pass"])
 
     async def evaluator_run(task_id, sprint_n, contract, step):
@@ -676,7 +678,7 @@ async def test_sprint_escalated_not_emitted_on_first_needs_changes(
         observer=observer,
     )
 
-    escalated = [e for e in observer.events if e.get("kind") == "sprint.escalated"]
+    escalated = [e for e in observer.events if e.kind == "sprint.escalated"]
     assert escalated == []
 
 
@@ -689,7 +691,7 @@ async def test_resume_skips_planner_and_continues_in_progress_step(
     """Same task_id + RESUME must not re-plan; it continues needs-changes repair."""
     from dream.planner import planner_ledger_path
     from dream.runner import PlanAdmission, run_task
-    from dream.runner._observer import _CapturingObserver
+    from dream.runner.observe import CapturingObserver
     from dream.sprint import EvaluationRecord
 
     outcomes = iter(["needs-changes", "pass"])
@@ -718,7 +720,7 @@ async def test_resume_skips_planner_and_continues_in_progress_step(
     assert first.final_ledger.steps[0].status == "in_progress"
     assert first.sprints[0].outcome == "needs-changes"
 
-    observer = _CapturingObserver()
+    observer = CapturingObserver()
     second = await run_task(
         task_id="stable-t1",
         intent="ship",
@@ -730,9 +732,9 @@ async def test_resume_skips_planner_and_continues_in_progress_step(
         plan_admission=PlanAdmission.RESUME,
         observer=observer,
     )
-    skipped = [e for e in observer.events if e.get("kind") == "planner.skipped"]
+    skipped = [e for e in observer.events if e.kind == "planner.skipped"]
     assert len(skipped) == 1
-    assert skipped[0]["reason"] == "resume"
+    assert skipped[0].reason == "resume"
     assert second.final_ledger.steps[0].status == "done"
     assert any(s.outcome == "pass" for s in second.sprints)
     assert planner_ledger_path(tmp_path, "stable-t1").is_file()

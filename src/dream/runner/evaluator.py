@@ -1,13 +1,9 @@
-"""Production evaluator head: spec 10 slice G5 + structured-output P2.
+"""Production evaluator head + verdict schema (structured-output P2).
 
 ``make_evaluator_head`` builds an :data:`EvaluatorRun` that drives one
 evaluator-bound session through :meth:`Harness.run_role` with a native
 ``response_format`` JSON schema and parses the model's verdict into an
 :class:`EvaluationRecord`.
-
-Phase protocol lives in standing orders. This head builds a data envelope
-and parses constrained JSON. Verification runs **inside** the evaluator
-session via ``bash``.
 """
 
 from __future__ import annotations
@@ -15,34 +11,59 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Awaitable, Callable
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from dream.api.response_format import ResponseFormat
-from dream.runner._evaluator_schema import EVALUATOR_VERDICT_SCHEMA, EvaluatorVerdict
-from dream.runner._head_retry import ask_until_parsed
-from dream.runner._role_session import role_session_id
-from dream.runner._sprint_beat import format_sprint_beat
+from dream.api.response_format import JsonSchema, ResponseFormat
+from dream.runner.envelopes import ask_until_parsed, format_sprint_beat
+from dream.runner.events import HeadRetry, RunTaskObserver
+from dream.runner.role import RunRoleResult, role_session_id
 from dream.session import SessionOptions
 from dream.sprint import EvaluationRecord
 
 if TYPE_CHECKING:
     from dream.harness import Harness
     from dream.planner import LedgerStep
-    from dream.runner._observer import RunTaskObserver
-    from dream.runner._role_session import RunRoleResult
     from dream.sprint import SprintContract
 
 __all__ = [
+    "EVALUATOR_INSTRUCTION_TEMPLATE",
     "EVALUATOR_USER_ENVELOPE_TEMPLATE",
+    "EVALUATOR_VERDICT_SCHEMA",
     "EvaluatorHeadParseError",
+    "EvaluatorVerdict",
+    "VerdictOutcome",
     "make_evaluator_head",
+    "parse_evaluator_verdict",
 ]
 
 
 DEFAULT_EVALUATOR_VERSION = "head-v4"
+
+
+class VerdictOutcome(StrEnum):
+    """Durable evaluator outcomes (matches :data:`dream.sprint.EvaluationOutcome`)."""
+
+    PASS = "pass"
+    NEEDS_CHANGES = "needs-changes"
+    FAIL = "fail"
+
+
+class EvaluatorVerdict(BaseModel):
+    """JSON object the evaluator head must emit."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    outcome: VerdictOutcome
+    score: float = Field(ge=0.0, le=1.0)
+    notes: str
+    items: list[str]
+
+
+EVALUATOR_VERDICT_SCHEMA: JsonSchema = JsonSchema.of(EvaluatorVerdict.model_json_schema())
 
 
 class EvaluatorHeadParseError(RuntimeError):
@@ -58,8 +79,6 @@ _VERDICT_EXAMPLE = """\
 }"""
 
 
-# Kept for tests / callers that inspect the envelope suffix; beat body comes
-# from :func:`format_sprint_beat`.
 EVALUATOR_USER_ENVELOPE_TEMPLATE = (
     "{beat}\n"
     "OUTPUT SCHEMA (reply with ONE JSON object after tools; no fences):\n"
@@ -162,14 +181,7 @@ def make_evaluator_head(
     [str, int, SprintContract, LedgerStep],
     Awaitable[EvaluationRecord],
 ]:
-    """Build an :data:`EvaluatorRun` driven by :meth:`Harness.run_role`.
-
-    The evaluator LLM session has ``bash`` and runs verification itself.
-    Final replies are constrained by :data:`EVALUATOR_VERDICT_SCHEMA`.
-
-    ``session_scope`` names the task's evaluator thread, so successive sprints
-    are judged by an evaluator that remembers what it already accepted.
-    """
+    """Build an :data:`EvaluatorRun` driven by :meth:`Harness.run_role`."""
     session_id = (
         None if session_scope is None else role_session_id(session_scope, "evaluator")
     )
@@ -206,12 +218,7 @@ def make_evaluator_head(
         def _on_retry(attempt: int, err: Exception) -> None:
             if observer is not None:
                 observer.on_event(
-                    {
-                        "kind": "head.retry",
-                        "role": "evaluator",
-                        "attempt": attempt,
-                        "error": str(err),
-                    }
+                    HeadRetry(role="evaluator", attempt=attempt, error=str(err))
                 )
 
         def _parse(final_text: str) -> EvaluationRecord:
