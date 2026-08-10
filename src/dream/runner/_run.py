@@ -87,6 +87,7 @@ class SprintRunResult:
     eval_path: Path | None
     outcome: EvaluationOutcome | None
     events: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    evaluation: EvaluationRecord | None = None
 
 
 @dataclass(frozen=True)
@@ -142,10 +143,16 @@ class _GeneratorPhaseResult:
 
 @dataclass(frozen=True)
 class _EvaluatorPhaseResult:
-    """Outcome of the evaluator phase (2c) or the disabled-evaluator branch (2d)."""
+    """Outcome of the evaluator phase (2c) or the disabled-evaluator branch (2d).
+
+    ``evaluation`` is the typed evaluator record when the phase ran, or ``None``
+    when the evaluator is disabled (implicit pass; ``eval_path``/``outcome`` are
+    also ``None`` in that branch).
+    """
 
     eval_path: Path | None
     outcome: EvaluationOutcome | None
+    evaluation: EvaluationRecord | None
     ledger: PlannerLedger
     events: list[dict[str, Any]]
 
@@ -284,8 +291,9 @@ async def _run_evaluator_phase(
 ) -> _EvaluatorPhaseResult:
     """Phase 2c (lock-protected evaluator) or 2d (disabled → implicit pass).
 
-    Independent of the generator lock. Returns the eval-artefact path + outcome
-    (both ``None`` in the disabled branch) and the saved ledger.
+    Independent of the generator lock. Returns the eval-artefact path, outcome,
+    and typed ``evaluation`` record (all ``None`` in the disabled branch) plus
+    the saved ledger.
     """
     events: list[dict[str, Any]] = []
     if not enabled:
@@ -293,7 +301,11 @@ async def _run_evaluator_phase(
         ledger = _mark_step_done(ledger, step.id)
         ledger.save(ledger_path)
         return _EvaluatorPhaseResult(
-            eval_path=None, outcome=None, ledger=ledger, events=events
+            eval_path=None,
+            outcome=None,
+            evaluation=None,
+            ledger=ledger,
+            events=events,
         )
 
     assert contract is not None
@@ -336,7 +348,11 @@ async def _run_evaluator_phase(
         )
     )
     return _EvaluatorPhaseResult(
-        eval_path=eval_path, outcome=outcome, ledger=ledger, events=events
+        eval_path=eval_path,
+        outcome=outcome,
+        evaluation=record,
+        ledger=ledger,
+        events=events,
     )
 
 
@@ -500,6 +516,7 @@ async def run_task(
                 eval_path=evl.eval_path,
                 outcome=evl.outcome,
                 events=tuple(sprint_events),
+                evaluation=evl.evaluation,
             )
         )
         events.extend(sprint_events)

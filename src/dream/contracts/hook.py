@@ -63,6 +63,7 @@ class UserPromptPayload(TypedDict, total=False):
 
     session_id: str
     prompt: str
+    role: str
 
 
 @dataclass(frozen=True)
