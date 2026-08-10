@@ -13,8 +13,13 @@ _STABLE_RE = re.compile(r"<stable>(.*?)</stable>", re.DOTALL)
 _CONTEXT_RE = re.compile(r"<context>(.*?)</context>", re.DOTALL)
 _ROLE_RE = re.compile(r"<role>(.*?)</role>", re.DOTALL)
 _AGENTS_RE = re.compile(r"# AGENTS\.md\n\n(.*?)(?=\n\n# |\n\n<|$)", re.DOTALL)
-_SKILLS_MARKERS = ("Available Skills", "skill_catalogue", "<available_skills>")
-_MEMORY_MARKERS = ("Memory catalogue", "memory_catalogue", "# Memory")
+_SKILLS_MARKERS = ("# Available Skills", "Available Skills", "skill_catalogue", "<available_skills>")
+_MEMORY_MARKERS = ("# Memory catalogue", "Memory catalogue", "memory_catalogue", "# Memory")
+_SECTION_BOUNDARIES = (
+    "# AGENTS.md",
+    *_SKILLS_MARKERS,
+    *_MEMORY_MARKERS,
+)
 _SUBAGENT_TOOLS = frozenset({"spawn_subagent", "delegate_task", "delegation_get", "delegation_stop"})
 
 
@@ -123,14 +128,24 @@ def _match_group(pattern: re.Pattern[str], text: str) -> str:
 
 
 def _section_with_markers(text: str, markers: Sequence[str]) -> str:
+    """Return text from the first matching marker up to the next section boundary."""
     if not text:
         return ""
     lower = text.lower()
+    start: int | None = None
     for marker in markers:
         idx = lower.find(marker.lower())
         if idx >= 0:
-            return text[idx:].strip()
-    return ""
+            start = idx
+            break
+    if start is None:
+        return ""
+    end = len(text)
+    for boundary in _SECTION_BOUNDARIES:
+        bidx = lower.find(boundary.lower(), start + 1)
+        if bidx >= 0:
+            end = min(end, bidx)
+    return text[start:end].strip()
 
 
 def _remainder(text: str, *parts: str) -> str:

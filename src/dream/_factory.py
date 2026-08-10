@@ -853,4 +853,6 @@ def _build_session_engine(
         hook_executor=hook_executor,
         initial_context=render_runtime_context(runtime_info),
         delegations=harness.config.delegations,
+        system_prompt=system_prompt,
+        tools_wire=tools_wire,
     )

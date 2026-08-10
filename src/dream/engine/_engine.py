@@ -20,7 +20,7 @@ never instantiate the dispatcher by hand.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -87,6 +87,9 @@ class QueryEngine:
     # Role name from session metadata (planner/generator/evaluator) for STOP hooks.
     role: str | None = None
     delegations: AsyncDelegationManager | None = None
+    # Assembled request surfaces for `/context` (FailoverStreamer hides streamer attrs).
+    system_prompt: str | None = None
+    tools_wire: tuple[dict[str, Any], ...] = ()
 
     def make_session_config(
         self,
@@ -149,6 +152,8 @@ def build_query_engine(
     initial_context: str | None = None,
     orientation: OrientationConfig | None = None,
     delegations: AsyncDelegationManager | None = None,
+    system_prompt: str | None = None,
+    tools_wire: Sequence[dict[str, Any]] | None = None,
 ) -> QueryEngine:
     """Wrap a ``ToolRegistry`` in the canonical dispatcher and bind a streamer.
 
@@ -190,6 +195,8 @@ def build_query_engine(
         orientation=orientation,
         role=role_raw if isinstance(role_raw, str) else None,
         delegations=delegations,
+        system_prompt=system_prompt,
+        tools_wire=tuple(tools_wire or ()),
     )
 
 

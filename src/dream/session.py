@@ -199,43 +199,24 @@ class Session:
         """Cursor/Hermes-style token pie for the next request (REPL ``/context``).
 
         Returns ``None`` when no engine is bound. Uses the assembled system
-        prompt, registry tool schemas, and the live transcript.
+        prompt and effective tools wire from the engine (same surfaces the
+        provider request uses), plus the live transcript.
         """
         from dream.context import compute_context_breakdown
+        from dream.services.token_estimation import resolve_context_window
 
         engine = self._engine
         if engine is None:
             return None
-        streamer = getattr(engine, "streamer", None)
-        system_prompt = str(
-            getattr(streamer, "_system_prompt", None)
-            or getattr(streamer, "system_prompt", None)
-            or ""
-        )
-        tools: list[dict[str, object]] = []
-        dispatcher = getattr(engine, "dispatcher", None)
-        registry = getattr(dispatcher, "registry", None)
-        if registry is not None:
-            for tool in registry.list_tools():
-                tools.append(
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": tool.name,
-                            "description": tool.description,
-                            "parameters": tool.input_schema(),
-                        },
-                    }
-                )
-        window = None
+        system_prompt = str(getattr(engine, "system_prompt", None) or "")
+        tools = list(getattr(engine, "tools_wire", ()) or ())
         caps = getattr(engine, "compaction_capabilities", None)
-        if caps is not None:
-            window = getattr(caps, "max_context_tokens", None)
+        window, _ = resolve_context_window(caps)
         return compute_context_breakdown(
             system_prompt=system_prompt,
             tools=tools,
             messages=self._transcript,
-            context_window=window if isinstance(window, int) else None,
+            context_window=window,
         )
 
     @property

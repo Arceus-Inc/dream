@@ -59,6 +59,31 @@ def test_breakdown_splits_stable_context_tools_and_conversation() -> None:
     assert breakdown.percent_used is not None
 
 
+def test_skills_section_stops_before_memory() -> None:
+    system = (
+        "<stable>\nSTANDING\n</stable>\n\n"
+        "<context>\n# AGENTS.md\n\nI am the PM.\n\n"
+        "# Available Skills\n\n- skill: foo\n\n"
+        "# Memory catalogue\n\n- memory: bar\n</context>"
+    )
+    breakdown = compute_context_breakdown(system_prompt=system, tools=[], messages=[])
+    # Skills must not absorb the memory section (double-count / misattribute).
+    skills = breakdown.categories[ContextCategory.SKILLS]
+    memory = breakdown.categories[ContextCategory.MEMORY]
+    assert skills > 0
+    assert memory > 0
+    # Memory tokens must not also appear in skills: skills text is shorter than
+    # skills+memory concatenated.
+    from dream.context._breakdown import estimate_tokens
+
+    skills_only = estimate_tokens("# Available Skills\n\n- skill: foo")
+    skills_plus_memory = estimate_tokens(
+        "# Available Skills\n\n- skill: foo\n\n# Memory catalogue\n\n- memory: bar"
+    )
+    assert skills <= skills_only + 2
+    assert skills < skills_plus_memory
+
+
 def test_render_context_command_matches_format() -> None:
     breakdown = compute_context_breakdown(
         system_prompt="<stable>\nx\n</stable>",
