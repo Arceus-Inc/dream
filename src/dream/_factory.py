@@ -79,6 +79,7 @@ from dream.tasks import (
 )
 from dream.tasks._cron import CRON_MANIFEST_DIR, load_cron_manifests
 from dream.tools._base import BaseTool
+from dream.tools._catalogue import ToolCatalogue
 from dream.tools._per_repo import PerRepoToolError, load_per_repo_tools
 from dream.tools._registry import ToolRegistry, ToolSource
 from dream.tools.builtin import (
@@ -536,6 +537,7 @@ def _assemble_system_prompt(
     role: str | None = None,
     working_dir: Path | None = None,
     system_prompt_mode: str = "default",
+    tool_catalogue: str = "",
     subagent_catalogue: str = "",
 ) -> str:
     """Assemble the per-session system prompt from its ordered blocks.
@@ -558,6 +560,7 @@ def _assemble_system_prompt(
             skill_catalogue=catalogue,
             memory_catalogue=memory_catalogue,
             agents_md=load_agents_md(working_dir),
+            tool_catalogue=tool_catalogue,
             subagent_catalogue=subagent_catalogue,
         ),
         role_instructions=system_prompt,
@@ -653,12 +656,15 @@ def _build_session_engine(
     effective_subagents: SubagentSet | None = (
         inherited if isinstance(inherited, SubagentSet) else subagents
     )
+    advertised_tools = [
+        tool
+        for tool in tools
+        if _tool_advertised_to_model(name=tool.name, role_allowed=role_allowed)
+    ]
     tools_wire: list[dict[str, Any]] = []
-    for t in tools:
-        if not _tool_advertised_to_model(name=t.name, role_allowed=role_allowed):
-            continue
-        params = t.input_schema()
-        if t.name == "spawn_subagent":
+    for tool in advertised_tools:
+        params = tool.input_schema()
+        if tool.name == "spawn_subagent":
             from dream.tools.builtin.spawn_subagent import build_spawn_parameters
 
             params = build_spawn_parameters(params, effective_subagents)
@@ -666,17 +672,15 @@ def _build_session_engine(
             {
                 "type": "function",
                 "function": {
-                    "name": t.name,
-                    "description": t.description,
+                    "name": tool.name,
+                    "description": tool.description,
                     "parameters": params,
                 },
             }
         )
     # Built per session too, so the available-tool set the `skill` tool
     # checks ``tools_required`` against includes late (MCP) registrations.
-    advertised = frozenset(
-        t.name for t in tools if _tool_advertised_to_model(name=t.name, role_allowed=role_allowed)
-    )
+    advertised = frozenset(tool.name for tool in advertised_tools)
     skill_context = (
         SkillContext(
             registry=skill_registry,
@@ -690,6 +694,7 @@ def _build_session_engine(
     prompt_mode = "default"
     if isinstance(manifest, RoleManifest):
         prompt_mode = manifest.system_prompt_mode
+    tool_catalogue = ToolCatalogue.from_tools(advertised_tools)
     subagent_catalogue = SubagentCatalogue.for_set(effective_subagents)
     system_prompt = _assemble_system_prompt(
         paths=paths,
@@ -699,6 +704,7 @@ def _build_session_engine(
         role=role_name if isinstance(role_name, str) else None,
         working_dir=working_dir,
         system_prompt_mode=prompt_mode,
+        tool_catalogue=tool_catalogue.render() if tool_catalogue is not None else "",
         subagent_catalogue=(
             subagent_catalogue.render() if subagent_catalogue is not None else ""
         ),

@@ -59,6 +59,7 @@ class ContextPromptBlock:
     skill_catalogue: str
     memory_catalogue: str
     agents_md: str = ""
+    tool_catalogue: str = ""
     subagent_catalogue: str = ""
 
     def render(self) -> str:
@@ -68,6 +69,7 @@ class ContextPromptBlock:
         content = _join(
             agents,
             self.workspace_governance,
+            self.tool_catalogue,
             self.skill_catalogue,
             self.memory_catalogue,
             self.subagent_catalogue,

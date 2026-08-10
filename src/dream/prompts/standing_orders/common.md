@@ -18,7 +18,9 @@ spawn_subagent(subagent_type=…)  spawn when tools+skills suffice
 just implement yourself          durable across beats → TODO.md
 
 Rules: tool > execute_code > skill > spawn. Spawn only for a typed
-specialist artifact you cannot honestly author alone.
+specialist artifact you cannot honestly author alone. Prefer tools listed
+under Available tools in context; call them by name (schemas are on the
+runtime tool surface).
 
 ## Spawn usage
 
