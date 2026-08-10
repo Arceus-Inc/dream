@@ -138,9 +138,7 @@ def _contract(
         "widget renders",
         "widget passes axe",
     ),
-    # Empty by default: these head tests pin parsing/prompt behaviour. A
-    # non-empty default would make the spec-15 oracle execute the commands
-    # for real in every test (see test_oracle.py for that behaviour).
+    # Empty by default: these head tests pin parsing/prompt behaviour.
     verification_steps: tuple[dict[str, str], ...] = (),
     scope_includes: tuple[str, ...] = ("src/widget/",),
     scope_excludes: tuple[str, ...] = ("src/legacy/",),
@@ -444,6 +442,22 @@ async def test_intent_includes_verification_steps() -> None:
     prompt = streamer.last_user_text
     assert "pytest tests/foo" in prompt
     assert "axe http://localhost" in prompt
+
+
+async def test_head_does_not_execute_verification_steps() -> None:
+    """verification_steps are prompt data; the session runs them via bash."""
+    harness, streamer = _harness_with_reply(_verdict(outcome="pass"))
+    head = make_evaluator_head(harness)
+
+    record = await head(
+        "task-001",
+        1,
+        _contract(verification_steps=({"kind": "test", "command": "exit 1"},)),
+        _step(),
+    )
+
+    assert record.outcome == "pass"
+    assert "exit 1" in streamer.last_user_text
 
 
 async def test_intent_tells_the_evaluator_to_run_verify_via_bash() -> None:

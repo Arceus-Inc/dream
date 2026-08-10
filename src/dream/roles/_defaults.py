@@ -9,7 +9,6 @@ Operators override per-field via ``.harness/roles/{role}.toml`` (see
   active sandbox tier at #13); ``permission_mode="default"``.
 - evaluator: reads + ``bash`` for in-session verify (Hermes/CC shape) plus
   ``query_logs`` over session traces; no writers and no ``spawn_subagent``.
-  No harness oracle sidecar.
 """
 
 from __future__ import annotations
