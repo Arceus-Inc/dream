@@ -11,6 +11,8 @@ from dream.prompts.system_prompt import (
     RuntimeContextBlock,
     StablePromptBlock,
     assemble_session_system_prompt,
+    load_agents_md,
+    packaged_standing_orders,
 )
 
 __all__ = [
@@ -20,5 +22,7 @@ __all__ = [
     "StablePromptBlock",
     "assemble_session_system_prompt",
     "detect_shell",
+    "load_agents_md",
+    "packaged_standing_orders",
     "render_runtime_info",
 ]

@@ -72,47 +72,15 @@ _LEDGER_EXAMPLE = """\
 
 
 PLANNER_INSTRUCTION_TEMPLATE = (
-    "You are drafting the sprint plan for task {task_id}.\n"
+    "Sprint plan request for task {task_id}.\n"
     "\n"
     "USER INTENT\n"
     "-----------\n"
     "{intent}\n"
     "\n"
-    "OUTPUT FORMAT\n"
-    "-------------\n"
-    "Reply with ONE JSON object matching this schema (no XML, no prose, no fences):\n"
+    "OUTPUT SCHEMA (reply with ONE JSON object; no fences):\n"
     "\n"
     "{example}\n"
-    "\n"
-    "Requirements:\n"
-    '- "spec_markdown" must be non-empty markdown.\n'
-    '- "ledger.steps" must contain at least one step.\n'
-    '- Each step needs "id" (string), "description" (string), and\n'
-    '  "acceptance_criteria" (at least one string).\n'
-    '- "sprint_target" (int|null) and "notes" (string) are optional.\n'
-    '- Set "evaluator_enabled": false only when verifier signal is\n'
-    "  unavailable or actively misleading; default true.\n"
-    "\n"
-    "ACCEPTANCE CRITERIA\n"
-    "-------------------\n"
-    "- These are the bar a separate evaluator will judge the step against,\n"
-    "  with no chance to renegotiate. Write what must be observably true\n"
-    "  when the step is done, not how to do it.\n"
-    "- Prefer criteria something can check: a command that passes, a\n"
-    "  behaviour that holds, a file that exists with named content.\n"
-    "- Two or three per step is usually right. One is fine for a small step.\n"
-    "\n"
-    "DECOMPOSITION\n"
-    "-------------\n"
-    "- Use the FEWEST steps that cover the intent. Each step is a full\n"
-    "  generator+evaluator sprint, so over-splitting wastes sprints and\n"
-    "  produces steps the evaluator cannot independently verify.\n"
-    "- A single cohesive deliverable is ONE step. For example, a module\n"
-    "  plus its unit test plus running the test is one step, not three.\n"
-    "- Do NOT add a separate documentation, README, or changelog step\n"
-    "  unless the intent explicitly asks for documentation.\n"
-    "- Split into multiple steps only for genuinely independent units of\n"
-    "  work (distinct features, files, or layers that can land separately).\n"
 )
 
 

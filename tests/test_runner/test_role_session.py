@@ -138,9 +138,9 @@ async def test_run_role_appends_caller_system_prompt_after_manifest() -> None:
         "planner", "intent", options=SessionOptions(system_prompt="EXTRA")
     )
 
-    planner = default_role_manifest("planner")
     opts = captured[0]
-    assert opts.system_prompt == f"{planner.system_prompt}\n\nEXTRA"
+    # Bundled phase prompts live in standing orders; caller addendum only here.
+    assert opts.system_prompt == "EXTRA"
 
 
 async def test_run_role_records_manifest_on_session_options_metadata() -> None:

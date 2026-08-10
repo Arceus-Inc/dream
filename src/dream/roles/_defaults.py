@@ -51,15 +51,12 @@ _EVALUATOR_DENIED: tuple[str, ...] = (
 )
 
 
+# Phase identity + protocol live in packaged standing orders
+# (``dream.prompts.standing_orders``). Manifests own tools / permission_mode.
 _PLANNER = RoleManifest(
     name="planner",
     description="Breaks an intent into a sprint contract before any code changes.",
-    system_prompt=(
-        "You are the planner. Read the brief, the ledger, and the relevant code; "
-        "produce the sprint contract under docs/exec-plans/active. Do not modify "
-        "source files. If you need a capability you do not have, emit a "
-        "request_capability event rather than guessing."
-    ),
+    system_prompt="",
     tools=_READ_ONLY_TRIPLET,
     disallowed_tools=_WRITERS_DENIED,
     permission_mode="plan",
@@ -71,11 +68,7 @@ _PLANNER = RoleManifest(
 _GENERATOR = RoleManifest(
     name="generator",
     description="Executes the sprint contract in the worktree.",
-    system_prompt=(
-        "You are the generator. Follow the sprint contract verbatim. "
-        "Make the smallest change that satisfies every acceptance criterion. "
-        "Run the verification steps before declaring done."
-    ),
+    system_prompt="",
     tools=None,
     permission_mode="default",
     effort="medium",
@@ -86,12 +79,7 @@ _GENERATOR = RoleManifest(
 _EVALUATOR = RoleManifest(
     name="evaluator",
     description="Verifies the generator's output against the sprint contract.",
-    system_prompt=(
-        "You are the evaluator. Read code and artefacts, run verification via "
-        "bash yourself, and judge the contract. You may not modify source files "
-        "or spawn subagents. Produce a verification report with pass/fail per "
-        "acceptance criterion."
-    ),
+    system_prompt="",
     tools=_EVALUATOR_TOOLS,
     disallowed_tools=_EVALUATOR_DENIED,
     permission_mode="default",

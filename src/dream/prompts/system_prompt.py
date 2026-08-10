@@ -4,37 +4,71 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from importlib.resources import files
+from pathlib import Path
+
+_STANDING_ORDERS = files("dream.prompts").joinpath("standing_orders")
+_PHASE_CHAPTERS = frozenset({"planner", "generator", "evaluator"})
 
 
-def packaged_standing_orders() -> str:
-    """Return Dream's installed standing orders, never a workspace document."""
-    return files("dream.prompts").joinpath("standing_orders.md").read_text(encoding="utf-8").strip()
+def packaged_standing_orders(*, role: str | None = None) -> str:
+    """Return Dream's packaged standing orders (common + optional phase chapter)."""
+    common = _STANDING_ORDERS.joinpath("common.md").read_text(encoding="utf-8").strip()
+    chapter_name = (role or "").strip().lower()
+    if chapter_name not in _PHASE_CHAPTERS:
+        return common
+    chapter = _STANDING_ORDERS.joinpath(f"{chapter_name}.md").read_text(encoding="utf-8").strip()
+    return f"{common}\n\n{chapter}"
+
+
+def load_agents_md(working_dir: Path | None) -> str:
+    """Load employee/install identity: ``.harness/AGENTS.md`` then cwd ``AGENTS.md``."""
+    if working_dir is None:
+        return ""
+    root = working_dir.resolve()
+    for candidate in (root / ".harness" / "AGENTS.md", root / "AGENTS.md"):
+        if not candidate.is_file():
+            continue
+        text = candidate.read_text(encoding="utf-8").strip()
+        if text:
+            return text
+    return ""
 
 
 @dataclass(frozen=True)
 class StablePromptBlock:
-    """Prompt content that is identical across equivalent session turns."""
+    """Cache-stable standing orders; phase chapter selected by ``role``."""
+
+    role: str | None = None
 
     def render(self) -> str:
-        return _render_block("stable", packaged_standing_orders())
+        return _render_block("stable", packaged_standing_orders(role=self.role))
 
 
 @dataclass(frozen=True)
 class ContextPromptBlock:
-    """Workspace catalogues that ground a session without defining its role."""
+    """Workspace catalogues and AGENTS.md (install profile / employee brief)."""
 
     workspace_governance: str
     skill_catalogue: str
     memory_catalogue: str
+    agents_md: str = ""
 
     def render(self) -> str:
-        content = _join(self.workspace_governance, self.skill_catalogue, self.memory_catalogue)
+        agents = (
+            f"# AGENTS.md\n\n{self.agents_md.strip()}" if self.agents_md.strip() else ""
+        )
+        content = _join(
+            agents,
+            self.workspace_governance,
+            self.skill_catalogue,
+            self.memory_catalogue,
+        )
         return _render_block("context", content) if content else ""
 
 
 @dataclass(frozen=True)
 class RolePromptBlock:
-    """Caller-supplied role or task framing for the session."""
+    """Optional caller addendum. Phase identity lives in standing orders."""
 
     instructions: str | None
 
@@ -60,7 +94,9 @@ def assemble_session_system_prompt(
     role: RolePromptBlock,
 ) -> str:
     """Render the deterministic stable-first system-prompt sequence."""
-    return "\n\n".join(block for block in (stable.render(), context.render(), role.render()) if block)
+    return "\n\n".join(
+        block for block in (stable.render(), context.render(), role.render()) if block
+    )
 
 
 def _join(*parts: str | None) -> str:
@@ -77,5 +113,6 @@ __all__ = [
     "RuntimeContextBlock",
     "StablePromptBlock",
     "assemble_session_system_prompt",
+    "load_agents_md",
     "packaged_standing_orders",
 ]

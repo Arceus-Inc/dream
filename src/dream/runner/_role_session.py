@@ -121,17 +121,21 @@ def resolve_role_manifest(
 
 
 def _combine_system_prompts(manifest: RoleManifest, caller: str | None) -> str:
-    """Manifest prompt first, caller addendum second.
+    """Optional RolePromptBlock addendum (caller and/or non-empty overlay text).
 
-    ``system_prompt_mode`` is honoured by the role-aware engine factory
-    (it decides whether to drop its standing orders); here we just lay
-    the manifest text down before the per-call addendum so the
-    role-locked discipline always reaches the model.
+    Phase identity lives in packaged standing orders selected by
+    ``manifest.name``. Bundled defaults keep ``system_prompt`` empty; a
+    non-empty overlay/custom manifest prompt is treated as an addendum only.
+    Employee craft belongs in AGENTS.md (context tier).
     """
-    body = manifest.system_prompt
-    if caller:
-        return f"{body}\n\n{caller}"
-    return body
+    parts: list[str] = []
+    body = (manifest.system_prompt or "").strip()
+    if body:
+        parts.append(body)
+    addendum = (caller or "").strip()
+    if addendum:
+        parts.append(addendum)
+    return "\n\n".join(parts)
 
 
 async def run_role(

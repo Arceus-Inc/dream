@@ -523,22 +523,32 @@ async def test_intent_includes_verification_steps() -> None:
 
 
 async def test_intent_tells_the_evaluator_to_run_verify_via_bash() -> None:
-    """No harness oracle: the evaluator runs verification itself (Hermes/CC shape)."""
+    """Protocol lives in standing orders; user turn carries contract + schema."""
+    from dream.prompts.system_prompt import packaged_standing_orders
+
+    orders = packaged_standing_orders(role="evaluator").lower()
+    assert "bash" in orders
+    assert "verification" in orders
+    assert "oracle" not in orders
+
     harness, streamer = _harness_with_reply(_verdict())
     head = make_evaluator_head(harness)
 
     await head("task-001", 1, _contract(), _step())
 
     prompt = streamer.last_user_text.lower()
-    assert "bash" in prompt or "run" in prompt
-    assert "verification steps" in prompt or "discover" in prompt
-    assert "oracle" not in prompt
-    assert "run for you" not in prompt
-    assert "no shell" not in prompt
+    assert "step under review" in prompt
+    assert "verification steps" in prompt or "pytest" in prompt or "goal" in prompt
 
 
 async def test_intent_explains_json_verdict_contract() -> None:
-    """The model must know to emit a JSON verdict object."""
+    """User turn carries the JSON schema; outcome vocabulary is in standing orders."""
+    from dream.prompts.system_prompt import packaged_standing_orders
+
+    orders = packaged_standing_orders(role="evaluator")
+    assert "needs-changes" in orders
+    assert "fail" in orders
+
     harness, streamer = _harness_with_reply(_verdict())
     head = make_evaluator_head(harness)
 
@@ -548,8 +558,6 @@ async def test_intent_explains_json_verdict_contract() -> None:
     assert "JSON object" in prompt
     assert "<verdict>" not in prompt
     assert "pass" in prompt
-    assert "needs-changes" in prompt
-    assert "fail" in prompt
 
 
 async def test_evaluator_head_attaches_response_format() -> None:
@@ -568,31 +576,19 @@ async def test_evaluator_head_attaches_response_format() -> None:
 
 
 async def test_intent_teaches_durable_outcome_semantics() -> None:
-    """Outcome vocabulary alone is not enough — the model must know when
-    durable-``fail`` (blocks the step) vs ``needs-changes`` (repair) applies.
+    """Durable outcome semantics live in evaluator standing orders."""
+    from dream.prompts.system_prompt import packaged_standing_orders
 
-    First-principles harness contract: repairable red verification stays
-    ``needs-changes`` so the generator can continue; ``fail`` is only for
-    no honest in-tree repair path. No ticket-specific hardcoding.
-    """
-    harness, streamer = _harness_with_reply(_verdict())
-    head = make_evaluator_head(harness)
-
-    await head("task-001", 1, _contract(), _step())
-
-    prompt = streamer.last_user_text.lower()
+    prompt = packaged_standing_orders(role="evaluator").lower()
     assert "needs-changes" in prompt
     assert "fail" in prompt
-    # Repairable work stays in the loop.
     assert "repair" in prompt or "in-tree" in prompt or "generator can fix" in prompt
-    # Durable fail is reserved for non-repairable cases.
     assert (
         "no honest" in prompt
         or "no repair" in prompt
         or "irrecoverable" in prompt
         or "abandon" in prompt
     )
-    # Prefer needs-changes when concrete items exist.
     assert "prefer" in prompt and "needs-changes" in prompt
 
 

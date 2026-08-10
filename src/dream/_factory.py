@@ -51,6 +51,7 @@ from dream.prompts import (
     RuntimeContextBlock,
     StablePromptBlock,
     assemble_session_system_prompt,
+    load_agents_md,
 )
 from dream.prompts.environment import render_runtime_info
 from dream.roles import RoleManifest
@@ -532,22 +533,25 @@ def _assemble_system_prompt(
     catalogue: str,
     memory_catalogue: str,
     system_prompt: str | None,
+    role: str | None = None,
+    working_dir: Path | None = None,
 ) -> str:
     """Assemble the per-session system prompt from its ordered blocks.
 
-    Stable instructions come first, followed by workspace governance and
-    catalogues, then the caller's role prompt. Runtime and beat facts stay in
-    user-turn context.
+    Stable standing orders (common + phase chapter) come first, then context
+    (AGENTS.md, workspace governance, catalogues), then an optional caller
+    addendum. Runtime and beat facts stay in user-turn context.
     """
     workspace_governance = render_standing_orders(
         extract_standing_orders(paths.repo / "docs" / "design-docs" / "core-beliefs.md")
     )
     return assemble_session_system_prompt(
-        stable=StablePromptBlock(),
+        stable=StablePromptBlock(role=role),
         context=ContextPromptBlock(
             workspace_governance=workspace_governance,
             skill_catalogue=catalogue,
             memory_catalogue=memory_catalogue,
+            agents_md=load_agents_md(working_dir),
         ),
         role=RolePromptBlock(instructions=system_prompt),
     )
@@ -674,11 +678,14 @@ def _build_session_engine(
         if skill_registry is not None
         else None
     )
+    role_name = options.metadata.get(ROLE_NAME_METADATA_KEY)
     system_prompt = _assemble_system_prompt(
         paths=paths,
         catalogue=catalogue,
         memory_catalogue=memory_catalogue,
         system_prompt=options.system_prompt,
+        role=role_name if isinstance(role_name, str) else None,
+        working_dir=working_dir,
     )
     # Failover harvest + Spec-02 pool: every beat rides FailoverStreamer with a
     # CredentialPool (single env key by default; ``.harness/credentials.toml``

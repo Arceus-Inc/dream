@@ -60,7 +60,7 @@ _VERDICT_EXAMPLE = """\
 
 
 EVALUATOR_INSTRUCTION_TEMPLATE = (
-    "You are verifying sprint {sprint_number} of task {task_id}.\n"
+    "Verify sprint {sprint_number} of task {task_id}.\n"
     "\n"
     "{intent_block}"
     "{contract_block}\n"
@@ -69,48 +69,9 @@ EVALUATOR_INSTRUCTION_TEMPLATE = (
     "-----------------\n"
     "{step_id}: {step_description}\n"
     "\n"
-    "WHAT TO DO\n"
-    "----------\n"
-    "Read the changed files. You have bash: run verification yourself in this session.\n"
-    "- If VERIFICATION STEPS are listed above: run each command via bash.\n"
-    "- If none: discover this repo's test/build gate from manifests/lockfiles and run it\n"
-    "  (stack-agnostic — do not assume pytest or any one stack).\n"
-    "Judge every acceptance criterion and the REVIEW RUBRIC (if present) from the\n"
-    "artefacts you read AND the tool output you just produced. outcome=pass only when\n"
-    "those gates exited 0 (or the rubric honestly allows absence for report-only work).\n"
-    "Never invent green results. Do not modify source files.\n"
-    "\n"
-    "INTENT FIDELITY\n"
-    "---------------\n"
-    "TASK INTENT is the source of truth. Pass requires the deliverable to meet the\n"
-    "Intent as stated — not a weaker or narrower substitute that is easier to mark\n"
-    "done. Verification that only covers a reduced contract is still needs-changes\n"
-    "(or fail if there is no honest repair path).\n"
-    "\n"
-    "OUTCOME SEMANTICS (durable ledger — choose carefully)\n"
-    "----------------------------------------------------\n"
-    "- pass: every acceptance criterion and the rubric hold; verification exited 0;\n"
-    "  and the work matches TASK INTENT (no weakened substitute).\n"
-    "- needs-changes: verification is red OR criteria/Intent fidelity incomplete, AND\n"
-    "  you can list concrete items the generator can fix in-tree on the next sprint.\n"
-    "  Prefer needs-changes whenever useful repair items exist — that keeps the step\n"
-    "  in_progress so repair can continue.\n"
-    "- fail: no honest repair path (abandoned / impossible / wrong problem / unsafe\n"
-    "  to continue). fail durable-blocks the step; do not use it for ordinary red\n"
-    "  verification or missing criteria you can still describe as items.\n"
-    "\n"
-    "OUTPUT FORMAT\n"
-    "-------------\n"
-    "After tools finish, reply with ONE JSON object (no XML, no prose, no fences):\n"
+    "OUTPUT SCHEMA (reply with ONE JSON object after tools; no fences):\n"
     "\n"
     "{example}\n"
-    "\n"
-    "Requirements:\n"
-    '- "outcome" must be one of: pass, needs-changes, fail.\n'
-    '- "score" (0..1 float) is optional; defaults to 0.0.\n'
-    '- "notes" (string) is optional.\n'
-    '- "items" (list of strings) lists follow-ups the generator must address\n'
-    "  on the next sprint; required when outcome is needs-changes.\n"
 )
 
 

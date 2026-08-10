@@ -106,44 +106,24 @@ def _build_intent(
     step: LedgerStep,
     task_intent: str = "",
 ) -> str:
-    header = (
-        f"You are executing sprint {sprint_number} of task {task_id}.\n"
-    )
+    header = f"Execute sprint {sprint_number} of task {task_id}.\n"
     intent_block = _format_task_intent(task_intent)
 
     if contract is None:
-        # Evaluator disabled — no contract on disk, no second pair of eyes.
-        body = (
+        return (
             f"{header}\n"
             f"{intent_block}"
-            "The evaluator is disabled for this task; there is no automated\n"
-            "verifier to catch mistakes. Self-check thoroughly before stopping.\n"
+            "Evaluator disabled for this task.\n"
             "\n"
             f"{_format_step(step)}\n"
-            "\n"
-            "Make the smallest change that achieves the step's goal.\n"
         )
-        return body
 
-    closing = (
-        "Make the smallest change that satisfies the TASK INTENT, every acceptance "
-        "criterion"
-    )
-    if contract.rubric:
-        closing += ", and the REVIEW RUBRIC"
-    closing += (
-        ".\nRun the verification steps and confirm they pass before declaring\n"
-        "the step complete. Prefer fidelity to the TASK INTENT over a weaker\n"
-        "deliverable that merely looks finished.\n"
-    )
     return (
         f"{header}\n"
         f"{intent_block}"
         f"{_format_contract(contract)}\n"
         "\n"
         f"{_format_step(step)}\n"
-        "\n"
-        f"{closing}"
     )
 
 
