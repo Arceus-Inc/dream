@@ -45,19 +45,19 @@ def _set() -> SubagentSet:
 
 
 def test_spawn_type_names_includes_general_purpose_first() -> None:
-    assert spawn_type_names(_set()) == [GENERAL_PURPOSE, "reviewer"]
-    assert spawn_type_names(SubagentSet()) == [GENERAL_PURPOSE]
-    assert spawn_type_names(None) == [GENERAL_PURPOSE]
+    assert spawn_type_names(_set()) == (GENERAL_PURPOSE, "reviewer")
+    assert spawn_type_names(SubagentSet()) == (GENERAL_PURPOSE,)
+    assert spawn_type_names(None) == (GENERAL_PURPOSE,)
 
 
-def test_build_spawn_parameters_sets_enum() -> None:
+def test_build_spawn_parameters_sets_enum_only() -> None:
     base = SpawnSubagentTool().input_schema()
     patched = build_spawn_parameters(base, _set())
     prop = patched["properties"]["subagent_type"]
     assert prop["enum"] == [GENERAL_PURPOSE, "reviewer"]
-    assert "generalPurpose" in patched.get("description", prop.get("description", "")) or (
-        "generalPurpose" in prop["description"]
-    )
+    assert prop["description"] == "Name from Available subagents."
+    assert "WHEN TO USE" not in prop["description"]
+    assert "Reviews code" not in prop["description"]
     assert patched["$defs"]["SpawnTaskInput"]["properties"]["subagent_type"][
         "enum"
     ] == [GENERAL_PURPOSE, "reviewer"]

@@ -14,12 +14,22 @@ tool (read/write/run/lint/…)     spawn to wrap a single tool
 execute_code for multi-step I/O  sequential tools that only print
 skill(name=…) for craft steps    invent procedure a skill covers
 spawn_subagent(subagent_type=…)  spawn when tools+skills suffice
-  for enum specialist / GP       forge specialist evidence files
+  for a listed specialist / GP   forge specialist evidence files
 just implement yourself          durable across beats → TODO.md
 
 Rules: tool > execute_code > skill > spawn. Spawn only for a typed
-specialist artifact you cannot honestly author alone. Pick
-subagent_type from the tool enum; pass goal=.
+specialist artifact you cannot honestly author alone.
+
+## Spawn usage
+
+When Available subagents is present in context:
+
+- Call `spawn_subagent` with `subagent_type` equal to a listed name
+  (`generalPurpose` or a specialist) and a self-contained `goal`.
+- Optional `context` packs inlet facts; the child does not see parent history.
+- The parent receives only the child's summary — not intermediate tool I/O.
+- Prefer a specialist when the catalogue description matches; use
+  `generalPurpose` for ad-hoc fresh-context work.
 
 ## Cross-beat continuity
 

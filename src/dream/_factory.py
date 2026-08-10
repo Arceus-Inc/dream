@@ -70,6 +70,7 @@ from dream.skills import (
     render_skill_catalogue,
 )
 from dream.subagents._async_delegation import AsyncDelegationManager
+from dream.subagents._catalogue import SubagentCatalogue
 from dream.subagents._declaration import SubagentSet
 from dream.tasks import (
     TASK_CONTEXT_KEY,
@@ -535,6 +536,7 @@ def _assemble_system_prompt(
     role: str | None = None,
     working_dir: Path | None = None,
     system_prompt_mode: str = "default",
+    subagent_catalogue: str = "",
 ) -> str:
     """Assemble the per-session system prompt from its ordered blocks.
 
@@ -556,6 +558,7 @@ def _assemble_system_prompt(
             skill_catalogue=catalogue,
             memory_catalogue=memory_catalogue,
             agents_md=load_agents_md(working_dir),
+            subagent_catalogue=subagent_catalogue,
         ),
         role_instructions=system_prompt,
     )
@@ -645,10 +648,11 @@ def _build_session_engine(
         role_allowed = compute_session_role_allowlist(
             tool_registry, paths=paths, cwd=working_dir, manifest=manifest
         )
-    # Effective set for schema enum (depth-2 children may inherit a scoped set).
-    _schema_set = options.metadata.get("dream.subagent_set")
-    if _schema_set is None:
-        _schema_set = subagents
+    # Effective set for schema enum + catalogue (depth-2 children may inherit a scoped set).
+    inherited = options.metadata.get("dream.subagent_set")
+    effective_subagents: SubagentSet | None = (
+        inherited if isinstance(inherited, SubagentSet) else subagents
+    )
     tools_wire: list[dict[str, Any]] = []
     for t in tools:
         if not _tool_advertised_to_model(name=t.name, role_allowed=role_allowed):
@@ -657,7 +661,7 @@ def _build_session_engine(
         if t.name == "spawn_subagent":
             from dream.tools.builtin.spawn_subagent import build_spawn_parameters
 
-            params = build_spawn_parameters(params, _schema_set)
+            params = build_spawn_parameters(params, effective_subagents)
         tools_wire.append(
             {
                 "type": "function",
@@ -686,6 +690,7 @@ def _build_session_engine(
     prompt_mode = "default"
     if isinstance(manifest, RoleManifest):
         prompt_mode = manifest.system_prompt_mode
+    subagent_catalogue = SubagentCatalogue.for_set(effective_subagents)
     system_prompt = _assemble_system_prompt(
         paths=paths,
         catalogue=catalogue,
@@ -694,6 +699,9 @@ def _build_session_engine(
         role=role_name if isinstance(role_name, str) else None,
         working_dir=working_dir,
         system_prompt_mode=prompt_mode,
+        subagent_catalogue=(
+            subagent_catalogue.render() if subagent_catalogue is not None else ""
+        ),
     )
     # Failover harvest + Spec-02 pool: every beat rides FailoverStreamer with a
     # CredentialPool (single env key by default; ``.harness/credentials.toml``
@@ -798,7 +806,9 @@ def _build_session_engine(
         context_metadata[OBSERVER_KEY] = options.metadata[OBSERVER_KEY]
 
     inherited_set = options.metadata.get(SUBAGENT_SET_CONTEXT_KEY)
-    effective_subagents = inherited_set if inherited_set is not None else subagents
+    effective_subagents = (
+        inherited_set if isinstance(inherited_set, SubagentSet) else subagents
+    )
     # Wire even when empty so generalPurpose can run without Spec templates.
     if effective_subagents is not None:
         context_metadata[SUBAGENT_SET_CONTEXT_KEY] = effective_subagents

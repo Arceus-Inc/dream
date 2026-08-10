@@ -59,6 +59,7 @@ class ContextPromptBlock:
     skill_catalogue: str
     memory_catalogue: str
     agents_md: str = ""
+    subagent_catalogue: str = ""
 
     def render(self) -> str:
         agents = (
@@ -69,6 +70,7 @@ class ContextPromptBlock:
             self.workspace_governance,
             self.skill_catalogue,
             self.memory_catalogue,
+            self.subagent_catalogue,
         )
         return _render_block("context", content) if content else ""
 
