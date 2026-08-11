@@ -129,6 +129,45 @@ def test_memory_can_be_disabled(tmp_path: Path) -> None:
     assert "naming-convention" not in prompt
 
 
+def test_runtime_info_is_first_user_context_not_system_prompt(tmp_path: Path) -> None:
+    harness = _build(tmp_path)
+    engine = harness.config._engine_factory("s_probe", SessionOptions())  # type: ignore[misc]
+    initial_context = engine.make_session_config().initial_context
+
+    assert "Runtime environment" not in _system_prompt(harness)
+    assert initial_context is not None
+    assert "Runtime environment" in initial_context
+
+
+def test_workspace_governance_is_reextracted_for_each_fresh_session(tmp_path: Path) -> None:
+    harness = _build(tmp_path)
+    beliefs = tmp_path / "wt" / "docs" / "design-docs" / "core-beliefs.md"
+    beliefs.parent.mkdir(parents=True)
+    beliefs.write_text("## Standing orders\n- first local rule\n", encoding="utf-8")
+
+    first = _system_prompt(harness)
+    beliefs.write_text("## Standing orders\n- second local rule\n", encoding="utf-8")
+    second = _system_prompt(harness)
+
+    assert "first local rule" in first
+    assert "first local rule" not in second
+    assert "second local rule" in second
+    assert first.split("</stable>", maxsplit=1)[0] == second.split("</stable>", maxsplit=1)[0]
+
+
+@pytest.mark.parametrize("unreadable", [False, True])
+def test_packaged_standing_orders_survive_missing_workspace_beliefs(
+    tmp_path: Path, unreadable: bool
+) -> None:
+    beliefs = tmp_path / "wt" / "docs" / "design-docs" / "core-beliefs.md"
+    if unreadable:
+        beliefs.mkdir(parents=True)
+
+    prompt = _system_prompt(_build(tmp_path))
+
+    assert "# Dream standing orders" in prompt
+
+
 def test_memory_tools_registered_when_memory_enabled(tmp_path: Path) -> None:
     from dream.tools.builtin import default_registry
 

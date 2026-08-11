@@ -4,9 +4,8 @@ Docker is the default execution backend; this adapter is selected when
 operators set ``backend = "subprocess"`` in ``.harness/sandbox.toml``, or
 when Docker is unavailable and ``fail_if_unavailable`` is false (soft
 degrade). Commands run as the harness user in the working directory, with
-an explicit environment when one is given. Process-tree discipline matches
-``dream.verification._runner``: each command gets its own session so a
-timeout kills the whole tree, not just the shell.
+an explicit environment when one is given. Each command gets its own
+process session so a timeout kills the whole tree, not just the shell.
 """
 
 from __future__ import annotations

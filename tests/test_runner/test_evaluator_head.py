@@ -6,10 +6,9 @@ sends a verification intent built from the sprint contract + step, and
 parses the model's verdict into an :class:`EvaluationRecord`.
 
 Like the planner head (G3) and unlike the generator head (G4), the
-evaluator head DOES parse output — the verdict is the artefact. We pin
-a strict ``<verdict>{JSON}</verdict>`` envelope, tolerate a ```json
-fence and surrounding prose, and raise :class:`EvaluatorHeadParseError`
-on a malformed reply.
+evaluator head DOES parse output — the verdict is the artefact. Replies
+must be bare JSON matching the verdict schema (``response_format``
+strict); malformed replies raise :class:`EvaluatorHeadParseError`.
 
 Unlike the generator head, ``contract`` is always present here:
 ``run_task`` skips the evaluator entirely when the contract is
@@ -81,10 +80,6 @@ def _verdict(
     score: float = 0.0,
     notes: str = "",
     items: list[str] | None = None,
-    fence: bool = False,
-    prose_before: str = "",
-    prose_after: str = "",
-    tag: str = "verdict",
 ) -> str:
     # Strict wire contract: every EvaluatorVerdict property must be present.
     body: dict[str, object] = {
@@ -93,10 +88,7 @@ def _verdict(
         "notes": notes,
         "items": list(items) if items is not None else [],
     }
-    inner = json.dumps(body)
-    if fence:
-        inner = f"```json\n{inner}\n```"
-    return f"{prose_before}<{tag}>{inner}</{tag}>{prose_after}"
+    return json.dumps(body)
 
 
 def _harness_with_reply(
@@ -146,9 +138,7 @@ def _contract(
         "widget renders",
         "widget passes axe",
     ),
-    # Empty by default: these head tests pin parsing/prompt behaviour. A
-    # non-empty default would make the spec-15 oracle execute the commands
-    # for real in every test (see test_oracle.py for that behaviour).
+    # Empty by default: these head tests pin parsing/prompt behaviour.
     verification_steps: tuple[dict[str, str], ...] = (),
     scope_includes: tuple[str, ...] = ("src/widget/",),
     scope_excludes: tuple[str, ...] = ("src/legacy/",),
@@ -336,47 +326,11 @@ async def test_custom_evaluator_version_round_trips() -> None:
 # --------------------------------------------------------------------------
 # Envelope tolerance
 # --------------------------------------------------------------------------
-
-
-async def test_parser_tolerates_prose_around_envelope() -> None:
-    harness, _ = _harness_with_reply(
-        _verdict(
-            outcome="pass",
-            prose_before="Here is my verdict:\n\n",
-            prose_after="\n\nLet me know if you need more detail.",
-        )
-    )
-    head = make_evaluator_head(harness)
-
-    rec = await head("task-001", 1, _contract(), _step())
-
-    assert rec.outcome == "pass"
-
-
-async def test_parser_tolerates_json_fence_inside_envelope() -> None:
-    harness, _ = _harness_with_reply(_verdict(outcome="fail", fence=True))
-    head = make_evaluator_head(harness)
-
-    rec = await head("task-001", 1, _contract(), _step())
-
-    assert rec.outcome == "fail"
-
-
-async def test_parser_tag_is_case_insensitive() -> None:
-    harness, _ = _harness_with_reply(_verdict(outcome="pass", tag="VERDICT"))
-    head = make_evaluator_head(harness)
-
-    rec = await head("task-001", 1, _contract(), _step())
-
-    assert rec.outcome == "pass"
-
-
-# --------------------------------------------------------------------------
 # Parse failures
 # --------------------------------------------------------------------------
 
 
-async def test_missing_verdict_envelope_raises_parse_error() -> None:
+async def test_non_json_reply_raises_parse_error() -> None:
     harness, _ = _harness_with_reply("I think it's fine, looks good!")
     head = make_evaluator_head(harness)
 
@@ -384,8 +338,7 @@ async def test_missing_verdict_envelope_raises_parse_error() -> None:
         await head("task-001", 1, _contract(), _step())
 
 
-async def test_parses_bare_json_without_verdict_wrapper() -> None:
-    # the typed JSON verdict is accepted even without the <verdict>...</verdict> wrapper
+async def test_parses_bare_json_verdict() -> None:
     harness, _ = _harness_with_reply(
         '{"outcome": "pass", "score": 0.9, "notes": "looks good", "items": []}'
     )
@@ -396,41 +349,8 @@ async def test_parses_bare_json_without_verdict_wrapper() -> None:
     assert rec.notes == "looks good"
 
 
-async def test_parses_fenced_json_without_verdict_wrapper() -> None:
-    harness, _ = _harness_with_reply(
-        '```json\n'
-        '{"outcome": "needs-changes", "score": 0.0, "notes": "", "items": ["fix x"]}\n'
-        "```"
-    )
-    head = make_evaluator_head(harness)
-
-    rec = await head("task-001", 1, _contract(), _step())
-    assert rec.outcome == "needs-changes"
-    assert rec.items == ("fix x",)
-
-
-async def test_parses_json_embedded_in_prose_without_wrapper() -> None:
-    harness, _ = _harness_with_reply(
-        "Here is my verdict:\n"
-        '{"outcome": "fail", "score": 0.0, "notes": "broken", "items": []}\n'
-        "Thanks."
-    )
-    head = make_evaluator_head(harness)
-
-    rec = await head("task-001", 1, _contract(), _step())
-    assert rec.outcome == "fail"
-
-
-async def test_invalid_json_inside_envelope_raises_parse_error() -> None:
-    harness, _ = _harness_with_reply("<verdict>not-json-at-all</verdict>")
-    head = make_evaluator_head(harness)
-
-    with pytest.raises(EvaluatorHeadParseError):
-        await head("task-001", 1, _contract(), _step())
-
-
 async def test_missing_outcome_key_raises_parse_error() -> None:
-    harness, _ = _harness_with_reply('<verdict>{"score": 0.9}</verdict>')
+    harness, _ = _harness_with_reply('{"score": 0.9, "notes": "", "items": []}')
     head = make_evaluator_head(harness)
 
     with pytest.raises(EvaluatorHeadParseError):
@@ -443,6 +363,8 @@ async def test_invalid_outcome_value_raises_parse_error() -> None:
 
     with pytest.raises(EvaluatorHeadParseError):
         await head("task-001", 1, _contract(), _step())
+
+
 
 
 # --------------------------------------------------------------------------
@@ -522,23 +444,49 @@ async def test_intent_includes_verification_steps() -> None:
     assert "axe http://localhost" in prompt
 
 
+async def test_head_does_not_execute_verification_steps() -> None:
+    """verification_steps are prompt data; the session runs them via bash."""
+    harness, streamer = _harness_with_reply(_verdict(outcome="pass"))
+    head = make_evaluator_head(harness)
+
+    record = await head(
+        "task-001",
+        1,
+        _contract(verification_steps=({"kind": "test", "command": "exit 1"},)),
+        _step(),
+    )
+
+    assert record.outcome == "pass"
+    assert "exit 1" in streamer.last_user_text
+
+
 async def test_intent_tells_the_evaluator_to_run_verify_via_bash() -> None:
-    """No harness oracle: the evaluator runs verification itself (Hermes/CC shape)."""
+    """Protocol lives in standing orders; user turn carries contract + schema."""
+    from dream.prompts.system_prompt import packaged_standing_orders
+
+    orders = packaged_standing_orders(role="evaluator").lower()
+    assert "bash" in orders
+    assert "verification" in orders
+    assert "oracle" not in orders
+
     harness, streamer = _harness_with_reply(_verdict())
     head = make_evaluator_head(harness)
 
     await head("task-001", 1, _contract(), _step())
 
     prompt = streamer.last_user_text.lower()
-    assert "bash" in prompt or "run" in prompt
-    assert "verification steps" in prompt or "discover" in prompt
-    assert "oracle" not in prompt
-    assert "run for you" not in prompt
-    assert "no shell" not in prompt
+    assert "step under review" in prompt
+    assert "verification steps" in prompt or "pytest" in prompt or "goal" in prompt
 
 
 async def test_intent_explains_json_verdict_contract() -> None:
-    """The model must know to emit a JSON verdict object."""
+    """User turn carries the JSON schema; outcome vocabulary is in standing orders."""
+    from dream.prompts.system_prompt import packaged_standing_orders
+
+    orders = packaged_standing_orders(role="evaluator")
+    assert "needs-changes" in orders
+    assert "fail" in orders
+
     harness, streamer = _harness_with_reply(_verdict())
     head = make_evaluator_head(harness)
 
@@ -548,8 +496,6 @@ async def test_intent_explains_json_verdict_contract() -> None:
     assert "JSON object" in prompt
     assert "<verdict>" not in prompt
     assert "pass" in prompt
-    assert "needs-changes" in prompt
-    assert "fail" in prompt
 
 
 async def test_evaluator_head_attaches_response_format() -> None:
@@ -568,39 +514,26 @@ async def test_evaluator_head_attaches_response_format() -> None:
 
 
 async def test_intent_teaches_durable_outcome_semantics() -> None:
-    """Outcome vocabulary alone is not enough — the model must know when
-    durable-``fail`` (blocks the step) vs ``needs-changes`` (repair) applies.
+    """Durable outcome semantics live in evaluator standing orders."""
+    from dream.prompts.system_prompt import packaged_standing_orders
 
-    First-principles harness contract: repairable red verification stays
-    ``needs-changes`` so the generator can continue; ``fail`` is only for
-    no honest in-tree repair path. No ticket-specific hardcoding.
-    """
-    harness, streamer = _harness_with_reply(_verdict())
-    head = make_evaluator_head(harness)
-
-    await head("task-001", 1, _contract(), _step())
-
-    prompt = streamer.last_user_text.lower()
+    prompt = packaged_standing_orders(role="evaluator").lower()
     assert "needs-changes" in prompt
     assert "fail" in prompt
-    # Repairable work stays in the loop.
     assert "repair" in prompt or "in-tree" in prompt or "generator can fix" in prompt
-    # Durable fail is reserved for non-repairable cases.
     assert (
         "no honest" in prompt
         or "no repair" in prompt
         or "irrecoverable" in prompt
         or "abandon" in prompt
     )
-    # Prefer needs-changes when concrete items exist.
     assert "prefer" in prompt and "needs-changes" in prompt
 
 
 async def test_intent_rejects_weaker_substitute_than_task_intent() -> None:
-    """Done-looking work that weakens the Intent is not pass.
+    """User turn embeds Intent as data; fidelity coaching lives in standing orders."""
+    from dream.prompts.system_prompt import packaged_standing_orders
 
-    Embed the task Intent and require fidelity to it (domain-agnostic).
-    """
     harness, streamer = _harness_with_reply(_verdict())
     head = make_evaluator_head(
         harness,
@@ -609,14 +542,13 @@ async def test_intent_rejects_weaker_substitute_than_task_intent() -> None:
 
     await head("task-001", 1, _contract(), _step())
 
-    prompt = streamer.last_user_text.lower()
-    assert "audience, offer, and a single cta" in prompt or "task intent" in prompt
-    assert (
-        "weaker" in prompt
-        or "weaken" in prompt
-        or "fidelity" in prompt
-        or "source of truth" in prompt
-    )
+    prompt = streamer.last_user_text
+    assert "TASK INTENT" in prompt
+    assert "audience, offer, and a single CTA" in prompt
+    assert "weaker" not in prompt.lower()
+    assert "source of truth" not in prompt.lower()
+    orders = packaged_standing_orders(role="evaluator").lower()
+    assert "intent" in orders and ("weaker" in orders or "fidelity" in orders)
 
 
 # --------------------------------------------------------------------------

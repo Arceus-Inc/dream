@@ -216,9 +216,13 @@ async def test_planner_emits_exactly_one_run_completed_event(tmp_path: Path) -> 
         worktree_root=tmp_path,
         planner=_stub_planner,
     )
-    completed = [e for e in result.events if e["type"] == "planner.run.completed"]
+    completed = [
+        e
+        for e in result.events
+        if (e.type) == "planner.run.completed"
+    ]
     assert len(completed) == 1
-    assert completed[0]["task_id"] == "abc-1"
+    assert completed[0].task_id == "abc-1"
 
 
 async def test_planner_emits_handoff_to_generator_with_both_pointers(
@@ -236,14 +240,18 @@ async def test_planner_emits_handoff_to_generator_with_both_pointers(
         worktree_root=tmp_path,
         planner=_stub_planner,
     )
-    handoffs = [e for e in result.events if e["type"] == "handoff.planner_to_generator"]
+    handoffs = [
+        e
+        for e in result.events
+        if (e.type) == "handoff.planner_to_generator"
+    ]
     assert len(handoffs) == 1
     h = handoffs[0]
-    assert h["from_role"] == "planner"
-    assert h["to_role"] == "generator"
-    kinds = {a["kind"] for a in h["artefacts"]}
+    assert h.from_role == "planner"
+    assert h.to_role == "generator"
+    kinds = {a.kind for a in h.artefacts}
     assert kinds == {"spec", "ledger"}
-    paths = {a["path"] for a in h["artefacts"] if "path" in a}
+    paths = {a.path for a in h.artefacts if a.path is not None}
     spec_rel = planner_spec_path(tmp_path, "abc-1").relative_to(tmp_path).as_posix()
     ledger_rel = planner_ledger_path(tmp_path, "abc-1").relative_to(tmp_path).as_posix()
     assert paths == {spec_rel, ledger_rel}
@@ -261,7 +269,7 @@ async def test_planner_emits_completed_before_handoff(tmp_path: Path) -> None:
         worktree_root=tmp_path,
         planner=_stub_planner,
     )
-    types = [e["type"] for e in result.events]
+    types = [e.type for e in result.events]
     assert types == ["planner.run.completed", "handoff.planner_to_generator"]
 
 

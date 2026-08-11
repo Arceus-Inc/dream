@@ -23,14 +23,14 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Literal
 
 from dream.planner._artefacts import (
     PlannerLedger,
     planner_ledger_path,
     planner_spec_path,
 )
-from dream.swarm._handoff import HandoffArtefact, handoff_event
+from dream.swarm._handoff import HandoffArtefact, HandoffEvent, handoff_event
 from dream.utils.file_lock import exclusive_file_lock
 from dream.utils.fs import atomic_write_text
 from dream.utils.identifiers import checked_task_id as _checked_task_id
@@ -40,8 +40,24 @@ __all__ = [
     "PlannerCallable",
     "PlannerOutput",
     "PlannerResult",
+    "PlannerRunCompleted",
+    "PlannerStreamEvent",
     "run_planner",
 ]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PlannerRunCompleted:
+    """Stream payload emitted after planner artefacts are committed."""
+
+    type: Literal["planner.run.completed"] = "planner.run.completed"
+    ts: str
+    task_id: str
+    spec_path: str
+    ledger_path: str
+
+
+PlannerStreamEvent = PlannerRunCompleted | HandoffEvent
 
 
 @dataclass(frozen=True)
@@ -67,7 +83,7 @@ class PlannerResult:
     task_id: str
     spec_path: Path
     ledger_path: Path
-    events: tuple[dict[str, Any], ...]
+    events: tuple[PlannerStreamEvent, ...]
 
 
 class PlannerAlreadyRan(RuntimeError):
@@ -150,15 +166,14 @@ async def _write_artefacts(
 
 def _build_events(
     task_id: str, *, spec_rel: str, ledger_rel: str
-) -> tuple[dict[str, Any], ...]:
+) -> tuple[PlannerStreamEvent, ...]:
     """The ordered stream payloads: ``planner.run.completed`` then handoff."""
-    completed = {
-        "type": "planner.run.completed",
-        "ts": _now_iso(),
-        "task_id": task_id,
-        "spec_path": spec_rel,
-        "ledger_path": ledger_rel,
-    }
+    completed = PlannerRunCompleted(
+        ts=_now_iso(),
+        task_id=task_id,
+        spec_path=spec_rel,
+        ledger_path=ledger_rel,
+    )
     handoff = handoff_event(
         from_role="planner",
         to_role="generator",

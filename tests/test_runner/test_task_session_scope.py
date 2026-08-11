@@ -19,7 +19,7 @@ from dream.harness import Harness, HarnessConfig
 from dream.planner import LedgerStep
 from dream.roles import RoleName
 from dream.runner import RunRoleResult, make_generator_head
-from dream.runner._role_session import role_session_id
+from dream.runner.role import role_session_id
 from dream.session import SessionCost, SessionOptions
 
 HEAD_FACTORIES = (
@@ -98,7 +98,7 @@ async def test_run_task_hands_the_scope_to_every_autowired_head(
 
         return factory
 
-    monkeypatch.setattr("dream.runner._run.run_task", _fake_run_task)
+    monkeypatch.setattr("dream.runner.task.run_task", _fake_run_task)
     for name in HEAD_FACTORIES:
         monkeypatch.setattr(f"dream.runner.{name}", _sentinel(name))
 
@@ -125,7 +125,7 @@ async def test_run_task_leaves_heads_unscoped_by_default(
 
         return factory
 
-    monkeypatch.setattr("dream.runner._run.run_task", _fake_run_task)
+    monkeypatch.setattr("dream.runner.task.run_task", _fake_run_task)
     for name in HEAD_FACTORIES:
         monkeypatch.setattr(f"dream.runner.{name}", _sentinel(name))
 

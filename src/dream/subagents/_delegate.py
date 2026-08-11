@@ -17,7 +17,7 @@ from dream.utils.fs import atomic_write_text
 
 if TYPE_CHECKING:
     from dream.harness import Harness
-    from dream.runner._observer import RunTaskObserver
+    from dream.runner.events import RunTaskObserver
     from dream.subagents._declaration import Subagent
 
 __all__ = [

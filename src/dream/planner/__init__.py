@@ -27,6 +27,8 @@ from dream.planner._run import (
     PlannerCallable,
     PlannerOutput,
     PlannerResult,
+    PlannerRunCompleted,
+    PlannerStreamEvent,
     run_planner,
 )
 
@@ -37,6 +39,8 @@ __all__ = [
     "PlannerLedger",
     "PlannerOutput",
     "PlannerResult",
+    "PlannerRunCompleted",
+    "PlannerStreamEvent",
     "StepStatus",
     "planner_ledger_path",
     "planner_spec_path",

@@ -27,8 +27,9 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
+from dream.engine._cost import UsageSnapshot
 from dream.errors import SessionResumeError
 from dream.events import Error, Event, TextDelta, ToolUseResult, ToolUseStart
 from dream.roles import (
@@ -37,7 +38,16 @@ from dream.roles import (
     default_role_manifest,
     load_role_manifest,
 )
-from dream.runner._observer import RunTaskObserver
+from dream.runner.events import (
+    RoleError,
+    RoleSessionClosed,
+    RoleSessionOpened,
+    RoleText,
+    RoleToolResult,
+    RoleToolStart,
+    RunTaskEvent,
+    RunTaskObserver,
+)
 from dream.services.session_store import SessionHandle, checked_session_id
 from dream.session import Session, SessionCost, SessionOptions
 
@@ -121,17 +131,21 @@ def resolve_role_manifest(
 
 
 def _combine_system_prompts(manifest: RoleManifest, caller: str | None) -> str:
-    """Manifest prompt first, caller addendum second.
+    """Optional RolePromptBlock addendum (caller and/or non-empty overlay text).
 
-    ``system_prompt_mode`` is honoured by the role-aware engine factory
-    (it decides whether to drop its standing orders); here we just lay
-    the manifest text down before the per-call addendum so the
-    role-locked discipline always reaches the model.
+    Phase identity lives in packaged standing orders selected by
+    ``manifest.name``. Bundled defaults keep ``system_prompt`` empty; a
+    non-empty overlay/custom manifest prompt is treated as an addendum only.
+    Employee craft belongs in AGENTS.md (context tier).
     """
-    body = manifest.system_prompt
-    if caller:
-        return f"{body}\n\n{caller}"
-    return body
+    parts: list[str] = []
+    body = (manifest.system_prompt or "").strip()
+    if body:
+        parts.append(body)
+    addendum = (caller or "").strip()
+    if addendum:
+        parts.append(addendum)
+    return "\n\n".join(parts)
 
 
 async def run_role(
@@ -201,17 +215,11 @@ async def run_role(
 
     role_label = str(manifest.name)
 
-    def _emit(event: dict[str, Any]) -> None:
+    def _emit(event: RunTaskEvent) -> None:
         if observer is not None:
             observer.on_event(event)
 
-    _emit(
-        {
-            "kind": "role.session.opened",
-            "role": role_label,
-            "session_id": session.id,
-        }
-    )
+    _emit(RoleSessionOpened(role=role_label, session_id=session.id))
 
     text_chunks: list[str] = []
     captured: list[Event] = []
@@ -222,55 +230,45 @@ async def run_role(
             captured.append(ev)
             if isinstance(ev, TextDelta):
                 text_chunks.append(ev.text)
-                _emit({"kind": "role.text", "role": role_label, "text": ev.text})
+                _emit(RoleText(role=role_label, text=ev.text))
             elif isinstance(ev, ToolUseStart):
                 _emit(
-                    {
-                        "kind": "role.tool.start",
-                        "role": role_label,
-                        "tool": ev.name,
-                        "input": dict(ev.input),
-                    }
+                    RoleToolStart(
+                        role=role_label,
+                        tool=ev.name,
+                        input=dict(ev.input),
+                    )
                 )
             elif isinstance(ev, ToolUseResult):
                 _emit(
-                    {
-                        "kind": "role.tool.result",
-                        "role": role_label,
-                        "tool": ev.name,
-                        "is_error": ev.is_error,
-                        "content": ev.content,
-                        "content_preview": ev.content[:240],
-                    }
+                    RoleToolResult(
+                        role=role_label,
+                        tool=ev.name,
+                        is_error=ev.is_error,
+                        content=ev.content,
+                    )
                 )
             # First error wins; the engine may surface a follow-up
             # ``TurnComplete`` with empty blocks but the diagnosis
             # belongs to the first failure.
             elif isinstance(ev, Error) and error is None:
                 error = ev
-                _emit(
-                    {
-                        "kind": "role.error",
-                        "role": role_label,
-                        "message": ev.message,
-                    }
-                )
+                _emit(RoleError(role=role_label, message=ev.message))
     finally:
         await session.close()
         _emit(
-            {
-                "kind": "role.session.closed",
-                "role": role_label,
-                "session_id": session.id,
-                "model": session.model,
-                "usage": {
-                    "input_tokens": session.cost.input_tokens,
-                    "output_tokens": session.cost.output_tokens,
-                    "cache_read_tokens": session.cost.cache_read_tokens,
-                    "cache_write_tokens": session.cost.cache_write_tokens,
-                },
-                "cost_usd": session.cost.cost_usd,
-            }
+            RoleSessionClosed(
+                role=role_label,
+                session_id=session.id,
+                model=session.model,
+                usage=UsageSnapshot(
+                    input_tokens=session.cost.input_tokens,
+                    output_tokens=session.cost.output_tokens,
+                    cache_read_tokens=session.cost.cache_read_tokens,
+                    cache_write_tokens=session.cost.cache_write_tokens,
+                ),
+                cost_usd=session.cost.cost_usd,
+            )
         )
 
     # Persist before the error check: a session that errored mid-stream still

@@ -24,7 +24,7 @@ from dream.subagents._projection import SubagentResult, intersect_tools
 
 if TYPE_CHECKING:
     from dream.harness import Harness
-    from dream.runner._observer import RunTaskObserver
+    from dream.runner.events import RunTaskObserver
 
 
 SUBAGENT_NAME_METADATA_KEY = "dream.subagent_name"

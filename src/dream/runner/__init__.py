@@ -37,27 +37,28 @@ or a remote backend.
 
 from __future__ import annotations
 
-from dream.runner._evaluator_head import (
+from dream.runner.envelopes import make_generator_head
+from dream.runner.evaluator import (
     EvaluatorHeadParseError,
     make_evaluator_head,
 )
-from dream.runner._generator_head import make_generator_head
-from dream.runner._observer import RunTaskObserver, StdioObserver
-from dream.runner._plan_admission import PlanAdmission
-from dream.runner._planner_head import (
+from dream.runner.events import RunTaskObserver
+from dream.runner.observe import StdioObserver, UsageMeter
+from dream.runner.planner import (
     PlannerHeadParseError,
     make_planner_head,
 )
-from dream.runner._role_session import (
+from dream.runner.role import (
     RoleSessionError,
     RunRoleResult,
     resolve_role_manifest,
     role_session_id,
     run_role,
 )
-from dream.runner._run import (
+from dream.runner.task import (
     EvaluatorRun,
     GeneratorExecute,
+    PlanAdmission,
     RunTaskResult,
     SprintGoalProvider,
     SprintRunResult,
@@ -77,6 +78,7 @@ __all__ = [
     "SprintGoalProvider",
     "SprintRunResult",
     "StdioObserver",
+    "UsageMeter",
     "make_evaluator_head",
     "make_generator_head",
     "make_planner_head",

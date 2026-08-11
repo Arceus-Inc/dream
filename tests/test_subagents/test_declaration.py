@@ -90,14 +90,14 @@ class TestSubagentSet:
         assert s.get("unknown") is None
         assert sorted(s.names()) == ["researcher", "reviewer"]
 
-    def test_descriptions(self) -> None:
+    def test_iterates_agents(self) -> None:
         agents = {
             "reviewer": Subagent(
                 name="reviewer", description="Code reviewer", tools=("read_file",)
             ),
         }
         s = SubagentSet(agents=agents)
-        assert s.descriptions() == {"reviewer": "Code reviewer"}
+        assert [agent.name for agent in s] == ["reviewer"]
 
 
 class TestSpawnable:

@@ -177,7 +177,7 @@ class _FailingHarness:
         self.calls = 0
 
     async def run_role(self, manifest: Any, intent: str, *, options: Any = None) -> _FakeResult:
-        from dream.runner._role_session import RoleSessionError
+        from dream.runner.role import RoleSessionError
 
         self.calls += 1
         raise RoleSessionError("repair session blew up")

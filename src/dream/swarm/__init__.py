@@ -5,7 +5,7 @@ the deleted always-on runtime; subagents execute via
 :mod:`dream.subagents._inline_executor` + the ``spawn_subagent`` tool.
 """
 
-from dream.swarm._handoff import HandoffArtefact, handoff_event
+from dream.swarm._handoff import HandoffArtefact, HandoffEvent, handoff_event
 from dream.swarm._spawn import (
     MAX_SUBAGENT_DEPTH,
     BackendType,
@@ -21,6 +21,7 @@ __all__ = [
     "BackendType",
     "BridgeDisabled",
     "HandoffArtefact",
+    "HandoffEvent",
     "SpawnResult",
     "SubagentTaskType",
     "TeammateExecutor",

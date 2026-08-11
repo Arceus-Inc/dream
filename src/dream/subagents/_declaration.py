@@ -9,7 +9,7 @@ The declaring application owns role policy; Dream only executes the typed shape.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -24,6 +24,14 @@ MAX_SUBAGENT_DEPTH = 2
 declared ``spawnable`` children; at the cap it is always a leaf. V1 was flat (1); depth-2 lets a
 Tier-1 specialist spawn a Tier-2 orchestrator, bounded by construction."""
 
+GENERAL_PURPOSE_NAME = "generalPurpose"
+"""Built-in ad-hoc worker type always offered when spawn is enabled."""
+
+GENERAL_PURPOSE_DESCRIPTION = (
+    "Ad-hoc delegated worker. Fresh context; returns a summary. "
+    "Use for reasoning-heavy subtasks that would flood the parent."
+)
+
 
 @dataclass(frozen=True)
 class Subagent:
@@ -37,7 +45,7 @@ class Subagent:
     """Sanitized identifier — 'reviewer', 'query_orchestrator', etc."""
 
     description: str
-    """What it's for (used in the spawn tool's schema for model discovery)."""
+    """One-line discovery copy for :class:`SubagentCatalogue`."""
 
     tools: tuple[str, ...]
     """Capability-minimized allow-list — must be a subset of the parent's tools."""
@@ -160,9 +168,8 @@ class SubagentSet:
     def names(self) -> list[str]:
         return list(self.agents.keys())
 
-    def descriptions(self) -> dict[str, str]:
-        """Return {name: description} for tool-schema generation."""
-        return {name: sa.description for name, sa in self.agents.items()}
+    def __iter__(self) -> Iterator[Subagent]:
+        return iter(self.agents.values())
 
     def __contains__(self, name: str) -> bool:
         return name in self.agents

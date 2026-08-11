@@ -45,9 +45,16 @@ from dream.memory import (
 from dream.observability import JsonlTracer, TraceWriter
 from dream.permissions import SessionLimits, read_sandbox_config
 from dream.plugins import load_enabled_plugins
+from dream.prompts import (
+    ContextPromptBlock,
+    StablePromptBlock,
+    assemble_session_system_prompt,
+    load_agents_md,
+    render_runtime_context,
+)
 from dream.prompts.environment import render_runtime_info
 from dream.roles import RoleManifest
-from dream.runner._role_session import ROLE_MANIFEST_METADATA_KEY, ROLE_NAME_METADATA_KEY
+from dream.runner.role import ROLE_MANIFEST_METADATA_KEY, ROLE_NAME_METADATA_KEY
 from dream.sandbox import SANDBOX_CONTEXT_KEY, SandboxAdapter, select_backend
 from dream.services import cron as cron_service
 from dream.services.compact._carryover_state import CarryoverMetadata
@@ -63,6 +70,7 @@ from dream.skills import (
     render_skill_catalogue,
 )
 from dream.subagents._async_delegation import AsyncDelegationManager
+from dream.subagents._catalogue import SubagentCatalogue
 from dream.subagents._declaration import SubagentSet
 from dream.tasks import (
     TASK_CONTEXT_KEY,
@@ -71,6 +79,7 @@ from dream.tasks import (
 )
 from dream.tasks._cron import CRON_MANIFEST_DIR, load_cron_manifests
 from dream.tools._base import BaseTool
+from dream.tools._catalogue import ToolCatalogue
 from dream.tools._per_repo import PerRepoToolError, load_per_repo_tools
 from dream.tools._registry import ToolRegistry, ToolSource
 from dream.tools.builtin import (
@@ -522,32 +531,40 @@ def _select_sandbox_adapter(paths: DreamPaths) -> SandboxAdapter:
 def _assemble_system_prompt(
     *,
     paths: DreamPaths,
-    runtime_info: str,
     catalogue: str,
     memory_catalogue: str,
     system_prompt: str | None,
+    role: str | None = None,
+    working_dir: Path | None = None,
+    system_prompt_mode: str = "default",
+    tool_catalogue: str = "",
+    subagent_catalogue: str = "",
 ) -> str:
     """Assemble the per-session system prompt from its ordered blocks.
 
-    Order: the governance standing orders FIRST (the constitution outranks
-    everything; Spec 13F AC #21-22, re-extracted every session start), then
-    runtime info (host facts the model must trust), the skill catalogue
-    (capabilities), the memory catalogue (durable workspace facts), and the
-    caller-supplied prompt (task framing). Each block survives if the next is
-    empty.
+    Stable standing orders (common + phase chapter) come first, then context
+    (AGENTS.md, workspace governance, catalogues), then an optional caller
+    addendum. ``system_prompt_mode="replace"`` omits packaged standing orders.
+    Runtime and beat facts stay in user-turn context.
     """
-    standing_orders = render_standing_orders(
+    workspace_governance = render_standing_orders(
         extract_standing_orders(paths.repo / "docs" / "design-docs" / "core-beliefs.md")
     )
-    parts = [standing_orders] if standing_orders else []
-    parts.append(runtime_info)
-    if catalogue:
-        parts.append(catalogue)
-    if memory_catalogue:
-        parts.append(memory_catalogue)
-    if system_prompt:
-        parts.append(system_prompt)
-    return "\n\n".join(parts)
+    return assemble_session_system_prompt(
+        stable=StablePromptBlock(
+            role=role,
+            include=system_prompt_mode != "replace",
+        ),
+        context=ContextPromptBlock(
+            workspace_governance=workspace_governance,
+            skill_catalogue=catalogue,
+            memory_catalogue=memory_catalogue,
+            agents_md=load_agents_md(working_dir),
+            tool_catalogue=tool_catalogue,
+            subagent_catalogue=subagent_catalogue,
+        ),
+        role_instructions=system_prompt,
+    )
 
 
 def _session_extra_params(
@@ -621,7 +638,6 @@ def _build_session_engine(
     # TurnStreamer Protocol has no tools parameter (only messages), so we
     # smuggle the schema through ``httpx_chat_completion_stream``'s
     # ``extra_params`` — splatted verbatim into every request body.
-    tools = tool_registry.list_tools()
     # Spec 10-H: when the caller stamped a RoleManifest on
     # ``options.metadata[ROLE_MANIFEST_METADATA_KEY]`` (the runner does
     # this in ``open_role_session``), intersect with the active sandbox
@@ -634,34 +650,36 @@ def _build_session_engine(
         role_allowed = compute_session_role_allowlist(
             tool_registry, paths=paths, cwd=working_dir, manifest=manifest
         )
-    # Effective set for schema enum (depth-2 children may inherit a scoped set).
-    _schema_set = options.metadata.get("dream.subagent_set")
-    if _schema_set is None:
-        _schema_set = subagents
+    # Effective set for schema enum + catalogue (depth-2 children may inherit a scoped set).
+    inherited = options.metadata.get("dream.subagent_set")
+    effective_subagents: SubagentSet | None = (
+        inherited if isinstance(inherited, SubagentSet) else subagents
+    )
+    advertised_sourced = [
+        (tool, source)
+        for tool, source in tool_registry.iter_with_source()
+        if _tool_advertised_to_model(name=tool.name, role_allowed=role_allowed)
+    ]
     tools_wire: list[dict[str, Any]] = []
-    for t in tools:
-        if not _tool_advertised_to_model(name=t.name, role_allowed=role_allowed):
-            continue
-        params = t.input_schema()
-        if t.name == "spawn_subagent":
+    for tool, _source in advertised_sourced:
+        params = tool.input_schema()
+        if tool.name == "spawn_subagent":
             from dream.tools.builtin.spawn_subagent import build_spawn_parameters
 
-            params = build_spawn_parameters(params, _schema_set)
+            params = build_spawn_parameters(params, effective_subagents)
         tools_wire.append(
             {
                 "type": "function",
                 "function": {
-                    "name": t.name,
-                    "description": t.description,
+                    "name": tool.name,
+                    "description": tool.description,
                     "parameters": params,
                 },
             }
         )
     # Built per session too, so the available-tool set the `skill` tool
     # checks ``tools_required`` against includes late (MCP) registrations.
-    advertised = frozenset(
-        t.name for t in tools if _tool_advertised_to_model(name=t.name, role_allowed=role_allowed)
-    )
+    advertised = frozenset(tool.name for tool, _source in advertised_sourced)
     skill_context = (
         SkillContext(
             registry=skill_registry,
@@ -671,12 +689,24 @@ def _build_session_engine(
         if skill_registry is not None
         else None
     )
+    role_name = options.metadata.get(ROLE_NAME_METADATA_KEY)
+    prompt_mode = "default"
+    if isinstance(manifest, RoleManifest):
+        prompt_mode = manifest.system_prompt_mode
+    tool_catalogue = ToolCatalogue.from_sourced(advertised_sourced)
+    subagent_catalogue = SubagentCatalogue.for_set(effective_subagents)
     system_prompt = _assemble_system_prompt(
         paths=paths,
-        runtime_info=runtime_info,
         catalogue=catalogue,
         memory_catalogue=memory_catalogue,
         system_prompt=options.system_prompt,
+        role=role_name if isinstance(role_name, str) else None,
+        working_dir=working_dir,
+        system_prompt_mode=prompt_mode,
+        tool_catalogue=tool_catalogue.render() if tool_catalogue is not None else "",
+        subagent_catalogue=(
+            subagent_catalogue.render() if subagent_catalogue is not None else ""
+        ),
     )
     # Failover harvest + Spec-02 pool: every beat rides FailoverStreamer with a
     # CredentialPool (single env key by default; ``.harness/credentials.toml``
@@ -781,7 +811,9 @@ def _build_session_engine(
         context_metadata[OBSERVER_KEY] = options.metadata[OBSERVER_KEY]
 
     inherited_set = options.metadata.get(SUBAGENT_SET_CONTEXT_KEY)
-    effective_subagents = inherited_set if inherited_set is not None else subagents
+    effective_subagents = (
+        inherited_set if isinstance(inherited_set, SubagentSet) else subagents
+    )
     # Wire even when empty so generalPurpose can run without Spec templates.
     if effective_subagents is not None:
         context_metadata[SUBAGENT_SET_CONTEXT_KEY] = effective_subagents
@@ -819,5 +851,6 @@ def _build_session_engine(
         tracer=tracer,
         model=options.model or model,
         hook_executor=hook_executor,
+        initial_context=render_runtime_context(runtime_info),
         delegations=harness.config.delegations,
     )

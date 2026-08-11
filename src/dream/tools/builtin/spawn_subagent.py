@@ -21,7 +21,12 @@ from pydantic import BaseModel, Field, model_validator
 from dream.contracts.hook import SubagentJoinMode
 from dream.contracts.tool import ToolResult
 from dream.observability._tracer import Tracer
-from dream.subagents._declaration import Subagent, SubagentSet
+from dream.subagents._declaration import (
+    GENERAL_PURPOSE_DESCRIPTION,
+    GENERAL_PURPOSE_NAME,
+    Subagent,
+    SubagentSet,
+)
 from dream.subagents._projection import SubagentResult
 from dream.tools._base import BaseTool, ToolDeclaration
 from dream.tools._context import ToolExecutionContext
@@ -44,6 +49,9 @@ MAX_SPAWNS_PER_BEAT = 10
 MAX_BATCH_TASKS = 3
 SPAWN_SUBAGENT_TOOL = "spawn_subagent"
 
+# Back-compat alias for tests / callers that imported the old name.
+GENERAL_PURPOSE = GENERAL_PURPOSE_NAME
+
 
 class SpawnJoinMode(StrEnum):
     DELEGATE = "delegate"
@@ -55,8 +63,6 @@ class SpawnDispatchStatus(StrEnum):
     FAILED = "failed"
 
 
-GENERAL_PURPOSE = "generalPurpose"
-
 _DEFAULT_GP_TOOLS = (
     "read_file",
     "grep",
@@ -67,10 +73,10 @@ _DEFAULT_GP_TOOLS = (
 )
 
 
-def spawn_type_names(subagent_set: SubagentSet | None) -> list[str]:
+def spawn_type_names(subagent_set: SubagentSet | None) -> tuple[str, ...]:
     """Enum values for this beat: generalPurpose first, then Spec names."""
-    names = list(subagent_set.names()) if subagent_set else []
-    return [GENERAL_PURPOSE, *names]
+    names = tuple(subagent_set.names()) if subagent_set is not None else ()
+    return (GENERAL_PURPOSE_NAME, *names)
 
 
 def spawn_label_from_input(tool_input: Mapping[str, Any]) -> str:
@@ -83,10 +89,10 @@ def resolve_spawn_goal(goal: str | None, prompt: str | None) -> str:
     return (goal or "").strip() or (prompt or "").strip()
 
 
-def unknown_subagent_result(type_name: str, available: list[str]) -> ToolResult:
+def unknown_subagent_result(type_name: str, available: tuple[str, ...]) -> ToolResult:
     """Fail-closed when subagent_type is not in the beat enum."""
     return ToolResult(
-        content=f"Subagent {type_name!r} not found. Available subagents: {available}",
+        content=f"Subagent {type_name!r} not found. Subagent definitions: {available}",
         is_error=True,
         metadata={
             "root_cause": f"unknown_subagent: {type_name}",
@@ -104,64 +110,67 @@ def general_purpose_agent(parent_tools: frozenset[str] | None) -> Subagent:
     else:
         tools = tuple(t for t in sorted(parent_tools) if t != "spawn_subagent")
     return Subagent(
-        name=GENERAL_PURPOSE,
-        description=(
-            "Ad-hoc delegated worker. Fresh context; returns a summary. "
-            "Use for reasoning-heavy subtasks that would flood the parent."
-        ),
+        name=GENERAL_PURPOSE_NAME,
+        description=GENERAL_PURPOSE_DESCRIPTION,
         tools=tools,
         max_turns=8,
     )
 
 
-def build_spawn_parameters(
-    base_schema: dict[str, Any],
-    subagent_set: SubagentSet | None,
-) -> dict[str, Any]:
-    """Patch JSON schema with a dynamic subagent_type enum + short choice matrix."""
-    types = spawn_type_names(subagent_set)
-    catalog_lines = [
-        f"- {GENERAL_PURPOSE}: ad-hoc fresh-context worker (summary only; no evidence gate)"
-    ]
-    if subagent_set:
-        for name, desc in subagent_set.descriptions().items():
-            short = desc.split("\n", 1)[0].strip()
-            if len(short) > 120:
-                short = short[:117] + "..."
-            catalog_lines.append(f"- {name}: {short}")
-    catalog = "\n".join(catalog_lines)
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _SpawnTypeEnumProperty:
+    """OpenAI JSON-schema fragment for ``subagent_type``."""
 
-    schema = dict(base_schema)
-    props = {
-        k: dict(v) if isinstance(v, dict) else v
-        for k, v in (schema.get("properties") or {}).items()
-    }
-    props["subagent_type"] = {
-        "type": "string",
-        "enum": types,
-        "description": (
-            "Which agent template to launch.\n\n"
-            f"{catalog}\n\n"
-            "WHEN TO USE: reasoning-heavy subtask, fresh/unbiased eyes, or a required specialist.\n"
-            "WHEN NOT: single tool call — call it yourself. "
-            "Evidence specialists must use their exact subagent_type (never forge their artifacts)."
-        ),
-    }
-    # Prefer subagent_type; keep name for alias validation without requiring both.
-    required = [r for r in (schema.get("required") or []) if r not in ("name", "subagent_type")]
-    schema["properties"] = props
-    schema["required"] = required
-    definitions = schema.get("$defs")
-    if isinstance(definitions, dict):
-        task_definition = definitions.get("SpawnTaskInput")
-        if isinstance(task_definition, dict):
-            task_properties = task_definition.get("properties")
-            if isinstance(task_properties, dict):
-                task_properties["subagent_type"] = {
-                    "type": "string",
-                    "enum": types,
-                    "description": "Agent template for this fan-out task.",
-                }
+    names: tuple[str, ...]
+
+    def as_mapping(self) -> dict[str, object]:
+        return {
+            "type": "string",
+            "enum": list(self.names),
+            "description": "Name from Subagent definitions.",
+        }
+
+
+def build_spawn_parameters(
+    base_schema: Mapping[str, object],
+    subagent_set: SubagentSet | None,
+) -> dict[str, object]:
+    """Attach the beat's ``subagent_type`` enum to the tool parameters schema.
+
+    Discovery copy lives in :class:`SubagentCatalogue` + standing orders; the
+    wire schema only constrains allowed names for the provider.
+    """
+    type_names = spawn_type_names(subagent_set)
+    enum_property = _SpawnTypeEnumProperty(names=type_names)
+    schema: dict[str, object] = dict(base_schema)
+    properties_raw = schema.get("properties")
+    properties: dict[str, object] = (
+        dict(properties_raw) if isinstance(properties_raw, dict) else {}
+    )
+    properties["subagent_type"] = enum_property.as_mapping()
+    schema["properties"] = properties
+    required_raw = schema.get("required")
+    required_names = (
+        [name for name in required_raw if isinstance(name, str)]
+        if isinstance(required_raw, list)
+        else []
+    )
+    schema["required"] = [
+        name for name in required_names if name not in ("name", "subagent_type")
+    ]
+    defs_raw = schema.get("$defs")
+    if isinstance(defs_raw, dict):
+        defs: dict[str, object] = dict(defs_raw)
+        task_raw = defs.get("SpawnTaskInput")
+        if isinstance(task_raw, dict):
+            task_def: dict[str, object] = dict(task_raw)
+            task_props_raw = task_def.get("properties")
+            if isinstance(task_props_raw, dict):
+                task_props: dict[str, object] = dict(task_props_raw)
+                task_props["subagent_type"] = enum_property.as_mapping()
+                task_def["properties"] = task_props
+                defs["SpawnTaskInput"] = task_def
+                schema["$defs"] = defs
     return schema
 
 
@@ -178,7 +187,7 @@ class SpawnSubagentInput(BaseModel):
 
     subagent_type: str | None = Field(
         default=None,
-        description="Agent template to launch (enum: generalPurpose + role specialists).",
+        description="Name from Subagent definitions.",
     )
     name: str | None = Field(
         default=None,
@@ -276,13 +285,7 @@ class SpawnSubagentTool(BaseTool):
     """Dispatch a subagent to do bounded work and return its result."""
 
     name = SPAWN_SUBAGENT_TOOL
-    description = (
-        "Spawn a focused subagent in an isolated context. "
-        "Pick subagent_type from the enum (generalPurpose or a role specialist). "
-        "Pass a self-contained goal (+ optional context). "
-        "Parent sees only the summary — not the child's intermediate tool I/O. "
-        "Use specialists when evidence/contracts require them; use generalPurpose for ad-hoc work."
-    )
+    description = "Spawn a subagent by type with a self-contained goal."
     declaration = ToolDeclaration(risk="safe", tier_required=0, timeout_seconds=300.0)
     input_model = SpawnSubagentInput
 

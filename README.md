@@ -136,7 +136,7 @@ Notably, driving this required **zero changes to `src/dream/`** — `build_defau
 |-------|------------------------|--------------|
 | **Facade** | [`harness.py`](src/dream/harness.py), [`_factory.py`](src/dream/_factory.py) | `build_harness()` wires streamer, tools, permissions, skills, memory, sandbox, MCP, plugins, cron registry, compaction |
 | **Engine** | [`engine/`](src/dream/engine/) | Async turn loop, tool dispatch, permission gate, OpenAI-compatible streaming, auto-compaction |
-| **Task loop** | [`runner/`](src/dream/runner/), [`planner/`](src/dream/planner/), [`sprint/`](src/dream/sprint/) | `run_task`: five overridable LLM heads, sprint contracts, evaluation records (`pass` / `needs-changes` / `fail`), oracle verification |
+| **Task loop** | [`runner/`](src/dream/runner/), [`planner/`](src/dream/planner/), [`sprint/`](src/dream/sprint/) | `run_task`: five overridable LLM heads, sprint contracts, evaluation records (`pass` / `needs-changes` / `fail`) |
 | **Tools** | [`tools/builtin/`](src/dream/tools/builtin/) | ~30 default tools (files, shell, git, tasks, cron, web, memory, observability) + custom `BaseTool` + MCP adapters |
 | **Roles** | [`roles/`](src/dream/roles/) | Planner (read-only), generator (full surface ∩ sandbox), evaluator (read-only) |
 | **Subagents** | [`subagents/`](src/dream/subagents/) | Opt-in `spawn_subagent` — capability-minimized ephemeral teammates (depth-2, spawn cap) |

@@ -98,8 +98,8 @@ is crash-safe and resumable.
   retry prompt is informed; after `NEEDS_CHANGES_LIMIT = 2` strikes the step
   escalates to `blocked` instead of burning `max_sprints`. Emits
   `sprint.escalated`.
-- **Oracle verification** — verification steps execute and the evaluator
-  judges their evidence; pass requires the oracle green.
+- **In-session verification** — contract ``verification_steps`` are prompt
+  data; the evaluator runs them via ``bash`` and judges the transcript.
 
 ## 5. Tools
 

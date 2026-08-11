@@ -28,6 +28,7 @@ from typing import Any
 
 import pytest
 
+from dream.contracts.hook import HookEvent, HookResult, HookSpec
 from dream.engine._cost import UsageSnapshot
 from dream.engine._engine import QueryEngine
 from dream.engine._messages import ToolUseBlock
@@ -38,6 +39,7 @@ from dream.events import (
     ToolUseStart,
     TurnComplete,
 )
+from dream.hooks import HookExecutor
 from dream.session import Session, SessionOptions
 from dream.subagents._async_delegation import AsyncDelegationManager
 from dream.subagents._projection import SubagentResult
@@ -103,6 +105,71 @@ async def test_session_send_passes_prompt_to_streamer() -> None:
     last = first_call[-1]
     assert last.role == "user"
     assert "summon the moon" in last.text
+
+
+async def test_session_initial_context_precedes_the_first_user_prompt() -> None:
+    streamer = FakeStreamer(turns=[FakeTurn(text_chunks=["ok"])])
+    engine = _engine(streamer, FakeDispatcher())
+    engine.initial_context = "runtime facts"
+    session = Session(id="s1", _engine=engine)
+
+    await _collect(session, "actual request")
+
+    first_call = streamer.calls[0]
+    assert len(first_call) == 1
+    assert "runtime facts" in first_call[0].text
+    assert "actual request" in first_call[0].text
+    assert session.transcript[0].text == "actual request"
+
+
+async def test_resumed_session_uses_fresh_initial_context_once() -> None:
+    first_streamer = FakeStreamer(turns=[FakeTurn(text_chunks=["first reply"])])
+    first_engine = _engine(first_streamer, FakeDispatcher())
+    first_engine.initial_context = "old runtime"
+    first_session = Session(id="s1", _engine=first_engine)
+
+    await _collect(first_session, "first request")
+
+    resumed_streamer = FakeStreamer(turns=[FakeTurn(text_chunks=["resumed reply"])])
+    resumed_engine = _engine(resumed_streamer, FakeDispatcher())
+    resumed_engine.initial_context = "new runtime"
+    resumed_session = Session(id="s1", _engine=resumed_engine)
+    resumed_session.restore_from_snapshot(first_session.snapshot())
+
+    await _collect(resumed_session, "resumed request")
+
+    latest_request = resumed_streamer.calls[0][-1].text
+    assert "new runtime" in latest_request
+    assert "old runtime" not in latest_request
+    assert "resumed request" in latest_request
+
+
+async def test_runtime_and_hook_context_share_the_initiating_user_message() -> None:
+    class _ContextHook:
+        spec = HookSpec(events=(HookEvent.USER_PROMPT_SUBMIT,))
+
+        def __init__(self) -> None:
+            self.role: str | None = None
+
+        async def __call__(self, event: HookEvent, payload: dict[str, object]) -> HookResult:
+            self.role = payload.get("role") if isinstance(payload.get("role"), str) else None
+            return HookResult(inject_context="hook context")
+
+    streamer = FakeStreamer(turns=[FakeTurn(text_chunks=["ok"])])
+    engine = _engine(streamer, FakeDispatcher())
+    engine.initial_context = "runtime context"
+    engine.role = "evaluator"
+    hook = _ContextHook()
+    engine.hook_executor = HookExecutor([hook])
+    session = Session(id="s1", _engine=engine)
+
+    await _collect(session, "actual request")
+
+    request = streamer.calls[0][0].text
+    assert "actual request" in request
+    assert request.index("runtime context") < request.index("hook context")
+    assert hook.role == "evaluator"
+    assert session.transcript[0].text == "actual request"
 
 
 # --- tool dispatch path ------------------------------------------------------

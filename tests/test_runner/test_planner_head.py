@@ -29,7 +29,7 @@ from dream.runner import (
     RoleSessionError,
     make_planner_head,
 )
-from dream.runner._planner_schema import PlannerLedgerBody, PlannerResponse, PlannerStepBody
+from dream.runner.planner import PlannerLedgerBody, PlannerResponse, PlannerStepBody
 from dream.session import SessionOptions
 from tests.test_engine._fakes import FakeDispatcher
 
