@@ -43,7 +43,7 @@ from dream.runner.evaluator import (
     make_evaluator_head,
 )
 from dream.runner.events import RunTaskObserver
-from dream.runner.observe import StdioObserver
+from dream.runner.observe import StdioObserver, UsageMeter
 from dream.runner.planner import (
     PlannerHeadParseError,
     make_planner_head,
@@ -78,6 +78,7 @@ __all__ = [
     "SprintGoalProvider",
     "SprintRunResult",
     "StdioObserver",
+    "UsageMeter",
     "make_evaluator_head",
     "make_generator_head",
     "make_planner_head",

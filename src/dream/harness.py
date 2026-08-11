@@ -527,8 +527,6 @@ class Harness:
                 harness_dir=harness_dir,
                 observer=observer,
                 session_scope=session_scope,
-                # worktree_root kept for API compat; evaluator verifies in-session via bash.
-                worktree_root=worktree_root,
             )
         return (planner, generator_execute, evaluator_run)
 

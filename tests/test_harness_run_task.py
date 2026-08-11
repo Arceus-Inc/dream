@@ -274,8 +274,7 @@ async def test_run_task_explicit_heads_override_factory_defaults(
 async def test_run_task_forwards_observer_to_runner_and_factories(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from dream.runner.observe import CapturingObserver
-    from dream.runner.observe import UsageMeter
+    from dream.runner.observe import CapturingObserver, UsageMeter
 
     captured: dict[str, Any] = {}
     factory_observers: dict[str, Any] = {}
