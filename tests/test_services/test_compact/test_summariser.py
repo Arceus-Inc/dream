@@ -81,3 +81,35 @@ def test_inject_todo_snapshot_appends_user_message(tmp_path: Path) -> None:
 def test_inject_todo_snapshot_noop_when_empty(tmp_path: Path) -> None:
     base = [ConversationMessage(role="user", content=[TextBlock(text="x")])]
     assert inject_todo_snapshot(base, tmp_path) is base
+
+
+def test_compaction_prompt_parts_defaults_are_empty() -> None:
+    from dream.services.compact._summariser import CompactionPromptParts
+
+    parts = CompactionPromptParts()
+    assert parts.stable_prefix == ""
+    assert parts.workspace_context == ""
+    assert parts.prompt_cache is False
+
+
+def test_chat_completions_request_encodes_typed_messages() -> None:
+    from dream.prompts.cache_control import OpenAIChatMessage, TextContentBlock
+    from dream.services.compact._summariser import ChatCompletionsRequest
+
+    request = ChatCompletionsRequest(
+        model="m",
+        messages=(
+            OpenAIChatMessage(
+                role="system",
+                content=(TextContentBlock(text="stable"),),
+            ),
+            OpenAIChatMessage(role="user", content="compress this"),
+        ),
+    )
+    body = request.to_json_object()
+    assert body["model"] == "m"
+    assert body["stream"] is False
+    messages = body["messages"]
+    assert isinstance(messages, list)
+    assert messages[0]["role"] == "system"
+    assert messages[1]["content"] == "compress this"

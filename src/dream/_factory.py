@@ -51,6 +51,7 @@ from dream.prompts import (
     ContextPromptBlock,
     StablePromptBlock,
     assemble_session_system_prompt,
+    assemble_stable_context_prefix,
     load_agents_md,
     render_runtime_context,
 )
@@ -814,13 +815,28 @@ def _build_session_engine(
         context_metadata[SPAWN_COUNT_KEY] = options.metadata.get(SPAWN_COUNT_KEY, [0])
         context_metadata[SPAWN_LEDGER_KEY] = options.metadata.get(SPAWN_LEDGER_KEY, SpawnLedger())
     carryover_metadata = CarryoverMetadata.for_working_dir(str(working_dir))
-    from dream.services.compact._summariser import make_llm_summariser
+    from dream.services.compact._summariser import CompactionPromptParts, make_llm_summariser
 
+    # Compact reuses Dream-owned common standing orders as system (cache-aligned
+    # with live turns) and keeps workspace catalogues in the user message.
+    compact_prompt = CompactionPromptParts(
+        stable_prefix=assemble_stable_context_prefix(
+            stable=StablePromptBlock(role=None),
+            context=ContextPromptBlock(
+                workspace_governance="",
+                skill_catalogue="",
+                memory_catalogue="",
+            ),
+        ),
+        workspace_context=context_block.render(),
+        prompt_cache=capabilities.prompt_cache,
+    )
     compaction_summariser = make_llm_summariser(
         api_key=api_key,
         base_url=base_url,
         model=options.model or model,
         state=carryover_metadata,
+        prompt_parts=compact_prompt,
     )
     return build_query_engine(
         streamer=streamer,

@@ -9,6 +9,7 @@ from dream.prompts.system_prompt import (
     ContextPromptBlock,
     StablePromptBlock,
     assemble_session_system_prompt,
+    assemble_stable_context_prefix,
     load_agents_md,
     packaged_standing_orders,
     render_runtime_context,
@@ -159,3 +160,24 @@ def test_runtime_facts_are_a_user_context_block_not_system_prompt_content() -> N
     assert "RUNTIME" not in prompt
     assert "<context>" not in prompt
     assert "<role>" not in prompt
+
+
+def test_stable_context_prefix_omits_role_addendum() -> None:
+    stable = StablePromptBlock(role="planner")
+    context = ContextPromptBlock(
+        workspace_governance="GOV",
+        skill_catalogue="# Skills\n\n- **x** — y",
+        memory_catalogue="",
+    )
+    prefix = assemble_stable_context_prefix(stable=stable, context=context)
+    full = assemble_session_system_prompt(
+        stable=stable,
+        context=context,
+        role_instructions="ROLE ONLY",
+    )
+
+    assert "<stable>" in prefix
+    assert "GOV" in prefix
+    assert "ROLE ONLY" not in prefix
+    assert prefix in full
+    assert "ROLE ONLY" in full

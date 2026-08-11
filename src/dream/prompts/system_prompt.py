@@ -84,6 +84,19 @@ def render_runtime_context(runtime_info: str) -> str:
     return _render_block("runtime-context", runtime_info)
 
 
+def assemble_stable_context_prefix(
+    *,
+    stable: StablePromptBlock,
+    context: ContextPromptBlock,
+) -> str:
+    """Render the cacheable stable+context prefix (no role addendum).
+
+    Compaction summariser calls reuse a Dream-owned stable slice of this
+    assembler so provider prompt-cache can hit across live turns and compact.
+    """
+    return "\n\n".join(block for block in (stable.render(), context.render()) if block)
+
+
 def assemble_session_system_prompt(
     *,
     stable: StablePromptBlock,
@@ -91,10 +104,13 @@ def assemble_session_system_prompt(
     role_instructions: str | None = None,
 ) -> str:
     """Render the deterministic stable-first system-prompt sequence."""
+    prefix = assemble_stable_context_prefix(stable=stable, context=context)
     role = _render_block("role", role_instructions) if role_instructions else ""
-    return "\n\n".join(
-        block for block in (stable.render(), context.render(), role) if block
-    )
+    if not role:
+        return prefix
+    if not prefix:
+        return role
+    return f"{prefix}\n\n{role}"
 
 
 def _join(*parts: str | None) -> str:
@@ -109,6 +125,7 @@ __all__ = [
     "ContextPromptBlock",
     "StablePromptBlock",
     "assemble_session_system_prompt",
+    "assemble_stable_context_prefix",
     "load_agents_md",
     "packaged_standing_orders",
     "render_runtime_context",
