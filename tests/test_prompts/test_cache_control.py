@@ -34,7 +34,7 @@ def test_apply_cache_control_marks_system_and_tail() -> None:
     assert isinstance(system[0], TextContentBlock)
     assert system[0].cache_control is not None
     assert system[1].cache_control is not None
-    assert dict(system[0].cache_control.to_wire()) == {"type": "ephemeral"}
+    assert system[0].cache_control.to_json_object() == {"type": "ephemeral"}
 
     assert isinstance(out[-1].content, tuple)
     assert out[-1].content[0].cache_control is not None

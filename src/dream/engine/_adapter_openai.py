@@ -57,6 +57,7 @@ from dream.prompts.cache_control import (
     OpenAIFunctionCall,
     OpenAIToolCall,
     apply_cache_control,
+    encode_openai_messages,
     split_stable_system_prefix,
 )
 
@@ -99,7 +100,7 @@ def conversation_to_openai_messages(
             else None
         )
         envelopes = apply_cache_control(envelopes, static_system_prefix=prefix)
-    return [message.to_wire() for message in envelopes]
+    return list(encode_openai_messages(envelopes))
 
 
 def _conversation_to_envelopes(
