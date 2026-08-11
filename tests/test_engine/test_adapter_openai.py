@@ -17,7 +17,7 @@ separately by a smoke test.
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Any
 
 import pytest
@@ -457,6 +457,35 @@ async def test_stream_passes_translated_messages_to_callable() -> None:
             {"role": "user", "content": "hi"},
         ]
     ]
+
+
+async def test_stream_applies_cache_control_when_prompt_cache_enabled() -> None:
+    seen_messages: list[list[Mapping[str, object]]] = []
+
+    async def stream(
+        messages: Sequence[Mapping[str, object]], model: str
+    ) -> AsyncIterator[dict[str, Any]]:
+        seen_messages.append([dict(m) for m in messages])
+
+        async def _iter() -> AsyncIterator[dict[str, Any]]:
+            yield _text_chunk("ok", finish="stop")
+
+        return _iter()
+
+    adapter = OpenAIChatStreamer(
+        stream_chat_completion=stream,
+        model="gpt-test",
+        system_prompt="be terse",
+        prompt_cache=True,
+    )
+    msgs = [ConversationMessage(role="user", content=[TextBlock(text="hi")])]
+    async for _ in adapter.stream_turn(msgs):
+        pass
+
+    system = seen_messages[0][0]
+    content = system["content"]
+    assert isinstance(content, list)
+    assert content[0]["cache_control"] == {"type": "ephemeral"}
 
 
 # --- NoOpDispatcher ---------------------------------------------------------

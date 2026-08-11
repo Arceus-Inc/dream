@@ -52,9 +52,16 @@ from dream.engine._messages import (
     ToolResultBlock,
     ToolUseBlock,
 )
+from dream.prompts.cache_control import (
+    OpenAIChatMessage,
+    OpenAIFunctionCall,
+    OpenAIToolCall,
+    apply_cache_control,
+    split_stable_system_prefix,
+)
 
 StreamChatCompletion = Callable[
-    [Sequence[dict[str, Any]], str],
+    [Sequence[Mapping[str, object]], str],
     Awaitable[AsyncIterator[dict[str, Any]]],
 ]
 
@@ -66,97 +73,98 @@ def conversation_to_openai_messages(
     messages: Sequence[ConversationMessage],
     *,
     system_prompt: str | None = None,
-) -> list[dict[str, Any]]:
+    prompt_cache: bool = False,
+) -> list[Mapping[str, object]]:
     """Translate the engine transcript into OpenAI Chat Completions messages.
 
     Mapping rules:
 
-    - ``system_prompt`` (if any) is prepended as ``{"role": "system", ...}``.
+    - ``system_prompt`` (if any) is prepended as a system message.
     - An assistant message with one or more ``ToolUseBlock``s collapses to a
-      single ``{"role": "assistant", "content": <text|None>, "tool_calls":
-      [...]}`` (text is the concatenation of any leading ``TextBlock``s; the
-      ``arguments`` field is JSON-serialised per the wire format).
-    - A user message that contains ``ToolResultBlock``s splits: each
-      tool-result becomes a ``{"role": "tool", "tool_call_id": ..., "content":
-      ...}`` message in original order; any remaining ``TextBlock`` text is
-      flushed as a final ``{"role": "user", "content": ...}`` message after
-      the tool messages.
-    - Plain user/assistant text becomes the obvious string-content message.
+      single assistant message with ``tool_calls`` (text is the concatenation of
+      any leading ``TextBlock``s; ``arguments`` are JSON-serialised).
+    - A user message that contains ``ToolResultBlock``s splits: each tool-result
+      becomes a tool-role message; remaining text is a trailing user message.
+    - When ``prompt_cache`` is true, Hermes-style ``cache_control`` breakpoints
+      are applied (static ``<stable>`` prefix + last messages).
 
     ``ImageBlock``s are not yet mapped; they pass through as part of the
-    text content concatenation (callers that need vision should provide
-    their own translation in a later stage).
-
-    Returned shape — a list of OpenAI Chat Completions message dicts, e.g.::
-
-        {"role": "system", "content": "..."}
-        {"role": "user", "content": "..."}
-        {"role": "assistant", "content": "..." | None,
-         "tool_calls": [{"id": "call_x", "type": "function",
-                         "function": {"name": "...", "arguments": "<json str>"}}]}
-        {"role": "tool", "tool_call_id": "call_x", "content": "..."}
+    text content concatenation.
     """
-    out: list[dict[str, Any]] = []
-    if system_prompt is not None:
-        out.append({"role": "system", "content": system_prompt})
+    envelopes = _conversation_to_envelopes(messages, system_prompt=system_prompt)
+    if prompt_cache:
+        prefix = (
+            split_stable_system_prefix(system_prompt).prefix
+            if system_prompt is not None
+            else None
+        )
+        envelopes = apply_cache_control(envelopes, static_system_prefix=prefix)
+    return [message.to_wire() for message in envelopes]
 
+
+def _conversation_to_envelopes(
+    messages: Sequence[ConversationMessage],
+    *,
+    system_prompt: str | None,
+) -> tuple[OpenAIChatMessage, ...]:
+    out: list[OpenAIChatMessage] = []
+    if system_prompt is not None:
+        out.append(OpenAIChatMessage(role="system", content=system_prompt))
     for msg in messages:
         if msg.role == "assistant":
             out.extend(_translate_assistant(msg))
         else:
             out.extend(_translate_user(msg))
+    return tuple(out)
 
-    return out
 
-
-def _translate_assistant(msg: ConversationMessage) -> list[dict[str, Any]]:
+def _translate_assistant(msg: ConversationMessage) -> tuple[OpenAIChatMessage, ...]:
     text_parts: list[str] = []
-    tool_calls: list[dict[str, Any]] = []
+    tool_calls: list[OpenAIToolCall] = []
     for block in msg.content:
         if isinstance(block, TextBlock):
             text_parts.append(block.text)
         elif isinstance(block, ToolUseBlock):
             tool_calls.append(
-                {
-                    "id": block.id,
-                    "type": "function",
-                    "function": {
-                        "name": block.name,
-                        "arguments": json.dumps(block.input),
-                    },
-                }
+                OpenAIToolCall(
+                    id=block.id,
+                    function=OpenAIFunctionCall(
+                        name=block.name,
+                        arguments=json.dumps(block.input),
+                    ),
+                )
             )
 
     text = "".join(text_parts)
     if tool_calls:
-        return [
-            {
-                "role": "assistant",
-                "content": text if text else None,
-                "tool_calls": tool_calls,
-            }
-        ]
-    return [{"role": "assistant", "content": text}]
+        return (
+            OpenAIChatMessage(
+                role="assistant",
+                content=text if text else None,
+                tool_calls=tuple(tool_calls),
+            ),
+        )
+    return (OpenAIChatMessage(role="assistant", content=text),)
 
 
-def _translate_user(msg: ConversationMessage) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
+def _translate_user(msg: ConversationMessage) -> tuple[OpenAIChatMessage, ...]:
+    out: list[OpenAIChatMessage] = []
     text_parts: list[str] = []
     for block in msg.content:
         if isinstance(block, ToolResultBlock):
             out.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": block.tool_use_id,
-                    "content": block.content,
-                }
+                OpenAIChatMessage(
+                    role="tool",
+                    tool_call_id=block.tool_use_id,
+                    content=block.content,
+                )
             )
         elif isinstance(block, TextBlock):
             text_parts.append(block.text)
     text = "".join(text_parts)
     if text:
-        out.append({"role": "user", "content": text})
-    return out
+        out.append(OpenAIChatMessage(role="user", content=text))
+    return tuple(out)
 
 
 # --- streaming adapter ------------------------------------------------------
@@ -184,15 +192,21 @@ class OpenAIChatStreamer:
         stream_chat_completion: StreamChatCompletion,
         model: str,
         system_prompt: str | None = None,
+        prompt_cache: bool = False,
     ) -> None:
         self._stream_chat = stream_chat_completion
         self._model = model
         self._system_prompt = system_prompt
+        self._prompt_cache = prompt_cache
 
     async def stream_turn(
         self, messages: Sequence[ConversationMessage]
     ) -> AsyncIterator[StreamEvent]:
-        wire = conversation_to_openai_messages(messages, system_prompt=self._system_prompt)
+        wire = conversation_to_openai_messages(
+            messages,
+            system_prompt=self._system_prompt,
+            prompt_cache=self._prompt_cache,
+        )
         chunks = await self._stream_chat(wire, self._model)
         # Own the transport stream's lifecycle: ``aclosing`` releases the httpx
         # connection (in ``httpx_chat_completion_stream``) whenever this turn is

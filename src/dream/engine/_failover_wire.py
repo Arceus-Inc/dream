@@ -25,6 +25,7 @@ class StreamerParts:
     base_url: str
     system_prompt: str
     extra_params: Mapping[str, object] | None
+    prompt_cache: bool = False
 
 
 def single_key_pool(*, substrate: str, label: str, api_key: str) -> CredentialPool:
@@ -47,6 +48,7 @@ def openai_streamer_for_key(api_key: str, parts: StreamerParts) -> TurnStreamer:
         ),
         model=parts.model,
         system_prompt=parts.system_prompt,
+        prompt_cache=parts.prompt_cache,
     )
 
 

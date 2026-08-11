@@ -307,8 +307,10 @@ def build_harness(
             policy_warning_sink(warning)
 
     # 128K is the default we use throughout Spec 02; utilisation surfaces
-    # (watch panel, /util) report against this number.
-    capabilities = ProviderCapabilities(max_context_tokens=128_000)
+    # (watch panel, /util) report against this number. OpenAI-compatible
+    # endpoints get Hermes-style ``cache_control`` markers when the streamer
+    # is wired with ``prompt_cache=True``.
+    capabilities = ProviderCapabilities(max_context_tokens=128_000, prompt_cache=True)
 
     # Skills (Spec 06 slice 2): the frontmatter catalogue goes into the system
     # prompt so the model can discover skills; the SkillContext rides the
@@ -702,6 +704,7 @@ def _build_session_engine(
         base_url=base_url,
         system_prompt=system_prompt,
         extra_params=_session_extra_params(tools_wire, options),
+        prompt_cache=capabilities.prompt_cache,
     )
     creds_file = working_dir / ".harness" / "credentials.toml"
     streamer = build_failover_streamer(
