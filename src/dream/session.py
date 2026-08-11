@@ -69,6 +69,7 @@ from dream.services.session_store import (
 )
 
 if TYPE_CHECKING:
+    from dream.context import ContextBreakdown
     from dream.engine._engine import QueryEngine
 
 
@@ -195,26 +196,22 @@ class Session:
             preserve_recent=engine.compaction_preserve_recent,
         )
 
-    def context_breakdown(self) -> Any:
-        """Cursor/Hermes-style token pie for the next request (REPL ``/context``).
+    def context_breakdown(self) -> ContextBreakdown | None:
+        """Token-share pie for the next request (REPL ``/context``).
 
-        Returns ``None`` when no engine is bound. Uses the assembled system
-        prompt and effective tools wire from the engine (same surfaces the
-        provider request uses), plus the live transcript.
+        Returns ``None`` when no engine is bound (or when the engine has no
+        prompt surfaces captured). Uses the typed prompt surfaces and the live
+        transcript so the report matches what the next provider request sends.
         """
         from dream.context import compute_context_breakdown
         from dream.services.token_estimation import resolve_context_window
 
         engine = self._engine
-        if engine is None:
+        if engine is None or engine.prompt_surfaces is None:
             return None
-        system_prompt = str(getattr(engine, "system_prompt", None) or "")
-        tools = list(getattr(engine, "tools_wire", ()) or ())
-        caps = getattr(engine, "compaction_capabilities", None)
-        window, _ = resolve_context_window(caps)
+        window, _ = resolve_context_window(engine.compaction_capabilities)
         return compute_context_breakdown(
-            system_prompt=system_prompt,
-            tools=tools,
+            surfaces=engine.prompt_surfaces,
             messages=self._transcript,
             context_window=window,
         )
