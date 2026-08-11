@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from dream.context import PromptSurfaces
 from dream.contracts.provider import ProviderCapabilities
 from dream.engine._loop import ToolDispatcher, TurnStreamer
 from dream.engine._orientation import OrientationConfig
@@ -87,6 +88,8 @@ class QueryEngine:
     # Role name from session metadata (planner/generator/evaluator) for STOP hooks.
     role: str | None = None
     delegations: AsyncDelegationManager | None = None
+    # Typed request surfaces for `/context` (FailoverStreamer hides streamer attrs).
+    prompt_surfaces: PromptSurfaces | None = None
 
     def make_session_config(
         self,
@@ -149,6 +152,7 @@ def build_query_engine(
     initial_context: str | None = None,
     orientation: OrientationConfig | None = None,
     delegations: AsyncDelegationManager | None = None,
+    prompt_surfaces: PromptSurfaces | None = None,
 ) -> QueryEngine:
     """Wrap a ``ToolRegistry`` in the canonical dispatcher and bind a streamer.
 
@@ -190,6 +194,7 @@ def build_query_engine(
         orientation=orientation,
         role=role_raw if isinstance(role_raw, str) else None,
         delegations=delegations,
+        prompt_surfaces=prompt_surfaces,
     )
 
 

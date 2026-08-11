@@ -13,12 +13,14 @@ survive across sessions in the same process.
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
 from dream.config.paths import DreamPaths
+from dream.context import AdvertisedTool, PromptSurfaces
 from dream.contracts.plugin import Plugin
 from dream.contracts.provider import ProviderCapabilities
 from dream.engine._engine import QueryEngine, build_query_engine
@@ -61,6 +63,7 @@ from dream.services.compact._carryover_state import CarryoverMetadata
 from dream.services.compact._orchestrator import AutoCompactState
 from dream.services.context_log import ContextEvent
 from dream.services.core_beliefs import extract_standing_orders, render_standing_orders
+from dream.services.token_estimation import estimate_tokens
 from dream.session import SessionOptions
 from dream.skills import (
     SKILL_CONTEXT_KEY,
@@ -528,45 +531,6 @@ def _select_sandbox_adapter(paths: DreamPaths) -> SandboxAdapter:
     return select_backend("subprocess")
 
 
-def _assemble_system_prompt(
-    *,
-    paths: DreamPaths,
-    catalogue: str,
-    memory_catalogue: str,
-    system_prompt: str | None,
-    role: str | None = None,
-    working_dir: Path | None = None,
-    system_prompt_mode: str = "default",
-    tool_catalogue: str = "",
-    subagent_catalogue: str = "",
-) -> str:
-    """Assemble the per-session system prompt from its ordered blocks.
-
-    Stable standing orders (common + phase chapter) come first, then context
-    (AGENTS.md, workspace governance, catalogues), then an optional caller
-    addendum. ``system_prompt_mode="replace"`` omits packaged standing orders.
-    Runtime and beat facts stay in user-turn context.
-    """
-    workspace_governance = render_standing_orders(
-        extract_standing_orders(paths.repo / "docs" / "design-docs" / "core-beliefs.md")
-    )
-    return assemble_session_system_prompt(
-        stable=StablePromptBlock(
-            role=role,
-            include=system_prompt_mode != "replace",
-        ),
-        context=ContextPromptBlock(
-            workspace_governance=workspace_governance,
-            skill_catalogue=catalogue,
-            memory_catalogue=memory_catalogue,
-            agents_md=load_agents_md(working_dir),
-            tool_catalogue=tool_catalogue,
-            subagent_catalogue=subagent_catalogue,
-        ),
-        role_instructions=system_prompt,
-    )
-
-
 def _session_extra_params(
     tools_wire: list[dict[str, Any]], options: SessionOptions
 ) -> dict[str, Any] | None:
@@ -661,21 +625,28 @@ def _build_session_engine(
         if _tool_advertised_to_model(name=tool.name, role_allowed=role_allowed)
     ]
     tools_wire: list[dict[str, Any]] = []
-    for tool, _source in advertised_sourced:
+    advertised_tools: list[AdvertisedTool] = []
+    for tool, source in advertised_sourced:
         params = tool.input_schema()
         if tool.name == "spawn_subagent":
             from dream.tools.builtin.spawn_subagent import build_spawn_parameters
 
             params = build_spawn_parameters(params, effective_subagents)
-        tools_wire.append(
-            {
-                "type": "function",
-                "function": {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": params,
-                },
-            }
+        wire_entry = {
+            "type": "function",
+            "function": {
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": params,
+            },
+        }
+        tools_wire.append(wire_entry)
+        advertised_tools.append(
+            AdvertisedTool(
+                name=tool.name,
+                wire_tokens=estimate_tokens(json.dumps(wire_entry, ensure_ascii=False)),
+                source=source,
+            )
         )
     # Built per session too, so the available-tool set the `skill` tool
     # checks ``tools_required`` against includes late (MCP) registrations.
@@ -695,18 +666,33 @@ def _build_session_engine(
         prompt_mode = manifest.system_prompt_mode
     tool_catalogue = ToolCatalogue.from_sourced(advertised_sourced)
     subagent_catalogue = SubagentCatalogue.for_set(effective_subagents)
-    system_prompt = _assemble_system_prompt(
-        paths=paths,
-        catalogue=catalogue,
-        memory_catalogue=memory_catalogue,
-        system_prompt=options.system_prompt,
+    workspace_governance = render_standing_orders(
+        extract_standing_orders(paths.repo / "docs" / "design-docs" / "core-beliefs.md")
+    )
+    stable_block = StablePromptBlock(
         role=role_name if isinstance(role_name, str) else None,
-        working_dir=working_dir,
-        system_prompt_mode=prompt_mode,
+        include=prompt_mode != "replace",
+    )
+    context_block = ContextPromptBlock(
+        workspace_governance=workspace_governance,
+        skill_catalogue=catalogue,
+        memory_catalogue=memory_catalogue,
+        agents_md=load_agents_md(working_dir),
         tool_catalogue=tool_catalogue.render() if tool_catalogue is not None else "",
         subagent_catalogue=(
             subagent_catalogue.render() if subagent_catalogue is not None else ""
         ),
+    )
+    prompt_surfaces = PromptSurfaces(
+        stable=stable_block,
+        context=context_block,
+        role_instructions=options.system_prompt,
+        tools=tuple(advertised_tools),
+    )
+    system_prompt = assemble_session_system_prompt(
+        stable=stable_block,
+        context=context_block,
+        role_instructions=prompt_surfaces.role_instructions,
     )
     # Failover harvest + Spec-02 pool: every beat rides FailoverStreamer with a
     # CredentialPool (single env key by default; ``.harness/credentials.toml``
@@ -853,4 +839,5 @@ def _build_session_engine(
         hook_executor=hook_executor,
         initial_context=render_runtime_context(runtime_info),
         delegations=harness.config.delegations,
+        prompt_surfaces=prompt_surfaces,
     )
