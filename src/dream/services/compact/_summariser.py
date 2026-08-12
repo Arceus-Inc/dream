@@ -27,7 +27,6 @@ from dream.engine._messages import (
 from dream.prompts.cache_control import (
     OpenAIChatMessage,
     apply_cache_control,
-    encode_openai_messages,
     split_stable_system_prefix,
 )
 from dream.services.compact._carryover_state import CarryoverMetadata
@@ -64,22 +63,6 @@ class CompactionPromptParts:
     stable_prefix: str = ""
     workspace_context: str = ""
     prompt_cache: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class ChatCompletionsRequest:
-    """Non-streaming chat completions body for the summariser HTTP call."""
-
-    model: str
-    messages: tuple[OpenAIChatMessage, ...]
-    stream: bool = False
-
-    def to_json_object(self) -> Mapping[str, object]:
-        return {
-            "model": self.model,
-            "messages": list(encode_openai_messages(self.messages)),
-            "stream": self.stream,
-        }
 
 
 def render_transcript_excerpt(messages: Sequence[ConversationMessage]) -> str:
@@ -223,9 +206,14 @@ def make_llm_summariser(
                 envelopes,
                 static_system_prefix=split.prefix,
             )
-        request = ChatCompletionsRequest(model=model, messages=envelopes)
-        body = dict(request.to_json_object())
-        body = apply_token_limit(body, model)
+        body = apply_token_limit(
+            {
+                "model": model,
+                "messages": [message.to_json_object() for message in envelopes],
+                "stream": False,
+            },
+            model,
+        )
 
         with httpx.Client(timeout=timeout_seconds) as client:
             response = client.post(url, json=body, headers=headers)
@@ -298,7 +286,6 @@ def inject_todo_snapshot(
 
 
 __all__ = [
-    "ChatCompletionsRequest",
     "CompactionPromptParts",
     "build_summary_messages",
     "inject_todo_snapshot",

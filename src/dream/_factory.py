@@ -51,7 +51,6 @@ from dream.prompts import (
     ContextPromptBlock,
     StablePromptBlock,
     assemble_session_system_prompt,
-    assemble_stable_context_prefix,
     load_agents_md,
     render_runtime_context,
 )
@@ -820,14 +819,7 @@ def _build_session_engine(
     # Compact reuses Dream-owned common standing orders as system (cache-aligned
     # with live turns) and keeps workspace catalogues in the user message.
     compact_prompt = CompactionPromptParts(
-        stable_prefix=assemble_stable_context_prefix(
-            stable=StablePromptBlock(role=None),
-            context=ContextPromptBlock(
-                workspace_governance="",
-                skill_catalogue="",
-                memory_catalogue="",
-            ),
-        ),
+        stable_prefix=StablePromptBlock(role=None).render(),
         workspace_context=context_block.render(),
         prompt_cache=capabilities.prompt_cache,
     )

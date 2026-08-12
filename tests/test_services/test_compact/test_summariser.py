@@ -92,21 +92,19 @@ def test_compaction_prompt_parts_defaults_are_empty() -> None:
     assert parts.prompt_cache is False
 
 
-def test_chat_completions_request_encodes_typed_messages() -> None:
+def test_openai_chat_message_encodes_for_compaction_wire() -> None:
     from dream.prompts.cache_control import OpenAIChatMessage, TextContentBlock
-    from dream.services.compact._summariser import ChatCompletionsRequest
 
-    request = ChatCompletionsRequest(
-        model="m",
-        messages=(
-            OpenAIChatMessage(
-                role="system",
-                content=(TextContentBlock(text="stable"),),
-            ),
-            OpenAIChatMessage(role="user", content="compress this"),
-        ),
+    system = OpenAIChatMessage(
+        role="system",
+        content=(TextContentBlock(text="stable"),),
     )
-    body = request.to_json_object()
+    user = OpenAIChatMessage(role="user", content="compress this")
+    body = {
+        "model": "m",
+        "messages": [message.to_json_object() for message in (system, user)],
+        "stream": False,
+    }
     assert body["model"] == "m"
     assert body["stream"] is False
     messages = body["messages"]
