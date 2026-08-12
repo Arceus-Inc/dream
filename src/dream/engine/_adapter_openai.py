@@ -123,10 +123,14 @@ def _apply_cache_to_entries(
     *,
     static_system_prefix: str | None,
 ) -> tuple[_WireEntry, ...]:
-    indices = [index for index, entry in enumerate(entries) if isinstance(entry, OpenAIChatMessage)]
-    if not indices:
+    indices: list[int] = []
+    envelopes: list[OpenAIChatMessage] = []
+    for index, entry in enumerate(entries):
+        if isinstance(entry, OpenAIChatMessage):
+            indices.append(index)
+            envelopes.append(entry)
+    if not envelopes:
         return tuple(entries)
-    envelopes = [entries[index] for index in indices]
     marked = apply_cache_control(envelopes, static_system_prefix=static_system_prefix)
     out = list(entries)
     for index, message in zip(indices, marked, strict=True):
@@ -397,7 +401,7 @@ def httpx_chat_completion_stream(
     extras = dict(extra_params or {})
 
     async def _stream(
-        messages: Sequence[dict[str, Any]], model: str
+        messages: Sequence[Mapping[str, object]], model: str
     ) -> AsyncIterator[dict[str, Any]]:
         body: dict[str, Any] = {
             "model": model,
