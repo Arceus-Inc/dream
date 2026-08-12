@@ -19,12 +19,9 @@ __all__ = [
     "CacheControl",
     "CacheTtl",
     "OpenAIChatMessage",
-    "OpenAIFunctionCall",
-    "OpenAIToolCall",
     "StableSystemSplit",
     "TextContentBlock",
     "apply_cache_control",
-    "encode_openai_messages",
     "split_stable_system_prefix",
 ]
 
@@ -33,7 +30,6 @@ _STABLE_OPEN = "<stable>"
 _STABLE_CLOSE = "</stable>"
 
 JsonObject = Mapping[str, object]
-JsonValue = str | int | float | bool | None | JsonObject | Sequence[object]
 
 
 class CacheTtl(StrEnum):
@@ -77,39 +73,11 @@ class TextContentBlock:
 
 
 @dataclass(frozen=True, slots=True)
-class OpenAIFunctionCall:
-    """OpenAI ``tool_calls[].function`` payload."""
-
-    name: str
-    arguments: str
-
-    def to_json_object(self) -> JsonObject:
-        return {"name": self.name, "arguments": self.arguments}
-
-
-@dataclass(frozen=True, slots=True)
-class OpenAIToolCall:
-    """One assistant tool call on the OpenAI wire."""
-
-    id: str
-    function: OpenAIFunctionCall
-    type: Literal["function"] = "function"
-
-    def to_json_object(self) -> JsonObject:
-        return {
-            "id": self.id,
-            "type": self.type,
-            "function": self.function.to_json_object(),
-        }
-
-
-@dataclass(frozen=True, slots=True)
 class OpenAIChatMessage:
-    """One OpenAI chat message (typed envelope before JSON encoding)."""
+    """Text-only OpenAI chat envelope before JSON encoding."""
 
     role: str
     content: str | tuple[TextContentBlock, ...] | None = None
-    tool_calls: tuple[OpenAIToolCall, ...] | None = None
     tool_call_id: str | None = None
 
     def with_tail_cache(self, marker: CacheControl) -> OpenAIChatMessage:
@@ -120,7 +88,6 @@ class OpenAIChatMessage:
             return OpenAIChatMessage(
                 role=self.role,
                 content=(TextContentBlock(text=self.content, cache_control=marker),),
-                tool_calls=self.tool_calls,
                 tool_call_id=self.tool_call_id,
             )
         if not self.content:
@@ -129,7 +96,6 @@ class OpenAIChatMessage:
         return OpenAIChatMessage(
             role=self.role,
             content=(*head, last.with_cache(marker)),
-            tool_calls=self.tool_calls,
             tool_call_id=self.tool_call_id,
         )
 
@@ -137,11 +103,7 @@ class OpenAIChatMessage:
         payload: dict[str, object] = {"role": self.role}
         if self.tool_call_id is not None:
             payload["tool_call_id"] = self.tool_call_id
-        if self.tool_calls is not None:
-            payload["tool_calls"] = [call.to_json_object() for call in self.tool_calls]
-        if self.content is None and self.tool_calls is not None:
-            payload["content"] = None
-        elif isinstance(self.content, tuple):
+        if isinstance(self.content, tuple):
             payload["content"] = [block.to_json_object() for block in self.content]
         elif self.content is not None:
             payload["content"] = self.content
@@ -192,11 +154,6 @@ def apply_cache_control(
     for index in carriers[-budget:]:
         out[index] = out[index].with_tail_cache(marker)
     return tuple(out)
-
-
-def encode_openai_messages(messages: Sequence[OpenAIChatMessage]) -> tuple[JsonObject, ...]:
-    """HTTP-boundary encoding: typed envelopes → JSON objects for the provider body."""
-    return tuple(message.to_json_object() for message in messages)
 
 
 def _mark_system(
