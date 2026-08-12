@@ -814,13 +814,21 @@ def _build_session_engine(
         context_metadata[SPAWN_COUNT_KEY] = options.metadata.get(SPAWN_COUNT_KEY, [0])
         context_metadata[SPAWN_LEDGER_KEY] = options.metadata.get(SPAWN_LEDGER_KEY, SpawnLedger())
     carryover_metadata = CarryoverMetadata.for_working_dir(str(working_dir))
-    from dream.services.compact._summariser import make_llm_summariser
+    from dream.services.compact._summariser import CompactionPromptParts, make_llm_summariser
 
+    # Compact reuses the live session stable block (cache-aligned with live
+    # turns) and keeps non-instructional catalogues in the user message.
+    compact_prompt = CompactionPromptParts(
+        stable_prefix=stable_block.render(),
+        workspace_context=context_block.render_compact_catalogue_reference(),
+        prompt_cache=capabilities.prompt_cache,
+    )
     compaction_summariser = make_llm_summariser(
         api_key=api_key,
         base_url=base_url,
         model=options.model or model,
         state=carryover_metadata,
+        prompt_parts=compact_prompt,
     )
     return build_query_engine(
         streamer=streamer,

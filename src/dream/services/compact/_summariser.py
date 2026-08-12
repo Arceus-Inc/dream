@@ -14,11 +14,21 @@ prompt + wire call, not the tier policy.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
-from dream.engine._messages import ConversationMessage, TextBlock, ToolUseBlock
+from dream.engine._messages import (
+    ConversationMessage,
+    TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+)
+from dream.prompts.cache_control import (
+    OpenAIChatMessage,
+    apply_cache_control,
+    split_stable_system_prefix,
+)
 from dream.services.compact._carryover_state import CarryoverMetadata
 
 _COMPACTION_SYSTEM = """\
@@ -35,10 +45,40 @@ Preserve concrete file paths, test names, error messages, and decisions.
 Be concise; do not invent facts not present in the transcript."""
 
 _USER_PROMPT_TEMPLATE = """\
-{previous_block}Transcript segment to compress (older messages only; recent tail is kept verbatim elsewhere):
+{previous_block}{workspace_block}Transcript segment to compress (older messages only; recent tail is kept verbatim elsewhere):
 
 {transcript}
 """
+
+
+@dataclass(frozen=True, slots=True)
+class CompactionPromptParts:
+    """Assembler slices reused by the compaction summariser call.
+
+    ``stable_prefix`` mirrors the live session ``<stable>`` block (role chapter
+    included when present). ``workspace_context`` is non-instructional catalogue
+    data for the user message — never mixed into the system cache prefix.
+    """
+
+    stable_prefix: str = ""
+    workspace_context: str = ""
+    prompt_cache: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class CompactionChatRequest:
+    """Non-streaming chat completions body for the summariser HTTP call."""
+
+    model: str
+    messages: tuple[OpenAIChatMessage, ...]
+    stream: bool = False
+
+    def to_json_object(self) -> Mapping[str, object]:
+        return {
+            "model": self.model,
+            "messages": [message.to_json_object() for message in self.messages],
+            "stream": self.stream,
+        }
 
 
 def render_transcript_excerpt(messages: Sequence[ConversationMessage]) -> str:
@@ -52,22 +92,24 @@ def render_transcript_excerpt(messages: Sequence[ConversationMessage]) -> str:
             if isinstance(block, TextBlock):
                 continue  # already captured via msg.text
             name = type(block).__name__
-            snippet: str | None
-            if isinstance(block, ToolUseBlock):
-                if block.input:
-                    payload = json.dumps(block.input, ensure_ascii=False, default=str)
-                    snippet = f"{block.name} {payload}"
-                else:
-                    snippet = block.name
-            else:
-                raw = getattr(block, "content", None) or getattr(block, "name", "")
-                snippet = raw if isinstance(raw, str) else None
-            if isinstance(snippet, str) and snippet.strip():
+            snippet = _block_snippet(block)
+            if snippet is not None and snippet.strip():
                 text = snippet.strip()
                 if len(text) > 500:
                     text = text[:500] + "…"
                 lines.append(f"{role} [{name}]: {text}")
     return "\n".join(lines).strip()
+
+
+def _block_snippet(block: object) -> str | None:
+    if isinstance(block, ToolUseBlock):
+        if block.input:
+            payload = json.dumps(block.input, ensure_ascii=False, default=str)
+            return f"{block.name} {payload}"
+        return block.name
+    if isinstance(block, ToolResultBlock):
+        return block.content
+    return None
 
 
 def build_summary_messages(summary_text: str) -> list[ConversationMessage]:
@@ -88,6 +130,21 @@ def _previous_summary_block(state: CarryoverMetadata) -> str:
     if not previous:
         return ""
     return f"Previous rolling summary:\n{previous}\n\n"
+
+
+def _workspace_context_block(workspace_context: str) -> str:
+    text = workspace_context.strip()
+    if not text:
+        return ""
+    return f"Workspace catalogues (reference only):\n{text}\n\n"
+
+
+def _compaction_system_message(stable_prefix: str) -> str:
+    """Compose summariser system text: live stable prefix + compact instructions."""
+    prefix = stable_prefix.strip()
+    if not prefix:
+        return _COMPACTION_SYSTEM
+    return f"{prefix}\n\n{_COMPACTION_SYSTEM}"
 
 
 def make_deterministic_summariser(
@@ -123,18 +180,27 @@ def make_llm_summariser(
     model: str,
     state: CarryoverMetadata,
     timeout_seconds: float = 90.0,
+    prompt_parts: CompactionPromptParts | None = None,
 ) -> Callable[[list[ConversationMessage]], list[ConversationMessage]]:
-    """Build a sync ``SummariserFn`` that calls the configured chat endpoint once."""
+    """Build a sync ``SummariserFn`` that calls the configured chat endpoint once.
+
+    ``prompt_parts.stable_prefix`` mirrors the live session ``<stable>`` block.
+    Workspace catalogues ride ``prompt_parts.workspace_context`` in the user
+    message. When ``prompt_parts.prompt_cache`` is set, Hermes cache markers
+    are applied so compact can share the live-turn cache prefix.
+    """
 
     import httpx
 
     from dream.api._wire import apply_token_limit
 
+    parts = prompt_parts or CompactionPromptParts()
     url = f"{base_url.rstrip('/')}/chat/completions"
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
+    system_content = _compaction_system_message(parts.stable_prefix)
 
     def _summarise(older: list[ConversationMessage]) -> list[ConversationMessage]:
         excerpt = render_transcript_excerpt(older)
@@ -143,35 +209,52 @@ def make_llm_summariser(
 
         user_content = _USER_PROMPT_TEMPLATE.format(
             previous_block=_previous_summary_block(state),
+            workspace_block=_workspace_context_block(parts.workspace_context),
             transcript=excerpt,
         )
-        body: dict[str, Any] = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": _COMPACTION_SYSTEM},
-                {"role": "user", "content": user_content},
-            ],
-            "stream": False,
-        }
-        body = apply_token_limit(body, model)
+        envelopes: tuple[OpenAIChatMessage, ...] = (
+            OpenAIChatMessage(role="system", content=system_content),
+            OpenAIChatMessage(role="user", content=user_content),
+        )
+        if parts.prompt_cache:
+            split = split_stable_system_prefix(system_content)
+            envelopes = apply_cache_control(
+                envelopes,
+                static_system_prefix=split.prefix,
+            )
+        request = CompactionChatRequest(model=model, messages=envelopes)
+        body = apply_token_limit(dict(request.to_json_object()), model)
 
         with httpx.Client(timeout=timeout_seconds) as client:
             response = client.post(url, json=body, headers=headers)
             response.raise_for_status()
-            payload = response.json()
+            decoded = response.json()
 
-        choices = payload.get("choices") or []
-        if not choices:
-            raise RuntimeError("compaction summariser returned no choices")
-        message = choices[0].get("message") or {}
-        summary_text = str(message.get("content") or "").strip()
-        if not summary_text:
-            raise RuntimeError("compaction summariser returned empty content")
+        if not isinstance(decoded, Mapping):
+            raise RuntimeError("compaction summariser returned non-object JSON payload")
 
+        summary_text = _summary_text_from_payload(decoded)
         state.previous_summary = summary_text
         return build_summary_messages(summary_text)
 
     return _summarise
+
+
+def _summary_text_from_payload(payload: Mapping[str, object]) -> str:
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise RuntimeError("compaction summariser returned no choices")
+    first = choices[0]
+    if not isinstance(first, Mapping):
+        raise RuntimeError("compaction summariser returned malformed choices")
+    message = first.get("message")
+    if not isinstance(message, Mapping):
+        raise RuntimeError("compaction summariser returned malformed message")
+    content = message.get("content")
+    summary_text = str(content or "").strip()
+    if not summary_text:
+        raise RuntimeError("compaction summariser returned empty content")
+    return summary_text
 
 
 def parse_todo_pending(
@@ -216,6 +299,8 @@ def inject_todo_snapshot(
 
 
 __all__ = [
+    "CompactionChatRequest",
+    "CompactionPromptParts",
     "build_summary_messages",
     "inject_todo_snapshot",
     "make_deterministic_summariser",

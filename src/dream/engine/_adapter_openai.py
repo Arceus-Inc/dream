@@ -35,7 +35,7 @@ from collections.abc import (
     Sequence,
 )
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from dream.api._wire import apply_token_limit
 from dream.engine._cost import UsageSnapshot
@@ -58,7 +58,53 @@ from dream.prompts.cache_control import (
     split_stable_system_prefix,
 )
 
-_WireEntry = OpenAIChatMessage | Mapping[str, object]
+# --- OpenAI wire types (adapter-owned; not cache-marked) --------------------
+
+
+@dataclass(frozen=True, slots=True)
+class OpenAIFunctionCall:
+    """OpenAI ``tool_calls[].function`` payload."""
+
+    name: str
+    arguments: str
+
+    def to_json_object(self) -> Mapping[str, object]:
+        return {"name": self.name, "arguments": self.arguments}
+
+
+@dataclass(frozen=True, slots=True)
+class OpenAIToolCall:
+    """One assistant tool call on the OpenAI wire."""
+
+    id: str
+    function: OpenAIFunctionCall
+    type: Literal["function"] = "function"
+
+    def to_json_object(self) -> Mapping[str, object]:
+        return {
+            "id": self.id,
+            "type": self.type,
+            "function": self.function.to_json_object(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class OpenAIAssistantToolMessage:
+    """Assistant turn with ``tool_calls`` (adapter wire; not cache-marked)."""
+
+    tool_calls: tuple[OpenAIToolCall, ...]
+    content: str | None = None
+    role: Literal["assistant"] = "assistant"
+
+    def to_json_object(self) -> Mapping[str, object]:
+        return {
+            "role": self.role,
+            "tool_calls": [call.to_json_object() for call in self.tool_calls],
+            "content": self.content,
+        }
+
+
+_WireEntry = OpenAIChatMessage | OpenAIAssistantToolMessage
 
 StreamChatCompletion = Callable[
     [Sequence[Mapping[str, object]], str],
@@ -139,9 +185,7 @@ def _apply_cache_to_entries(
 
 
 def _encode_wire_entry(entry: _WireEntry) -> Mapping[str, object]:
-    if isinstance(entry, OpenAIChatMessage):
-        return entry.to_json_object()
-    return entry
+    return entry.to_json_object()
 
 
 def _translate_assistant(msg: ConversationMessage) -> tuple[_WireEntry, ...]:
@@ -155,22 +199,21 @@ def _translate_assistant(msg: ConversationMessage) -> tuple[_WireEntry, ...]:
 
     text = "".join(text_parts)
     if tool_blocks:
-        wire: dict[str, object] = {
-            "role": "assistant",
-            "tool_calls": [
-                {
-                    "id": block.id,
-                    "type": "function",
-                    "function": {
-                        "name": block.name,
-                        "arguments": json.dumps(block.input),
-                    },
-                }
-                for block in tool_blocks
-            ],
-        }
-        wire["content"] = text if text else None
-        return (wire,)
+        return (
+            OpenAIAssistantToolMessage(
+                content=text if text else None,
+                tool_calls=tuple(
+                    OpenAIToolCall(
+                        id=block.id,
+                        function=OpenAIFunctionCall(
+                            name=block.name,
+                            arguments=json.dumps(block.input),
+                        ),
+                    )
+                    for block in tool_blocks
+                ),
+            ),
+        )
     return (OpenAIChatMessage(role="assistant", content=text),)
 
 
