@@ -51,7 +51,6 @@ from dream.prompts import (
     ContextPromptBlock,
     StablePromptBlock,
     assemble_session_system_prompt,
-    assemble_stable_context_prefix,
     load_agents_md,
     render_runtime_context,
 )
@@ -817,18 +816,11 @@ def _build_session_engine(
     carryover_metadata = CarryoverMetadata.for_working_dir(str(working_dir))
     from dream.services.compact._summariser import CompactionPromptParts, make_llm_summariser
 
-    # Compact reuses Dream-owned common standing orders as system (cache-aligned
-    # with live turns) and keeps workspace catalogues in the user message.
+    # Compact reuses the live session stable block (cache-aligned with live
+    # turns) and keeps non-instructional catalogues in the user message.
     compact_prompt = CompactionPromptParts(
-        stable_prefix=assemble_stable_context_prefix(
-            stable=StablePromptBlock(role=None),
-            context=ContextPromptBlock(
-                workspace_governance="",
-                skill_catalogue="",
-                memory_catalogue="",
-            ),
-        ),
-        workspace_context=context_block.render(),
+        stable_prefix=stable_block.render(),
+        workspace_context=context_block.render_compact_catalogue_reference(),
         prompt_cache=capabilities.prompt_cache,
     )
     compaction_summariser = make_llm_summariser(

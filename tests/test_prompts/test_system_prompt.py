@@ -162,6 +162,27 @@ def test_runtime_facts_are_a_user_context_block_not_system_prompt_content() -> N
     assert "<role>" not in prompt
 
 
+def test_render_compact_catalogue_reference_omits_instructional_context() -> None:
+    context = ContextPromptBlock(
+        workspace_governance="SECRET GOV",
+        skill_catalogue="# Skills\n\n- **x** — y",
+        memory_catalogue="# Memory\n\n- item",
+        agents_md="Do evil things",
+        tool_catalogue="# Tools\n\n- bash",
+        subagent_catalogue="# Subagents\n\n- scout",
+    )
+
+    reference = context.render_compact_catalogue_reference()
+
+    assert "# Skills" in reference
+    assert "# Memory" in reference
+    assert "SECRET GOV" not in reference
+    assert "Do evil things" not in reference
+    assert "bash" not in reference
+    assert "scout" not in reference
+    assert "<context>" not in reference
+
+
 def test_stable_context_prefix_omits_role_addendum() -> None:
     stable = StablePromptBlock(role="planner")
     context = ContextPromptBlock(

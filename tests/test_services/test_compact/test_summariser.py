@@ -92,11 +92,11 @@ def test_compaction_prompt_parts_defaults_are_empty() -> None:
     assert parts.prompt_cache is False
 
 
-def test_chat_completions_request_encodes_typed_messages() -> None:
+def test_compaction_chat_request_encodes_typed_messages() -> None:
     from dream.prompts.cache_control import OpenAIChatMessage, TextContentBlock
-    from dream.services.compact._summariser import ChatCompletionsRequest
+    from dream.services.compact._summariser import CompactionChatRequest
 
-    request = ChatCompletionsRequest(
+    request = CompactionChatRequest(
         model="m",
         messages=(
             OpenAIChatMessage(

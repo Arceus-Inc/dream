@@ -27,7 +27,6 @@ from dream.engine._messages import (
 from dream.prompts.cache_control import (
     OpenAIChatMessage,
     apply_cache_control,
-    encode_openai_messages,
     split_stable_system_prefix,
 )
 from dream.services.compact._carryover_state import CarryoverMetadata
@@ -56,9 +55,9 @@ _USER_PROMPT_TEMPLATE = """\
 class CompactionPromptParts:
     """Assembler slices reused by the compaction summariser call.
 
-    ``stable_prefix`` is Dream-owned common standing orders only (no phase
-    chapter). ``workspace_context`` is AGENTS/catalogues/governance for the
-    user message — never mixed into the system cache prefix.
+    ``stable_prefix`` mirrors the live session ``<stable>`` block (role chapter
+    included when present). ``workspace_context`` is non-instructional catalogue
+    data for the user message — never mixed into the system cache prefix.
     """
 
     stable_prefix: str = ""
@@ -67,7 +66,7 @@ class CompactionPromptParts:
 
 
 @dataclass(frozen=True, slots=True)
-class ChatCompletionsRequest:
+class CompactionChatRequest:
     """Non-streaming chat completions body for the summariser HTTP call."""
 
     model: str
@@ -77,7 +76,7 @@ class ChatCompletionsRequest:
     def to_json_object(self) -> Mapping[str, object]:
         return {
             "model": self.model,
-            "messages": list(encode_openai_messages(self.messages)),
+            "messages": [message.to_json_object() for message in self.messages],
             "stream": self.stream,
         }
 
@@ -137,11 +136,11 @@ def _workspace_context_block(workspace_context: str) -> str:
     text = workspace_context.strip()
     if not text:
         return ""
-    return f"Workspace context (reference only):\n{text}\n\n"
+    return f"Workspace catalogues (reference only):\n{text}\n\n"
 
 
 def _compaction_system_message(stable_prefix: str) -> str:
-    """Compose summariser system text: Dream-owned stable prefix + compact instructions."""
+    """Compose summariser system text: live stable prefix + compact instructions."""
     prefix = stable_prefix.strip()
     if not prefix:
         return _COMPACTION_SYSTEM
@@ -185,8 +184,8 @@ def make_llm_summariser(
 ) -> Callable[[list[ConversationMessage]], list[ConversationMessage]]:
     """Build a sync ``SummariserFn`` that calls the configured chat endpoint once.
 
-    ``prompt_parts.stable_prefix`` is the Dream-owned common ``<stable>`` block.
-    Workspace material rides ``prompt_parts.workspace_context`` in the user
+    ``prompt_parts.stable_prefix`` mirrors the live session ``<stable>`` block.
+    Workspace catalogues ride ``prompt_parts.workspace_context`` in the user
     message. When ``prompt_parts.prompt_cache`` is set, Hermes cache markers
     are applied so compact can share the live-turn cache prefix.
     """
@@ -223,16 +222,18 @@ def make_llm_summariser(
                 envelopes,
                 static_system_prefix=split.prefix,
             )
-        request = ChatCompletionsRequest(model=model, messages=envelopes)
-        body = dict(request.to_json_object())
-        body = apply_token_limit(body, model)
+        request = CompactionChatRequest(model=model, messages=envelopes)
+        body = apply_token_limit(dict(request.to_json_object()), model)
 
         with httpx.Client(timeout=timeout_seconds) as client:
             response = client.post(url, json=body, headers=headers)
             response.raise_for_status()
-            payload = response.json()
+            decoded = response.json()
 
-        summary_text = _summary_text_from_payload(payload)
+        if not isinstance(decoded, Mapping):
+            raise RuntimeError("compaction summariser returned non-object JSON payload")
+
+        summary_text = _summary_text_from_payload(decoded)
         state.previous_summary = summary_text
         return build_summary_messages(summary_text)
 
@@ -298,7 +299,7 @@ def inject_todo_snapshot(
 
 
 __all__ = [
-    "ChatCompletionsRequest",
+    "CompactionChatRequest",
     "CompactionPromptParts",
     "build_summary_messages",
     "inject_todo_snapshot",

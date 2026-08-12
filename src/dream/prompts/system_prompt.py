@@ -78,6 +78,15 @@ class ContextPromptBlock:
         )
         return _render_block("context", content) if content else ""
 
+    def render_compact_catalogue_reference(self) -> str:
+        """Non-instructional catalogue slices for compaction user context.
+
+        Omits AGENTS.md, governance prose, tool schemas, and subagent
+        definitions so workspace-controlled instructions cannot influence the
+        rolling summary.
+        """
+        return _join(self.skill_catalogue, self.memory_catalogue)
+
 
 def render_runtime_context(runtime_info: str) -> str:
     """Volatile host facts injected before the first user turn."""
