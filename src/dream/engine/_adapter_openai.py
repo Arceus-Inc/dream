@@ -54,12 +54,11 @@ from dream.engine._messages import (
 )
 from dream.prompts.cache_control import (
     OpenAIChatMessage,
-    OpenAIFunctionCall,
-    OpenAIToolCall,
     apply_cache_control,
-    encode_openai_messages,
     split_stable_system_prefix,
 )
+
+_WireEntry = OpenAIChatMessage | Mapping[str, object]
 
 StreamChatCompletion = Callable[
     [Sequence[Mapping[str, object]], str],
@@ -92,23 +91,23 @@ def conversation_to_openai_messages(
     ``ImageBlock``s are not yet mapped; they pass through as part of the
     text content concatenation.
     """
-    envelopes = _conversation_to_envelopes(messages, system_prompt=system_prompt)
+    entries = _conversation_to_wire_entries(messages, system_prompt=system_prompt)
     if prompt_cache:
         prefix = (
             split_stable_system_prefix(system_prompt).prefix
             if system_prompt is not None
             else None
         )
-        envelopes = apply_cache_control(envelopes, static_system_prefix=prefix)
-    return list(encode_openai_messages(envelopes))
+        entries = _apply_cache_to_entries(entries, static_system_prefix=prefix)
+    return [_encode_wire_entry(entry) for entry in entries]
 
 
-def _conversation_to_envelopes(
+def _conversation_to_wire_entries(
     messages: Sequence[ConversationMessage],
     *,
     system_prompt: str | None,
-) -> tuple[OpenAIChatMessage, ...]:
-    out: list[OpenAIChatMessage] = []
+) -> tuple[_WireEntry, ...]:
+    out: list[_WireEntry] = []
     if system_prompt is not None:
         out.append(OpenAIChatMessage(role="system", content=system_prompt))
     for msg in messages:
@@ -119,32 +118,55 @@ def _conversation_to_envelopes(
     return tuple(out)
 
 
-def _translate_assistant(msg: ConversationMessage) -> tuple[OpenAIChatMessage, ...]:
+def _apply_cache_to_entries(
+    entries: Sequence[_WireEntry],
+    *,
+    static_system_prefix: str | None,
+) -> tuple[_WireEntry, ...]:
+    indices = [index for index, entry in enumerate(entries) if isinstance(entry, OpenAIChatMessage)]
+    if not indices:
+        return tuple(entries)
+    envelopes = [entries[index] for index in indices]
+    marked = apply_cache_control(envelopes, static_system_prefix=static_system_prefix)
+    out = list(entries)
+    for index, message in zip(indices, marked, strict=True):
+        out[index] = message
+    return tuple(out)
+
+
+def _encode_wire_entry(entry: _WireEntry) -> Mapping[str, object]:
+    if isinstance(entry, OpenAIChatMessage):
+        return entry.to_json_object()
+    return entry
+
+
+def _translate_assistant(msg: ConversationMessage) -> tuple[_WireEntry, ...]:
     text_parts: list[str] = []
-    tool_calls: list[OpenAIToolCall] = []
+    tool_blocks: list[ToolUseBlock] = []
     for block in msg.content:
         if isinstance(block, TextBlock):
             text_parts.append(block.text)
         elif isinstance(block, ToolUseBlock):
-            tool_calls.append(
-                OpenAIToolCall(
-                    id=block.id,
-                    function=OpenAIFunctionCall(
-                        name=block.name,
-                        arguments=json.dumps(block.input),
-                    ),
-                )
-            )
+            tool_blocks.append(block)
 
     text = "".join(text_parts)
-    if tool_calls:
-        return (
-            OpenAIChatMessage(
-                role="assistant",
-                content=text if text else None,
-                tool_calls=tuple(tool_calls),
-            ),
-        )
+    if tool_blocks:
+        wire: dict[str, object] = {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": block.id,
+                    "type": "function",
+                    "function": {
+                        "name": block.name,
+                        "arguments": json.dumps(block.input),
+                    },
+                }
+                for block in tool_blocks
+            ],
+        }
+        wire["content"] = text if text else None
+        return (wire,)
     return (OpenAIChatMessage(role="assistant", content=text),)
 
 
