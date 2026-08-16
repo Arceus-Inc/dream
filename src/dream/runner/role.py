@@ -246,6 +246,7 @@ async def run_role(
                         tool=ev.name,
                         is_error=ev.is_error,
                         content=ev.content,
+                        structured=dict(ev.structured) if ev.structured is not None else None,
                     )
                 )
             # First error wins; the engine may surface a follow-up
