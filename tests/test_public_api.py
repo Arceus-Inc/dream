@@ -15,6 +15,9 @@ EXPECTED_PUBLIC_API: frozenset[str] = frozenset({
     "Session", "SessionOptions", "SessionCost",
     # durable sessions
     "SessionHandle", "SessionSnapshot", "FileSessionStore",
+    "RunTrace",
+    "FrozenJsonArray", "FrozenJsonObject", "FrozenJsonValue",
+    "freeze_json_value", "thaw_json_value",
     # events
     "Event", "TextDelta", "ToolUseStart", "ToolUseResult", "TurnComplete",
     "Compacted", "HookBlocked", "PermissionDenied", "Error",

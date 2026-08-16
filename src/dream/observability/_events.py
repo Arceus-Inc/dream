@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal, cast, get_args
 
+from dream._immutable_json import FrozenJsonObject
 from dream.utils.fs import compact_json
 
 TraceEventType = Literal[
@@ -47,7 +48,16 @@ class TraceEvent:
     event_type: TraceEventType
     span_id: str
     parent_span_id: str | None
-    attributes: Mapping[str, object]
+    attributes: FrozenJsonObject
+
+    def __post_init__(self) -> None:
+        raw: object = self.attributes
+        if isinstance(raw, FrozenJsonObject):
+            return
+        if not isinstance(raw, Mapping):
+            object.__setattr__(self, "attributes", FrozenJsonObject())
+            return
+        object.__setattr__(self, "attributes", FrozenJsonObject.capture(raw))
 
 
 def to_jsonl_line(event: TraceEvent) -> str:
@@ -58,7 +68,7 @@ def to_jsonl_line(event: TraceEvent) -> str:
         "event_type": event.event_type,
         "span_id": event.span_id,
         "parent_span_id": event.parent_span_id,
-        "attributes": dict(event.attributes),
+        "attributes": event.attributes.thaw(),
     }
     return compact_json(payload)
 
@@ -68,6 +78,11 @@ def from_jsonl_line(line: str) -> TraceEvent:
     event_type = data["event_type"]
     if event_type not in _EVENT_TYPES:
         raise ValueError(f"unknown trace event_type: {event_type!r}")
+    raw_attrs: object = data.get("attributes", {})
+    if isinstance(raw_attrs, Mapping):
+        attributes = FrozenJsonObject.capture(raw_attrs)
+    else:
+        attributes = FrozenJsonObject()
     return TraceEvent(
         ts=data["ts"],
         session_id=data["session_id"],
@@ -75,7 +90,7 @@ def from_jsonl_line(line: str) -> TraceEvent:
         event_type=cast(TraceEventType, event_type),
         span_id=data["span_id"],
         parent_span_id=data.get("parent_span_id"),
-        attributes=data.get("attributes", {}),
+        attributes=attributes,
     )
 
 

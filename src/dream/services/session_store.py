@@ -22,6 +22,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal, TypeGuard
 
+from dream._immutable_json import FrozenJsonArray, FrozenJsonObject, thaw_json_value
 from dream.api.structured import JsonValue
 from dream.engine._messages import (
     ContentBlock,
@@ -83,7 +84,15 @@ class ToolUseBlockRecord:
     kind: Literal["tool_use"]
     id: str
     name: str
-    input: dict[str, JsonValue]
+    input: FrozenJsonObject
+
+    def __post_init__(self) -> None:
+        raw: object = self.input
+        if isinstance(raw, FrozenJsonObject):
+            return
+        if not isinstance(raw, Mapping):
+            raise TypeError(f"tool input must be a mapping, got {type(raw).__name__}")
+        object.__setattr__(self, "input", FrozenJsonObject.capture(raw))
 
 
 @dataclass(frozen=True)
@@ -100,7 +109,10 @@ ContentBlockRecord = TextBlockRecord | ImageBlockRecord | ToolUseBlockRecord | T
 @dataclass(frozen=True)
 class ConversationMessageRecord:
     role: RoleLiteral
-    content: list[ContentBlockRecord]
+    content: tuple[ContentBlockRecord, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "content", tuple(self.content))
 
 
 @dataclass(frozen=True)
@@ -116,20 +128,35 @@ class SessionCostSnapshot:
 class ToolCallRecord:
     tool_use_id: str
     tool_name: str
-    input: dict[str, JsonValue]
+    input: FrozenJsonObject
     result_content: str | None
     is_error: bool | None
+
+    def __post_init__(self) -> None:
+        raw: object = self.input
+        if isinstance(raw, FrozenJsonObject):
+            return
+        if not isinstance(raw, Mapping):
+            raise TypeError(f"tool input must be a mapping, got {type(raw).__name__}")
+        object.__setattr__(self, "input", FrozenJsonObject.capture(raw))
 
 
 @dataclass(frozen=True)
 class SessionSnapshot:
+    """Immutable durable state of one provider-independent session.
+
+    The file-store codec remains the source of truth for serialization; this
+    value object gives callers a stable point-in-time view without exposing
+    mutable transcript collections.
+    """
+
     schema_version: int
     session_id: str
     model: str
     system_prompt: str | None
     cost: SessionCostSnapshot
-    messages: list[ConversationMessageRecord]
-    tool_calls: list[ToolCallRecord]
+    messages: tuple[ConversationMessageRecord, ...]
+    tool_calls: tuple[ToolCallRecord, ...]
     saved_at: datetime
     # Keyword-only from here down. Each of these is something the harness
     # learned to persist after the fact, and the next one will land beside
@@ -139,7 +166,19 @@ class SessionSnapshot:
     # working directory replays a transcript about other files, so the harness
     # refuses it unless the caller opts in. ``None`` for engine-less sessions.
     working_dir: str | None = field(default=None, kw_only=True)
-    metadata: dict[str, JsonValue] = field(default_factory=dict, kw_only=True)
+    metadata: FrozenJsonObject = field(default_factory=FrozenJsonObject, kw_only=True)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "messages", tuple(self.messages))
+        object.__setattr__(self, "tool_calls", tuple(self.tool_calls))
+        raw_metadata: object = self.metadata
+        if isinstance(raw_metadata, FrozenJsonObject):
+            return
+        if not isinstance(raw_metadata, Mapping):
+            raise TypeError(
+                f"snapshot metadata must be a mapping, got {type(raw_metadata).__name__}"
+            )
+        object.__setattr__(self, "metadata", FrozenJsonObject.capture(raw_metadata))
 
 
 @dataclass(frozen=True)
@@ -185,6 +224,10 @@ def checked_session_id(session_id: str) -> str:
 
 
 def is_json_value(value: object) -> TypeGuard[JsonValue]:
+    if isinstance(value, FrozenJsonArray):
+        return all(is_json_value(item) for item in value)
+    if isinstance(value, FrozenJsonObject):
+        return all(isinstance(key, str) and is_json_value(item) for key, item in value.items())
     if value is None or isinstance(value, (str, int, float, bool)):
         return True
     if isinstance(value, list):
@@ -195,14 +238,26 @@ def is_json_value(value: object) -> TypeGuard[JsonValue]:
 
 
 def json_dict_from_mapping(raw: Mapping[str, object]) -> dict[str, JsonValue]:
+    if isinstance(raw, FrozenJsonObject):
+        return raw.thaw()
     out: dict[str, JsonValue] = {}
     for key, value in raw.items():
         if not isinstance(key, str):
             raise ValueError(f"JSON object key must be str, got {type(key).__name__}")
-        if not is_json_value(value):
-            raise ValueError(f"value for {key!r} is not a valid JsonValue")
-        out[key] = value
+        out[key] = _json_value_from_object(value, key=key)
     return out
+
+
+def _json_value_from_object(value: object, *, key: str) -> JsonValue:
+    if isinstance(value, (FrozenJsonArray, FrozenJsonObject)):
+        return thaw_json_value(value)
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, list):
+        return [_json_value_from_object(item, key=key) for item in value]
+    if isinstance(value, Mapping):
+        return json_dict_from_mapping(value)
+    raise ValueError(f"value for {key!r} is not a valid JsonValue")
 
 
 def message_to_record(message: ConversationMessage) -> ConversationMessageRecord:
@@ -210,7 +265,7 @@ def message_to_record(message: ConversationMessage) -> ConversationMessageRecord
     for block in message.content:
         blocks.append(block_to_record(block))
     role: RoleLiteral = message.role
-    return ConversationMessageRecord(role=role, content=blocks)
+    return ConversationMessageRecord(role=role, content=tuple(blocks))
 
 
 def block_to_record(block: ContentBlock) -> ContentBlockRecord:
@@ -223,7 +278,7 @@ def block_to_record(block: ContentBlock) -> ContentBlockRecord:
             kind="tool_use",
             id=block.id,
             name=block.name,
-            input=json_dict_from_mapping(block.input),
+            input=FrozenJsonObject.capture(block.input),
         )
     if isinstance(block, ToolResultBlock):
         return ToolResultBlockRecord(
@@ -247,7 +302,11 @@ def record_to_block(record: ContentBlockRecord) -> ContentBlock:
     if isinstance(record, ImageBlockRecord):
         return ImageBlock(media_type=record.media_type, data=record.data)
     if isinstance(record, ToolUseBlockRecord):
-        return ToolUseBlock(id=record.id, name=record.name, input=dict(record.input))
+        return ToolUseBlock(
+            id=record.id,
+            name=record.name,
+            input=json_dict_from_mapping(record.input),
+        )
     if isinstance(record, ToolResultBlockRecord):
         return ToolResultBlock(
             tool_use_id=record.tool_use_id,
@@ -257,7 +316,7 @@ def record_to_block(record: ContentBlockRecord) -> ContentBlock:
     raise TypeError(f"unsupported content block record: {type(record).__name__}")
 
 
-def extract_tool_calls(messages: Sequence[ConversationMessage]) -> list[ToolCallRecord]:
+def extract_tool_calls(messages: Sequence[ConversationMessage]) -> tuple[ToolCallRecord, ...]:
     """Pair each ``ToolUseBlock`` with its matching ``ToolResultBlock``."""
     results_by_id: dict[str, ToolResultBlock] = {}
     for message in messages:
@@ -275,12 +334,12 @@ def extract_tool_calls(messages: Sequence[ConversationMessage]) -> list[ToolCall
                 ToolCallRecord(
                     tool_use_id=block.id,
                     tool_name=block.name,
-                    input=json_dict_from_mapping(block.input),
+                    input=FrozenJsonObject.capture(block.input),
                     result_content=result.content if result is not None else None,
                     is_error=result.is_error if result is not None else None,
                 )
             )
-    return records
+    return tuple(records)
 
 
 def snapshot_to_dict(snapshot: SessionSnapshot) -> dict[str, object]:
@@ -291,7 +350,7 @@ def snapshot_to_dict(snapshot: SessionSnapshot) -> dict[str, object]:
         "system_prompt": snapshot.system_prompt,
         "max_turns": snapshot.max_turns,
         "working_dir": snapshot.working_dir,
-        "metadata": snapshot.metadata,
+        "metadata": json_dict_from_mapping(snapshot.metadata),
         "cost": {
             "input_tokens": snapshot.cost.input_tokens,
             "output_tokens": snapshot.cost.output_tokens,
@@ -327,12 +386,12 @@ def snapshot_from_dict(data: Mapping[str, object]) -> SessionSnapshot:
             cache_write_tokens=_require_int(cost_raw, "cache_write_tokens"),
             cost_usd=_require_float(cost_raw, "cost_usd"),
         ),
-        messages=[_message_record_from_dict(item) for item in messages_raw],
-        tool_calls=[_tool_call_from_dict(item) for item in tool_calls_raw],
+        messages=tuple(_message_record_from_dict(item) for item in messages_raw),
+        tool_calls=tuple(_tool_call_from_dict(item) for item in tool_calls_raw),
         saved_at=datetime.fromisoformat(saved_at_raw),
         max_turns=_optional_int(data.get("max_turns")),
         working_dir=_optional_str(data.get("working_dir"), label="working_dir"),
-        metadata=json_dict_from_mapping(_optional_mapping(data.get("metadata"))),
+        metadata=FrozenJsonObject.capture(_optional_mapping(data.get("metadata"))),
     )
 
 
@@ -444,7 +503,7 @@ def _block_record_to_dict(block: ContentBlockRecord) -> dict[str, object]:
             "kind": "tool_use",
             "id": block.id,
             "name": block.name,
-            "input": block.input,
+            "input": json_dict_from_mapping(block.input),
         }
     if isinstance(block, ToolResultBlockRecord):
         return {
@@ -460,7 +519,7 @@ def _tool_call_to_dict(record: ToolCallRecord) -> dict[str, object]:
     return {
         "tool_use_id": record.tool_use_id,
         "tool_name": record.tool_name,
-        "input": record.input,
+        "input": json_dict_from_mapping(record.input),
         "result_content": record.result_content,
         "is_error": record.is_error,
     }
@@ -478,7 +537,7 @@ def _message_record_from_dict(raw: object) -> ConversationMessageRecord:
     content_raw = _require_list(data, "content")
     return ConversationMessageRecord(
         role=role,
-        content=[_block_record_from_dict(item) for item in content_raw],
+        content=tuple(_block_record_from_dict(item) for item in content_raw),
     )
 
 
@@ -499,7 +558,7 @@ def _block_record_from_dict(raw: object) -> ContentBlockRecord:
             kind="tool_use",
             id=_require_str(data, "id"),
             name=_require_str(data, "name"),
-            input=json_dict_from_mapping(input_raw),
+            input=FrozenJsonObject.capture(input_raw),
         )
     if kind == "tool_result":
         return ToolResultBlockRecord(
@@ -519,7 +578,7 @@ def _tool_call_from_dict(raw: object) -> ToolCallRecord:
     return ToolCallRecord(
         tool_use_id=_require_str(data, "tool_use_id"),
         tool_name=_require_str(data, "tool_name"),
-        input=json_dict_from_mapping(input_raw),
+        input=FrozenJsonObject.capture(input_raw),
         result_content=str(result_content) if result_content is not None else None,
         is_error=bool(is_error) if is_error is not None else None,
     )

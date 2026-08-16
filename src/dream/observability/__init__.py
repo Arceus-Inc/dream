@@ -27,6 +27,7 @@ from dream.observability._query import (
     query_metrics,
     read_events,
 )
+from dream.observability._run_trace import RunTrace
 from dream.observability._tracer import JsonlTracer, NoopTracer, Span, Tracer
 from dream.observability._writer import TraceWriter
 
@@ -36,6 +37,7 @@ __all__ = [
     "LogQuery",
     "NoopTracer",
     "QueryError",
+    "RunTrace",
     "Span",
     "TraceEvent",
     "TraceEventType",

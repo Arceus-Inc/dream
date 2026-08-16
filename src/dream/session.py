@@ -27,6 +27,7 @@ from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from dream._immutable_json import FrozenJsonObject
 from dream.api.response_format import ResponseFormat
 from dream.engine._events import (
     AssistantTextDelta,
@@ -63,7 +64,6 @@ from dream.services.session_store import (
     cost_snapshot_from_fields,
     extract_tool_calls,
     is_json_value,
-    json_dict_from_mapping,
     message_to_record,
     messages_from_records,
 )
@@ -284,7 +284,7 @@ class Session:
         from datetime import UTC, datetime
 
         model = self.options.model or self.model
-        metadata = json_dict_from_mapping(
+        metadata = FrozenJsonObject.capture(
             {
                 key: value
                 for key, value in self.options.metadata.items()
@@ -298,7 +298,7 @@ class Session:
             model=model,
             system_prompt=self.options.system_prompt,
             cost=self._current_cost(),
-            messages=[message_to_record(m) for m in consistent],
+            messages=tuple(message_to_record(m) for m in consistent),
             tool_calls=extract_tool_calls(consistent),
             saved_at=datetime.now(tz=UTC),
             max_turns=self._effective_max_turns(),
