@@ -102,6 +102,7 @@ def test_home_side_paths(tmp_path: Path) -> None:
     assert p.tasks_dir == p.home / "data" / "tasks"
     assert p.memory_dir == p.home / "memory"
     assert p.skills_dir == p.home / "skills"
+    assert p.checkpoints_dir == p.home / "checkpoints"
 
 
 def test_reading_properties_creates_nothing(tmp_path: Path) -> None:
@@ -121,6 +122,7 @@ def test_reading_properties_creates_nothing(tmp_path: Path) -> None:
         p.tasks_dir,
         p.memory_dir,
         p.skills_dir,
+        p.checkpoints_dir,
         p.worktree("T1"),
         p.sidecar("T1"),
     )

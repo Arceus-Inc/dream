@@ -32,9 +32,14 @@ class ShadowCheckpointHook:
         self._manager = manager
         self._working_dir = working_dir
 
+    @staticmethod
+    def _session_id(payload: Mapping[str, Any]) -> str | None:
+        raw_session_id = payload.get("session_id")
+        return str(raw_session_id) if raw_session_id is not None else None
+
     async def __call__(self, event: HookEvent, payload: Mapping[str, Any]) -> HookResult:
         if event is HookEvent.USER_PROMPT_SUBMIT:
-            self._manager.begin_turn()
+            self._manager.begin_turn(self._session_id(payload))
             return HookResult()
 
         if event is not HookEvent.PRE_TOOL_USE:
@@ -45,7 +50,11 @@ class ShadowCheckpointHook:
         if reason is None:
             return HookResult()
 
-        self._manager.ensure(self._working_dir, reason=reason)
+        self._manager.ensure(
+            self._working_dir,
+            reason=reason,
+            session_id=self._session_id(payload),
+        )
         return HookResult()
 
 

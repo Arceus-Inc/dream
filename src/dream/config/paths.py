@@ -207,6 +207,11 @@ class DreamPaths:
     def skills_dir(self) -> Path:
         return self.home / "skills"
 
+    @property
+    def checkpoints_dir(self) -> Path:
+        """Shared shadow-git store root under ``$DREAM_HOME/checkpoints``."""
+        return self.home / "checkpoints"
+
     # --- the one explicit side effect ---
 
     def ensure(self) -> DreamPaths:
