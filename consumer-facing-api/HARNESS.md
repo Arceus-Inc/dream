@@ -333,7 +333,10 @@ trace (§5a `query_logs`/`query_metrics`).
 `task.started/completed`, `planner.*`, `sprint.*` (incl. `sprint.escalated`),
 contract events, generator/evaluator session open/close with streamed text
 and tool calls, and `head.retry`; OTel-shaped JSONL trace per session
-(`JsonlTracer`/`TraceWriter`, under `DREAM_HOME`); runtime events JSONL +
+(`JsonlTracer`/`TraceWriter`, under `DREAM_HOME`) plus default-on OTLP
+export through `CompositeTracer` (endpoint `http://localhost:4318`;
+`OTEL_SDK_DISABLED=true` keeps JSONL only; process shutdown waits at most
+5s if no collector is listening); runtime events JSONL +
 `dream.tail_events`; `SessionCost` accounting (gateway-dependent today).
 
 ## 13. Sandbox execution
