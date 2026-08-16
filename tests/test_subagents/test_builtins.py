@@ -5,11 +5,11 @@ from __future__ import annotations
 from dream.subagents import (
     EXPLORE,
     GENERAL_PURPOSE,
-    IsolationMode,
     PLAN,
+    VERIFY,
+    IsolationMode,
     Subagent,
     SubagentSet,
-    VERIFY,
     builtin_agents,
     merge_builtins,
 )
@@ -60,6 +60,22 @@ class TestBuiltins:
         )
         assert agent is not None
         assert agent.name == EXPLORE
+
+    def test_resolve_uses_role_override_not_builtin(self) -> None:
+        custom = Subagent(
+            name=EXPLORE,
+            description="role override",
+            tools=("read_file", "grep"),
+        )
+        agent = resolve_agent(
+            EXPLORE,
+            subagent_set=SubagentSet(agents={EXPLORE: custom}),
+            parent_tools=frozenset({"read_file", "grep"}),
+            parent_name=None,
+        )
+        assert agent is not None
+        assert agent.description == "role override"
+        assert agent.tools == ("read_file", "grep")
 
     def test_spawned_by_enforced(self) -> None:
         gated = Subagent(

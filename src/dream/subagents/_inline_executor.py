@@ -8,6 +8,7 @@ when ``IsolationMode.WORKTREE``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -17,7 +18,7 @@ from dream.events import ToolUseResult, ToolUseStart
 from dream.roles._manifest import RoleManifest
 from dream.session import SessionOptions
 from dream.subagents._declaration import MAX_INLINE_NESTING, Subagent, SubagentSet
-from dream.subagents._host_blocklist import strip_host_blocked
+from dream.subagents._host_blocklist import strip_host_blocked, strip_unconfinable_commands
 from dream.subagents._isolation import IsolationMode
 from dream.subagents._output_guard import enforce_output_schema
 from dream.subagents._projection import SubagentResult, intersect_tools
@@ -61,8 +62,7 @@ async def run_subagent_session(
                     output="",
                     success=False,
                     error=(
-                        "IsolationMode.WORKTREE requires parent working_dir and "
-                        "session scratch_dir"
+                        "IsolationMode.WORKTREE requires parent working_dir and session scratch_dir"
                     ),
                     turns_used=0,
                 )
@@ -77,6 +77,7 @@ async def run_subagent_session(
                     goal,
                     context,
                     workspace_path=str(child_cwd),
+                    ephemeral_workspace=True,
                 )
 
         manifest = _build_subagent_manifest(agent, parent_tools=parent_tools)
@@ -91,7 +92,7 @@ async def run_subagent_session(
         if agent.permission_overlay:
             child_metadata[SUBAGENT_OVERLAY_METADATA_KEY] = agent.permission_overlay
         if child_cwd is not None:
-            child_metadata[SUBAGENT_WORKING_DIR_METADATA_KEY] = str(child_cwd)
+            child_metadata[SUBAGENT_WORKING_DIR_METADATA_KEY] = child_cwd
 
         response_format = None
         if agent.output_schema is not None:
@@ -143,7 +144,8 @@ async def run_subagent_session(
         )
     finally:
         if worktree is not None:
-            worktree.remove()
+            with contextlib.suppress(Exception):
+                worktree.remove()
 
 
 def build_child_spawn_metadata(
@@ -200,6 +202,8 @@ def _build_subagent_manifest(
     effective_tools = intersect_tools(agent.tools, parent_tools)
     can_spawn = _can_spawn(agent)
     effective_tools = strip_host_blocked(effective_tools, keep_spawn=can_spawn)
+    if agent.isolation is IsolationMode.WORKTREE:
+        effective_tools = strip_unconfinable_commands(effective_tools)
 
     spawn_note = (
         "You may dispatch your declared subagent(s) with spawn_subagent when it helps."

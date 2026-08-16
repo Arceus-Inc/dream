@@ -1,41 +1,50 @@
-"""Tighten-only permission overlay applied to a child session gate."""
+"""Tighten-only permission overlay and worktree confinement wrappers."""
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from dream.engine._tool_dispatch import PermissionGate
 from dream.permissions import Outcome, PermissionDecision, PermissionRequest
-from dream.subagents._declaration import PermissionDelta
-
-# Capability tokens understood by the overlay (see dream.permissions PermissionEffect).
-_WRITE_TOKENS: frozenset[str] = frozenset({"write", "repo-write", "repo-write+net-allowlist"})
+from dream.permissions._path_validator import validate_repo_write
+from dream.subagents._overlay import EXECUTE_TOOLS, PermissionOverlay
 
 
 def wrap_permission_gate(
     parent_gate: PermissionGate,
-    overlay: PermissionDelta,
+    overlay: PermissionOverlay,
 ) -> PermissionGate:
-    """Return a gate that denies overlay tokens, then consults ``parent_gate``.
+    """Return a gate that applies overlay denies, then consults ``parent_gate``.
 
-    Overlay entries that look like tool names deny those tools. Entries in
-    ``_WRITE_TOKENS`` deny any non-read-only request.
+    Overlay flags only deny. The parent decision is the sole allow path, so
+    the child cannot widen past the parent.
     """
     if not overlay:
         return parent_gate
 
-    deny_tools = frozenset(token for token in overlay if token not in _WRITE_TOKENS)
-    deny_writes = bool(_WRITE_TOKENS.intersection(overlay))
-
     def gate(request: PermissionRequest) -> PermissionDecision:
-        if request.tool_name in deny_tools:
+        if request.tool_name in overlay.tools:
             return PermissionDecision(
                 outcome=Outcome.DENY,
                 reason=f"subagent permission_overlay denies tool {request.tool_name!r}",
                 rule="subagent_permission_overlay",
             )
-        if deny_writes and not request.is_read_only:
+        if overlay.write and (not request.is_read_only or _is_execute(request)):
             return PermissionDecision(
                 outcome=Outcome.DENY,
                 reason="subagent permission_overlay denies write effects",
+                rule="subagent_permission_overlay",
+            )
+        if overlay.network and (request.network_host is not None or _is_execute(request)):
+            return PermissionDecision(
+                outcome=Outcome.DENY,
+                reason="subagent permission_overlay denies network effects",
+                rule="subagent_permission_overlay",
+            )
+        if overlay.execute and _is_execute(request):
+            return PermissionDecision(
+                outcome=Outcome.DENY,
+                reason="subagent permission_overlay denies execute effects",
                 rule="subagent_permission_overlay",
             )
         return parent_gate(request)
@@ -43,4 +52,40 @@ def wrap_permission_gate(
     return gate
 
 
-__all__ = ["wrap_permission_gate"]
+def confine_permission_gate(parent_gate: PermissionGate, cwd: Path) -> PermissionGate:
+    """Deny mutating paths that resolve outside ``cwd``.
+
+    Used for ``IsolationMode.WORKTREE`` so the child cannot write the parent
+    tree even when the parent policy lists extra-allowed roots.
+    """
+    root = cwd.resolve()
+
+    def gate(request: PermissionRequest) -> PermissionDecision:
+        if _is_execute(request):
+            return PermissionDecision(
+                outcome=Outcome.DENY,
+                reason=(
+                    "worktree isolation denies unconfinable command execution "
+                    f"({request.tool_name!r})"
+                ),
+                rule="subagent_worktree_confine",
+            )
+        if not request.is_read_only:
+            for path in request.target_paths:
+                ok, reason = validate_repo_write(path, root)
+                if not ok:
+                    return PermissionDecision(
+                        outcome=Outcome.DENY,
+                        reason=reason,
+                        rule="subagent_worktree_confine",
+                    )
+        return parent_gate(request)
+
+    return gate
+
+
+def _is_execute(request: PermissionRequest) -> bool:
+    return request.tool_name in EXECUTE_TOOLS or request.command is not None
+
+
+__all__ = ["confine_permission_gate", "wrap_permission_gate"]

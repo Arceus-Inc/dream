@@ -14,9 +14,10 @@ from typing import cast
 
 from dream.api.response_format import JsonSchema
 from dream.subagents._isolation import IsolationMode
+from dream.subagents._overlay import PermissionOverlay
 
-PermissionDelta = tuple[str, ...]
-"""Tighten-only permission overlay — tokens to *remove* from the parent. Never widens."""
+PermissionDelta = PermissionOverlay
+"""Tighten-only permission overlay. Never widens the parent."""
 
 MAX_INLINE_NESTING = 2
 """Hard cap on mid-beat subagent nesting (Hermes-flat default; depth-2 for rare orchestrators).
@@ -47,7 +48,7 @@ class Subagent:
 
     tools: tuple[str, ...]
     skills: tuple[str, ...] = ()
-    permission_overlay: PermissionDelta = ()
+    permission_overlay: PermissionOverlay = field(default_factory=PermissionOverlay)
     depth: int = 1
     model: str | None = None
     spawned_by: tuple[str, ...] = ()
@@ -69,9 +70,10 @@ class Subagent:
         if self.depth < 1:
             raise ValueError(f"Subagent.depth must be >= 1; got {self.depth}")
         if not isinstance(self.isolation, IsolationMode):
-            raise TypeError(
-                f"Subagent.isolation must be IsolationMode; got {type(self.isolation)}"
-            )
+            raise TypeError(f"Subagent.isolation must be IsolationMode; got {type(self.isolation)}")
+        object.__setattr__(
+            self, "permission_overlay", PermissionOverlay.parse(self.permission_overlay)
+        )
 
     def to_dict(self) -> dict[str, object]:
         schema_doc: dict[str, object] | None
@@ -86,7 +88,7 @@ class Subagent:
             "description": self.description,
             "tools": list(self.tools),
             "skills": list(self.skills),
-            "permission_overlay": list(self.permission_overlay),
+            "permission_overlay": list(self.permission_overlay.as_tokens()),
             "depth": self.depth,
             "model": self.model,
             "spawned_by": list(self.spawned_by),
@@ -100,7 +102,7 @@ class Subagent:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, object]) -> Subagent:
-        raw_schema = data["output_schema"] if "output_schema" in data else None
+        raw_schema = data.get("output_schema")
         output_schema: JsonSchema | None
         if raw_schema is None:
             output_schema = None
@@ -117,13 +119,13 @@ class Subagent:
         if not isinstance(tools_raw, Sequence) or isinstance(tools_raw, (str, bytes)):
             raise TypeError("Subagent.tools must be a sequence of strings")
 
-        spawnable_raw = data["spawnable"] if "spawnable" in data else ()
+        spawnable_raw = data.get("spawnable", ())
         if spawnable_raw is None:
             spawnable_raw = ()
         if not isinstance(spawnable_raw, Sequence) or isinstance(spawnable_raw, (str, bytes)):
             raise TypeError("Subagent.spawnable must be a sequence")
 
-        isolation_raw = data["isolation"] if "isolation" in data else IsolationMode.SHARED.value
+        isolation_raw = data.get("isolation", IsolationMode.SHARED.value)
         isolation = (
             isolation_raw
             if isinstance(isolation_raw, IsolationMode)
@@ -135,22 +137,27 @@ class Subagent:
             description=str(data["description"]),
             tools=tuple(str(item) for item in tools_raw),
             skills=_string_tuple(data, "skills"),
-            permission_overlay=_string_tuple(data, "permission_overlay"),
-            depth=int(data["depth"]) if "depth" in data else 1,
+            permission_overlay=PermissionOverlay.parse(_string_tuple(data, "permission_overlay")),
+            depth=_int_field(data, "depth", 1),
             model=str(data["model"]) if data.get("model") is not None else None,
             spawned_by=_string_tuple(data, "spawned_by"),
             system_prompt=(
                 str(data["system_prompt"]) if data.get("system_prompt") is not None else None
             ),
-            max_turns=int(data["max_turns"]) if "max_turns" in data else 8,
+            max_turns=_int_field(data, "max_turns", 8),
             output_schema=output_schema,
             strict=bool(data["strict"]) if "strict" in data else False,
             isolation=isolation,
             spawnable=tuple(
-                cls.from_dict(cast(Mapping[str, object], child))
-                for child in spawnable_raw
+                cls.from_dict(cast(Mapping[str, object], child)) for child in spawnable_raw
             ),
         )
+
+
+def _int_field(data: Mapping[str, object], key: str, default: int) -> int:
+    if key not in data:
+        return default
+    return int(str(data[key]))
 
 
 def _string_tuple(data: Mapping[str, object], key: str) -> tuple[str, ...]:
@@ -196,6 +203,7 @@ __all__ = [
     "MAX_INLINE_NESTING",
     "MAX_SUBAGENT_DEPTH",
     "PermissionDelta",
+    "PermissionOverlay",
     "Subagent",
     "SubagentSet",
 ]

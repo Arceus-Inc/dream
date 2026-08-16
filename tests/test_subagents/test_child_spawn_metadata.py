@@ -57,12 +57,17 @@ class TestChildSpawnMetadata:
         """A spawnable child can only narrow: its tools ∩ the spawner's effective tools."""
         greedy = Subagent(name="web_research", description="d", tools=("web_search", "bash"))
         spawner = Subagent(
-            name="strategist", description="d",
+            name="strategist",
+            description="d",
             tools=("read_file", "spawn_subagent", "web_search"),  # no bash
-            spawnable=(greedy,), depth=1,
+            spawnable=(greedy,),
+            depth=1,
         )
         meta = build_child_spawn_metadata(
-            spawner, counter=[0], harness=object(), tracer=None,
+            spawner,
+            counter=[0],
+            harness=object(),
+            tracer=None,
             parent_tools=frozenset({"read_file", "spawn_subagent", "web_search"}),
         )
         scoped: SubagentSet = meta[SUBAGENT_SET_CONTEXT_KEY]
@@ -71,7 +76,10 @@ class TestChildSpawnMetadata:
     def test_harness_and_parent_tools_wired(self) -> None:
         sentinel = object()
         meta = build_child_spawn_metadata(
-            _spawner(), counter=[0], harness=sentinel, tracer=None,
+            _spawner(),
+            counter=[0],
+            harness=sentinel,
+            tracer=None,
             parent_tools=frozenset({"read_file", "spawn_subagent"}),
         )
         assert meta[HARNESS_KEY] is sentinel

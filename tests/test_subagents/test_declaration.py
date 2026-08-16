@@ -21,7 +21,7 @@ class TestSubagentDeclaration:
         assert agent.depth == 1
         assert agent.model is None
         assert agent.skills == ()
-        assert agent.permission_overlay == ()
+        assert not agent.permission_overlay
         assert agent.max_turns == 8
 
     def test_empty_name_raises(self) -> None:

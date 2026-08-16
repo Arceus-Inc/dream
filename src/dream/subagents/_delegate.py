@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from dream.subagents._inline_executor import run_subagent_session
+from dream.subagents._isolation import IsolationMode
 from dream.subagents._projection import SubagentResult
 from dream.utils.fs import atomic_write_text
 
@@ -35,6 +36,7 @@ def build_child_prompt(
     context: str | None = None,
     *,
     workspace_path: str | None = None,
+    ephemeral_workspace: bool = False,
 ) -> str:
     """Hermes child inlet: goal + optional packed context — never parent history."""
     parts = [
@@ -47,6 +49,15 @@ def build_child_prompt(
         parts.extend(["", "CONTEXT:", context.strip()])
     if workspace_path:
         parts.extend(["", f"WORKSPACE PATH: {workspace_path}"])
+    if ephemeral_workspace:
+        parts.extend(
+            [
+                "",
+                "This workspace is an ephemeral git worktree. Edits here are discarded",
+                "when you finish and do not persist in the parent tree. Report findings",
+                "in your summary; do not rely on leftover files.",
+            ]
+        )
     parts.extend(
         [
             "",
@@ -122,7 +133,7 @@ async def run_subagent_delegate(
     # the prompt inside the executor once the ephemeral checkout exists.
     workspace = (
         None
-        if agent.isolation.value == "worktree"
+        if agent.isolation is IsolationMode.WORKTREE
         else (str(parent_cwd) if parent_cwd is not None else None)
     )
     prompt = build_child_prompt(goal, context, workspace_path=workspace)

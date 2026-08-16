@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections import defaultdict, deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -10,6 +11,8 @@ from enum import StrEnum
 from uuid import uuid4
 
 from dream.subagents._projection import SubagentResult
+
+DEFAULT_MAX_HISTORY = 64
 
 
 class DelegationStatus(StrEnum):
@@ -71,16 +74,26 @@ class _ActiveDelegation:
 class AsyncDelegationManager:
     """Own background work and queue its completion for the parent session."""
 
-    def __init__(self, *, max_active: int = 3, timeout_seconds: float = 300.0) -> None:
+    def __init__(
+        self,
+        *,
+        max_active: int = 3,
+        timeout_seconds: float = 300.0,
+        max_history: int = DEFAULT_MAX_HISTORY,
+    ) -> None:
         if max_active < 1:
             raise ValueError("max_active must be >= 1")
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be > 0")
+        if max_history < 1:
+            raise ValueError("max_history must be >= 1")
         self._max_active = max_active
         self._timeout_seconds = timeout_seconds
+        self._max_history = max_history
         self._active: dict[str, _ActiveDelegation] = {}
         self._completed: defaultdict[str, deque[DelegationCompletion]] = defaultdict(deque)
         self._history: dict[str, DelegationSnapshot] = {}
+        self._history_order: defaultdict[str, deque[str]] = defaultdict(deque)
         self._ready: defaultdict[str, asyncio.Event] = defaultdict(asyncio.Event)
 
     def start(
@@ -98,11 +111,13 @@ class AsyncDelegationManager:
             task=task,
             subagent_names=subagent_names,
         )
-        self._history[delegation_id] = DelegationSnapshot(
-            delegation_id=delegation_id,
-            session_id=session_id,
-            status=DelegationStatus.DISPATCHED,
-            subagent_names=subagent_names,
+        self._record_snapshot(
+            DelegationSnapshot(
+                delegation_id=delegation_id,
+                session_id=session_id,
+                status=DelegationStatus.DISPATCHED,
+                subagent_names=subagent_names,
+            )
         )
         return DelegationHandle(
             delegation_id=delegation_id,
@@ -113,21 +128,25 @@ class AsyncDelegationManager:
     def active(self, session_id: str) -> int:
         return sum(item.session_id == session_id for item in self._active.values())
 
-    def get(self, delegation_id: str) -> DelegationSnapshot | None:
-        return self._history.get(delegation_id)
+    def get(self, delegation_id: str, *, session_id: str) -> DelegationSnapshot | None:
+        snap = self._history.get(delegation_id)
+        if snap is None or snap.session_id != session_id:
+            return None
+        return snap
 
     def list_for_session(self, session_id: str) -> tuple[DelegationSnapshot, ...]:
-        return tuple(
-            snap for snap in self._history.values() if snap.session_id == session_id
-        )
+        return tuple(snap for snap in self._history.values() if snap.session_id == session_id)
 
-    async def stop(self, delegation_id: str) -> DelegationSnapshot | None:
+    async def stop(self, delegation_id: str, *, session_id: str) -> DelegationSnapshot | None:
+        snap = self.get(delegation_id, session_id=session_id)
+        if snap is None:
+            return None
         active = self._active.get(delegation_id)
         if active is None:
-            return self._history.get(delegation_id)
+            return snap
         active.task.cancel()
         await asyncio.gather(active.task, return_exceptions=True)
-        return self._history.get(delegation_id)
+        return self.get(delegation_id, session_id=session_id)
 
     def drain(self, session_id: str) -> tuple[DelegationCompletion, ...]:
         queue = self._completed[session_id]
@@ -147,9 +166,7 @@ class AsyncDelegationManager:
             await ready.wait()
 
     async def cancel_session(self, session_id: str) -> None:
-        tasks = [
-            item.task for item in self._active.values() if item.session_id == session_id
-        ]
+        tasks = [item.task for item in self._active.values() if item.session_id == session_id]
         for task in tasks:
             task.cancel()
         if tasks:
@@ -205,19 +222,46 @@ class AsyncDelegationManager:
         finally:
             self._active.pop(delegation_id, None)
             self._ready[session_id].set()
-        self._history[delegation_id] = DelegationSnapshot(
-            delegation_id=delegation_id,
-            session_id=session_id,
-            status=completion.status,
-            subagent_names=names,
-            results=completion.results,
-            error=completion.error,
+        self._record_snapshot(
+            DelegationSnapshot(
+                delegation_id=delegation_id,
+                session_id=session_id,
+                status=completion.status,
+                subagent_names=names,
+                results=completion.results,
+                error=completion.error,
+            )
         )
         self._completed[session_id].append(completion)
         self._ready[session_id].set()
 
+    def _record_snapshot(self, snap: DelegationSnapshot) -> None:
+        if snap.delegation_id not in self._history:
+            self._history_order[snap.session_id].append(snap.delegation_id)
+        self._history[snap.delegation_id] = snap
+        self._evict_history(snap.session_id)
+
+    def _evict_history(self, session_id: str) -> None:
+        order = self._history_order[session_id]
+        while True:
+            retained = [did for did in order if did in self._history]
+            if len(retained) <= self._max_history:
+                break
+            evicted = False
+            for delegation_id in list(order):
+                if delegation_id in self._active:
+                    continue
+                with contextlib.suppress(ValueError):
+                    order.remove(delegation_id)
+                self._history.pop(delegation_id, None)
+                evicted = True
+                break
+            if not evicted:
+                break
+
 
 __all__ = [
+    "DEFAULT_MAX_HISTORY",
     "AsyncDelegationManager",
     "DelegationCompletion",
     "DelegationHandle",

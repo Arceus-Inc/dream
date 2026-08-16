@@ -6,6 +6,8 @@ The model cannot widen past this strip.
 
 from __future__ import annotations
 
+from dream.subagents._overlay import EXECUTE_TOOLS
+
 # Never available on leaf children. Orchestrators that declare ``spawnable`` keep
 # ``spawn_subagent`` via the inline executor; everything else here is absolute.
 HOST_BLOCKED_TOOLS: frozenset[str] = frozenset(
@@ -85,6 +87,11 @@ def strip_host_blocked(tools: tuple[str, ...], *, keep_spawn: bool) -> tuple[str
     return tuple(name for name in tools if name not in blocked)
 
 
+def strip_unconfinable_commands(tools: tuple[str, ...]) -> tuple[str, ...]:
+    """Drop shell/code tools whose writes cannot be confined to a worktree cwd."""
+    return tuple(name for name in tools if name not in EXECUTE_TOOLS)
+
+
 __all__ = [
     "EXPLORE_TOOLS",
     "HOST_BLOCKED_TOOLS",
@@ -92,4 +99,5 @@ __all__ = [
     "READONLY_DENIED_TOOLS",
     "VERIFY_TOOLS",
     "strip_host_blocked",
+    "strip_unconfinable_commands",
 ]

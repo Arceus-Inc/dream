@@ -1,7 +1,7 @@
 """Harness-builtin subagent templates (OpenHarness Explore / Plan / verification).
 
 Merged into every beat that enables ``spawn_subagent``. Role specialists add
-names; they do not remove these builtins. Fail-closed enum = builtins ∪ role set.
+names; they do not remove these builtins. Fail-closed enum = builtins | role set.
 """
 
 from __future__ import annotations

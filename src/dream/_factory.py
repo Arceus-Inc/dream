@@ -689,9 +689,7 @@ def _build_session_engine(
         memory_catalogue=memory_catalogue,
         agents_md=load_agents_md(working_dir),
         tool_catalogue=tool_catalogue.render() if tool_catalogue is not None else "",
-        subagent_catalogue=(
-            subagent_catalogue.render() if subagent_catalogue is not None else ""
-        ),
+        subagent_catalogue=(subagent_catalogue.render() if subagent_catalogue is not None else ""),
     )
     prompt_surfaces = PromptSurfaces(
         stable=stable_block,
@@ -805,17 +803,24 @@ def _build_session_engine(
         SUBAGENT_OVERLAY_METADATA_KEY,
         SUBAGENT_WORKING_DIR_METADATA_KEY,
     )
-    from dream.subagents._overlay_gate import wrap_permission_gate
+    from dream.subagents._overlay import PermissionOverlay
+    from dream.subagents._overlay_gate import confine_permission_gate, wrap_permission_gate
 
     session_working_dir = working_dir
     override_cwd = options.metadata.get(SUBAGENT_WORKING_DIR_METADATA_KEY)
-    if isinstance(override_cwd, str) and override_cwd:
+    if isinstance(override_cwd, Path):
+        session_working_dir = override_cwd
+    elif isinstance(override_cwd, str) and override_cwd:
         session_working_dir = Path(override_cwd)
 
-    overlay = options.metadata.get(SUBAGENT_OVERLAY_METADATA_KEY)
     child_gate = permission_gate
-    if isinstance(overlay, tuple) and overlay:
-        child_gate = wrap_permission_gate(permission_gate, overlay)
+    if session_working_dir != working_dir:
+        child_gate, _ = make_permission_gate(tool_registry, paths=paths, cwd=session_working_dir)
+        child_gate = confine_permission_gate(child_gate, session_working_dir)
+
+    overlay = options.metadata.get(SUBAGENT_OVERLAY_METADATA_KEY)
+    if isinstance(overlay, PermissionOverlay) and overlay:
+        child_gate = wrap_permission_gate(child_gate, overlay)
     context_metadata[PARENT_PERMISSIONS_KEY] = child_gate
 
     # The run_role observer (when present) rides into the tool context, so the spawn tool can
@@ -824,9 +829,7 @@ def _build_session_engine(
         context_metadata[OBSERVER_KEY] = options.metadata[OBSERVER_KEY]
 
     inherited_set = options.metadata.get(SUBAGENT_SET_CONTEXT_KEY)
-    effective_subagents = (
-        inherited_set if isinstance(inherited_set, SubagentSet) else subagents
-    )
+    effective_subagents = inherited_set if isinstance(inherited_set, SubagentSet) else subagents
     # Wire even when empty so generalPurpose can run without Spec templates.
     if effective_subagents is not None:
         context_metadata[SUBAGENT_SET_CONTEXT_KEY] = effective_subagents

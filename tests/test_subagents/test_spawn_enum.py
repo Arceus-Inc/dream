@@ -66,9 +66,7 @@ def test_build_spawn_parameters_sets_enum_only() -> None:
     assert prop["description"] == "Name from Subagent definitions."
     assert "WHEN TO USE" not in prop["description"]
     assert "Reviews code" not in prop["description"]
-    assert patched["$defs"]["SpawnTaskInput"]["properties"]["subagent_type"][
-        "enum"
-    ] == expected
+    assert patched["$defs"]["SpawnTaskInput"]["properties"]["subagent_type"]["enum"] == expected
 
 
 async def test_unknown_type_fails_with_available_enum() -> None:

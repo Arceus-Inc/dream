@@ -25,7 +25,9 @@ Role specialists **add** names; they do not remove builtins. Unknown types refus
 - `model` → `SessionOptions.model`
 - `permission_overlay` → tighten-only child gate wrapper
 - `spawned_by` → fail-closed at resolve
-- `isolation` → `shared` | `worktree` (ephemeral git worktree under scratch)
+- `isolation` → `shared` | `worktree` (ephemeral git worktree under scratch;
+  child permission cwd is the worktree; edits are discarded on join and never
+  merge back to the parent)
 
 ## Host blocklist (Hermes)
 

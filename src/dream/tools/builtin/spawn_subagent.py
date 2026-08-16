@@ -169,9 +169,7 @@ def build_spawn_parameters(
     enum_property = _SpawnTypeEnumProperty(names=type_names)
     schema: dict[str, object] = dict(base_schema)
     properties_raw = schema.get("properties")
-    properties: dict[str, object] = (
-        dict(properties_raw) if isinstance(properties_raw, dict) else {}
-    )
+    properties: dict[str, object] = dict(properties_raw) if isinstance(properties_raw, dict) else {}
     properties["subagent_type"] = enum_property.as_mapping()
     schema["properties"] = properties
     required_raw = schema.get("required")
@@ -180,9 +178,7 @@ def build_spawn_parameters(
         if isinstance(required_raw, list)
         else []
     )
-    schema["required"] = [
-        name for name in required_names if name not in ("name", "subagent_type")
-    ]
+    schema["required"] = [name for name in required_names if name not in ("name", "subagent_type")]
     defs_raw = schema.get("$defs")
     if isinstance(defs_raw, dict):
         defs: dict[str, object] = dict(defs_raw)
@@ -447,10 +443,7 @@ class SpawnSubagentTool(BaseTool):
         async def run_all() -> tuple[SubagentResult, ...]:
             return tuple(await asyncio.gather(*(run_one(task) for task in resolved)))
 
-        background_supported = (
-            args.background
-            and ctx.delegations is not None
-        )
+        background_supported = args.background and ctx.delegations is not None
         forced_sync_note = ""
         if background_supported:
             assert ctx.delegations is not None

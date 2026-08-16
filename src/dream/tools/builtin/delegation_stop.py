@@ -28,7 +28,7 @@ class DelegationStopTool(BaseTool):
                 content="No async delegation manager on this session.",
                 is_error=True,
             )
-        snap = await ctx.delegations.stop(args.delegation_id)
+        snap = await ctx.delegations.stop(args.delegation_id, session_id=ctx.session_id)
         if snap is None:
             return ToolResult(
                 content=f"Unknown delegation_id {args.delegation_id!r}.",
