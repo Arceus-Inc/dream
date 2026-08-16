@@ -1,26 +1,28 @@
 """Delegated subagent session executor — runs a subagent as a real bounded session.
 
-The subagent gets its own ``Harness.run_role`` session with capability-
-minimized tools and runs to completion bounded by ``max_turns``. It is a
-real agent that can call ``read_file``, ``grep``, ``bash``, etc. — not a
-single-shot LLM call.
-
-Spec §09 v1: in-process, shared worktree, serial join, flat depth.
+Live path: capability-minimized ``Harness.run_role`` session bounded by
+``max_turns``. Shared worktree by default; optional short-lived git worktree
+when ``IsolationMode.WORKTREE``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 from dream.api.response_format import resolve_structured_output
 from dream.events import ToolUseResult, ToolUseStart
 from dream.roles._manifest import RoleManifest
 from dream.session import SessionOptions
-from dream.subagents._declaration import MAX_SUBAGENT_DEPTH, Subagent, SubagentSet
+from dream.subagents._declaration import MAX_INLINE_NESTING, Subagent, SubagentSet
+from dream.subagents._host_blocklist import strip_host_blocked, strip_unconfinable_commands
+from dream.subagents._isolation import IsolationMode
 from dream.subagents._output_guard import enforce_output_schema
 from dream.subagents._projection import SubagentResult, intersect_tools
+from dream.subagents._worktree import SubagentWorktree, SubagentWorktreeFactory
 
 if TYPE_CHECKING:
     from dream.harness import Harness
@@ -28,6 +30,8 @@ if TYPE_CHECKING:
 
 
 SUBAGENT_NAME_METADATA_KEY = "dream.subagent_name"
+SUBAGENT_OVERLAY_METADATA_KEY = "dream.subagent_permission_overlay"
+SUBAGENT_WORKING_DIR_METADATA_KEY = "dream.subagent_working_dir"
 
 
 async def run_subagent_session(
@@ -39,57 +43,77 @@ async def run_subagent_session(
     spawn_counter: list[int] | None = None,
     tracer: object | None = None,
     observer: RunTaskObserver | None = None,
+    working_dir: Path | None = None,
+    spill_dir: Path | None = None,
+    goal: str | None = None,
+    context: str | None = None,
 ) -> SubagentResult:
-    """Execute a subagent as a real bounded session with tools.
+    """Execute a subagent as a real bounded session with tools."""
+    from dream.subagents._delegate import build_child_prompt
 
-    Creates a synthetic ``RoleManifest`` scoped to the subagent's
-    capability-minimized tools and runs it through ``harness.run_role()``. The
-    subagent:
-
-    - Gets a real engine session with actual tool dispatch
-    - Has capability-minimized tools — ``agent.tools ∩ parent_tools`` (§05:
-      narrower-wins; can only drop, never widen past the parent's allow-list).
-      ``parent_tools is None`` means the parent had no role restriction, so the
-      agent keeps its declared tools.
-    - Cannot spawn sub-subagents (``spawn_subagent`` is disallowed)
-    - Is bounded by ``agent.max_turns``
-    - Returns plain text (concatenation of all assistant text deltas)
-    """
-    manifest = _build_subagent_manifest(agent, parent_tools=parent_tools)
-    # Depth-2: an eligible spawner's child session carries a scoped set + the shared spawn counter
-    # so it can dispatch its declared ``spawnable`` (the factory prefers these incoming keys). A leaf
-    # gets ``{}`` → unchanged.
-    child_metadata = build_child_spawn_metadata(
-        agent,
-        counter=spawn_counter if spawn_counter is not None else [0],
-        harness=harness,
-        tracer=tracer,
-        parent_tools=parent_tools,
-    )
-    child_metadata[SUBAGENT_NAME_METADATA_KEY] = agent.name
-    response_format = None
-    if agent.output_schema is not None:
-        response_format = resolve_structured_output(
-            schema=agent.output_schema,
-            name=f"{agent.name}_output",
-            strict=agent.strict,
-        )
-    options = SessionOptions(
-        max_turns=agent.max_turns,
-        response_format=response_format,
-        metadata=child_metadata,
-    )
-
+    worktree: SubagentWorktree | None = None
+    child_cwd = working_dir
+    effective_prompt = prompt
     try:
+        if agent.isolation is IsolationMode.WORKTREE:
+            if spill_dir is None or working_dir is None:
+                return SubagentResult(
+                    name=agent.name,
+                    output="",
+                    success=False,
+                    error=(
+                        "IsolationMode.WORKTREE requires parent working_dir and session scratch_dir"
+                    ),
+                    turns_used=0,
+                )
+            factory = SubagentWorktreeFactory(
+                scratch_dir=spill_dir,
+                parent_cwd=working_dir,
+            )
+            worktree = factory.create(agent.name)
+            child_cwd = worktree.path
+            if goal is not None:
+                effective_prompt = build_child_prompt(
+                    goal,
+                    context,
+                    workspace_path=str(child_cwd),
+                    ephemeral_workspace=True,
+                )
+
+        manifest = _build_subagent_manifest(agent, parent_tools=parent_tools)
+        child_metadata = build_child_spawn_metadata(
+            agent,
+            counter=spawn_counter if spawn_counter is not None else [0],
+            harness=harness,
+            tracer=tracer,
+            parent_tools=parent_tools,
+        )
+        child_metadata[SUBAGENT_NAME_METADATA_KEY] = agent.name
+        if agent.permission_overlay:
+            child_metadata[SUBAGENT_OVERLAY_METADATA_KEY] = agent.permission_overlay
+        if child_cwd is not None:
+            child_metadata[SUBAGENT_WORKING_DIR_METADATA_KEY] = child_cwd
+
+        response_format = None
+        if agent.output_schema is not None:
+            response_format = resolve_structured_output(
+                schema=agent.output_schema,
+                name=f"{agent.name}_output",
+                strict=agent.strict,
+            )
+        options = SessionOptions(
+            model=agent.model,
+            max_turns=agent.max_turns,
+            response_format=response_format,
+            metadata=child_metadata,
+        )
+
         result = await harness.run_role(
             manifest,
-            prompt,
+            effective_prompt,
             options=options,
-            # Forward the parent observer so this child's events (including any nested spawn) reach
-            # the same observer/bus — depth-2 visibility. ``None`` keeps the child stream isolated.
             observer=observer,
         )
-        # Count tool calls from the event stream for observability
         tool_calls = sum(1 for ev in result.events if isinstance(ev, ToolUseStart))
         tool_errors = sum(
             1 for ev in result.events if isinstance(ev, ToolUseResult) and ev.is_error
@@ -118,6 +142,10 @@ async def run_subagent_session(
             error=f"{type(exc).__name__}: {exc}",
             turns_used=0,
         )
+    finally:
+        if worktree is not None:
+            with contextlib.suppress(Exception):
+                worktree.remove()
 
 
 def build_child_spawn_metadata(
@@ -127,15 +155,8 @@ def build_child_spawn_metadata(
     harness: Harness | object,
     tracer: object | None,
     parent_tools: frozenset[str] | None,
-) -> dict[str, Any]:
-    """The ``SessionOptions.metadata`` a spawn-eligible child is handed (depth-2).
-
-    Returns ``{}`` for a leaf (no seeding, unchanged). For an eligible spawner it carries a *scoped*
-    subagent set (its declared ``spawnable``, one depth deeper, each tool-intersected with the
-    spawner's own effective tools so a grandchild can only narrow) plus the *parent's* spawn
-    ``counter`` (same object → the per-beat cap spans the whole tree), harness, tracer, and the
-    spawner's effective tools as the grandchild's parent allow-list.
-    """
+) -> dict[str, object]:
+    """Session metadata for a spawn-eligible child (depth-2). Leaves get ``{}``."""
     from dream.tools.builtin.spawn_subagent import (
         HARNESS_KEY,
         PARENT_TOOLS_KEY,
@@ -159,7 +180,7 @@ def build_child_spawn_metadata(
             for child in agent.spawnable
         }
     )
-    metadata: dict[str, Any] = {
+    metadata: dict[str, object] = {
         SUBAGENT_SET_CONTEXT_KEY: scoped,
         SPAWN_COUNT_KEY: counter,
         HARNESS_KEY: harness,
@@ -171,28 +192,18 @@ def build_child_spawn_metadata(
 
 
 def _can_spawn(agent: Subagent) -> bool:
-    """Whether this subagent may itself dispatch children — depth-2, bounded.
-
-    Eligible = it declares ``spawnable`` children AND sits below the depth cap. A leaf (no
-    ``spawnable``) or a grandchild at the cap is never eligible: ``spawn_subagent`` stays disallowed
-    exactly as v1.
-    """
-    return bool(agent.spawnable) and agent.depth < MAX_SUBAGENT_DEPTH
+    return bool(agent.spawnable) and agent.depth < MAX_INLINE_NESTING
 
 
 def _build_subagent_manifest(
     agent: Subagent, *, parent_tools: frozenset[str] | None = None
 ) -> RoleManifest:
-    """Build a synthetic RoleManifest for the subagent.
-
-    Uses the ``generator`` role name (it needs tools) with the subagent's
-    capability-minimized tool allow-list — ``agent.tools ∩ parent_tools`` (§05:
-    narrower-wins, can only drop, never widen past the parent). ``spawn_subagent``
-    is disallowed for a leaf; a spawn-eligible child (:func:`_can_spawn`) keeps it so it can
-    dispatch its declared ``spawnable`` set (depth-2, bounded).
-    """
+    """Synthetic RoleManifest: tools ∩ parent, host blocklist, spawn allow/deny."""
     effective_tools = intersect_tools(agent.tools, parent_tools)
     can_spawn = _can_spawn(agent)
+    effective_tools = strip_host_blocked(effective_tools, keep_spawn=can_spawn)
+    if agent.isolation is IsolationMode.WORKTREE:
+        effective_tools = strip_unconfinable_commands(effective_tools)
 
     spawn_note = (
         "You may dispatch your declared subagent(s) with spawn_subagent when it helps."

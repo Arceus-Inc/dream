@@ -38,9 +38,7 @@ class TestBuildSubagentManifestMinimization:
             description="declares more than the parent has",
             tools=("read_file", "grep", "bash"),
         )
-        manifest = _build_subagent_manifest(
-            agent, parent_tools=frozenset({"read_file", "grep"})
-        )
+        manifest = _build_subagent_manifest(agent, parent_tools=frozenset({"read_file", "grep"}))
         assert manifest.tools == ("read_file", "grep")
         assert "bash" not in manifest.tools
 

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+from dream.subagents import EXPLORE, PLAN, VERIFY
 from dream.subagents._declaration import Subagent, SubagentSet
 from dream.subagents._projection import SubagentResult
 from dream.tools._context import ToolExecutionContext
@@ -45,22 +46,27 @@ def _set() -> SubagentSet:
 
 
 def test_spawn_type_names_includes_general_purpose_first() -> None:
-    assert spawn_type_names(_set()) == (GENERAL_PURPOSE, "reviewer")
-    assert spawn_type_names(SubagentSet()) == (GENERAL_PURPOSE,)
-    assert spawn_type_names(None) == (GENERAL_PURPOSE,)
+    assert spawn_type_names(_set()) == (
+        GENERAL_PURPOSE,
+        EXPLORE,
+        PLAN,
+        VERIFY,
+        "reviewer",
+    )
+    assert spawn_type_names(SubagentSet()) == (GENERAL_PURPOSE, EXPLORE, PLAN, VERIFY)
+    assert spawn_type_names(None) == (GENERAL_PURPOSE, EXPLORE, PLAN, VERIFY)
 
 
 def test_build_spawn_parameters_sets_enum_only() -> None:
     base = SpawnSubagentTool().input_schema()
     patched = build_spawn_parameters(base, _set())
     prop = patched["properties"]["subagent_type"]
-    assert prop["enum"] == [GENERAL_PURPOSE, "reviewer"]
+    expected = [GENERAL_PURPOSE, EXPLORE, PLAN, VERIFY, "reviewer"]
+    assert prop["enum"] == expected
     assert prop["description"] == "Name from Subagent definitions."
     assert "WHEN TO USE" not in prop["description"]
     assert "Reviews code" not in prop["description"]
-    assert patched["$defs"]["SpawnTaskInput"]["properties"]["subagent_type"][
-        "enum"
-    ] == [GENERAL_PURPOSE, "reviewer"]
+    assert patched["$defs"]["SpawnTaskInput"]["properties"]["subagent_type"]["enum"] == expected
 
 
 async def test_unknown_type_fails_with_available_enum() -> None:
@@ -110,7 +116,7 @@ async def test_general_purpose_uses_delegate_path() -> None:
         )
     assert not result.is_error
     assert "summary" in result.content
-    assert result.metadata["mode"] == "delegate"
+    assert result.metadata["mode"] == "sync"
     assert result.metadata["subagent_name"] == GENERAL_PURPOSE
     mock_delegate.assert_awaited_once()
     agent = mock_delegate.await_args.args[0]

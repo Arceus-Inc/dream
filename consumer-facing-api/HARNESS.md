@@ -179,7 +179,9 @@ teammates dispatched mid-beat.
 
 **Data model** (`src/dream/subagents/`):
 - `Subagent` — frozen declaration: name, description, tools (⊆ parent), skills,
-  permission_overlay (tighten-only), depth (v1: always 1), model override, max_turns.
+  permission_overlay (typed tighten-only capability/tool removals), depth
+  (v1: always 1), model override, max_turns, isolation (`shared` or ephemeral
+  `worktree` — child cwd confined; edits discarded on join).
 - `SubagentSet` — resolved {name → Subagent} for one beat, built from Tier-1
   (role-owned) + Tier-2 (shared `SubagentRegistry`) agents.
 - `SubagentRegistry` — kernel-level registry for Tier-2 shared capability agents.

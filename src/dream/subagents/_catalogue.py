@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass
 
+from dream.subagents._builtins import EXPLORE, PLAN, VERIFY, merge_builtins
 from dream.subagents._declaration import (
     GENERAL_PURPOSE_DESCRIPTION,
     GENERAL_PURPOSE_NAME,
@@ -44,15 +45,26 @@ class SubagentCatalogue:
 
     @classmethod
     def for_set(cls, subagent_set: SubagentSet | None) -> SubagentCatalogue | None:
-        """Build a catalogue, or ``None`` when spawn is not wired on the harness."""
+        """Build a catalogue, or ``None`` when spawn is not wired on the harness.
+
+        Entries match the live resolver: ``generalPurpose``, then ``explore`` /
+        ``plan`` / ``verify`` (role overrides win), then remaining role names.
+        """
         if subagent_set is None:
             return None
+        merged = merge_builtins(subagent_set)
         general = SubagentCatalogueEntry(
             name=GENERAL_PURPOSE_NAME,
             description=GENERAL_PURPOSE_DESCRIPTION,
         )
-        specialists = tuple(_entry_for(agent) for agent in subagent_set)
-        return cls(entries=(general, *specialists))
+        reserved = {GENERAL_PURPOSE_NAME, EXPLORE, PLAN, VERIFY}
+        ordered: list[SubagentCatalogueEntry] = []
+        for name in (EXPLORE, PLAN, VERIFY):
+            agent = merged.get(name)
+            if agent is not None:
+                ordered.append(_entry_for(agent))
+        ordered.extend(_entry_for(agent) for agent in merged if agent.name not in reserved)
+        return cls(entries=(general, *ordered))
 
     def render(self) -> str:
         lines = ["# Subagent definitions", ""]

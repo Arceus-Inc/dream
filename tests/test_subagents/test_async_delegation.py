@@ -86,8 +86,8 @@ async def test_cancelled_background_work_delivers_typed_completion() -> None:
     await manager.cancel_session("parent")
     completion = await waiter
 
-    assert completion.status is DelegationStatus.FAILED
-    assert completion.error == "background delegation cancelled"
+    assert completion.status is DelegationStatus.STOPPED
+    assert completion.error == "background delegation stopped"
     await manager.close()
 
 
