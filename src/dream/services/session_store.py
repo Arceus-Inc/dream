@@ -19,6 +19,7 @@ import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
+from hashlib import sha256
 from pathlib import Path
 from typing import Literal, TypeGuard
 
@@ -33,7 +34,8 @@ from dream.engine._messages import (
     ToolResultBlock,
     ToolUseBlock,
 )
-from dream.errors import SessionResumeError
+from dream.errors import SessionResumeError, SessionSaveConflictError
+from dream.utils.file_lock import exclusive_file_lock
 from dream.utils.fs import atomic_write_text
 
 # Bumped to 2 when snapshots started recording ``working_dir``. A version-1 file
@@ -47,10 +49,13 @@ __all__ = [
     "ContentBlockRecord",
     "ConversationMessageRecord",
     "FileSessionStore",
+    "LoadedSessionSnapshot",
     "SessionCostFields",
     "SessionCostSnapshot",
     "SessionHandle",
     "SessionSnapshot",
+    "SessionSnapshotRevision",
+    "SessionSnapshotWrite",
     "ToolCallRecord",
     "checked_session_id",
     "cost_snapshot_from_fields",
@@ -199,6 +204,34 @@ class SessionHandle:
     saved_at: datetime
     usage_delta: SessionCostSnapshot
     usage_total: SessionCostSnapshot
+
+
+@dataclass(frozen=True)
+class SessionSnapshotRevision:
+    """Immutable bytes and fingerprint used for optimistic snapshot ownership."""
+
+    fingerprint: str
+    raw_bytes: bytes = field(repr=False)
+
+    @classmethod
+    def from_bytes(cls, raw_bytes: bytes) -> SessionSnapshotRevision:
+        return cls(fingerprint=sha256(raw_bytes).hexdigest(), raw_bytes=raw_bytes)
+
+
+@dataclass(frozen=True)
+class LoadedSessionSnapshot:
+    """A decoded snapshot paired with the exact revision that produced it."""
+
+    snapshot: SessionSnapshot
+    revision: SessionSnapshotRevision
+
+
+@dataclass(frozen=True)
+class SessionSnapshotWrite:
+    """A successful atomic snapshot write and its new optimistic revision."""
+
+    path: Path
+    revision: SessionSnapshotRevision
 
 
 def checked_session_id(session_id: str) -> str:
@@ -405,14 +438,52 @@ class FileSessionStore:
         safe_id = checked_session_id(session_id)
         return self._root / f"{safe_id}.json"
 
+    def _lock_path_for(self, session_id: str) -> Path:
+        path = self.path_for(session_id)
+        return path.with_name(f"{path.name}.lock")
+
     def save(self, snapshot: SessionSnapshot) -> Path:
+        """Write ``snapshot`` unconditionally for setup and administrative use."""
         path = self.path_for(snapshot.session_id)
-        payload = snapshot_to_dict(snapshot)
-        text = json.dumps(payload, indent=2) + "\n"
-        atomic_write_text(path, text, mode=0o600)
+        text = _snapshot_text(snapshot)
+        with exclusive_file_lock(self._lock_path_for(snapshot.session_id)):
+            atomic_write_text(path, text, mode=0o600)
         return path
 
+    def compare_and_swap_save(
+        self,
+        snapshot: SessionSnapshot,
+        expected_revision: SessionSnapshotRevision | None,
+    ) -> SessionSnapshotWrite:
+        """Atomically save only while the snapshot still matches ``expected_revision``.
+
+        ``None`` means the caller opened a new session while the path was
+        missing. Runtime persistence uses this method; :meth:`save` remains an
+        explicitly unconditional setup/administrative API.
+        """
+        path = self.path_for(snapshot.session_id)
+        text = _snapshot_text(snapshot)
+        raw = text.encode("utf-8")
+        with exclusive_file_lock(self._lock_path_for(snapshot.session_id)):
+            actual_revision = _revision_at(path)
+            if actual_revision != expected_revision:
+                raise SessionSaveConflictError(
+                    f"session {snapshot.session_id!r} snapshot changed before save",
+                    session_id=snapshot.session_id,
+                    expected_revision=expected_revision,
+                    actual_revision=actual_revision,
+                )
+            atomic_write_text(path, text, mode=0o600)
+        return SessionSnapshotWrite(
+            path=path,
+            revision=SessionSnapshotRevision.from_bytes(raw),
+        )
+
     def load(self, session_id: str) -> SessionSnapshot:
+        """Read and decode the current snapshot without exposing its revision."""
+        return self.load_with_revision(session_id).snapshot
+
+    def load_with_revision(self, session_id: str) -> LoadedSessionSnapshot:
         """Read a snapshot, or raise :class:`SessionResumeError`.
 
         Every failure is typed so a caller holding the handle can tell "never
@@ -420,20 +491,30 @@ class FileSessionStore:
         the matching recovery instead of parsing messages.
         """
         path = self.path_for(session_id)
-        if not path.is_file():
+        try:
+            raw = path.read_bytes()
+        except FileNotFoundError as exc:
             raise SessionResumeError(
                 f"session snapshot not found: {path}",
                 reason="missing",
                 session_id=session_id,
-            )
-        try:
-            raw = path.read_text(encoding="utf-8")
-            parsed: object = json.loads(raw)
-        except (OSError, json.JSONDecodeError) as exc:
+            ) from exc
+        except OSError as exc:
             raise SessionResumeError(
                 f"session snapshot unreadable: {path}",
                 reason="corrupt",
                 session_id=session_id,
+                cause=exc,
+            ) from exc
+        revision = SessionSnapshotRevision.from_bytes(raw)
+        try:
+            parsed: object = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise SessionResumeError(
+                f"session snapshot unreadable: {path}",
+                reason="corrupt",
+                session_id=session_id,
+                revision=revision,
                 cause=exc,
             ) from exc
         if not isinstance(parsed, Mapping):
@@ -441,6 +522,7 @@ class FileSessionStore:
                 f"expected JSON object in {path}",
                 reason="corrupt",
                 session_id=session_id,
+                revision=revision,
             )
         version = parsed.get("schema_version")
         if version != SCHEMA_VERSION:
@@ -449,16 +531,19 @@ class FileSessionStore:
                 f"(this dream reads {SCHEMA_VERSION})",
                 reason="schema_mismatch",
                 session_id=session_id,
+                revision=revision,
             )
         try:
-            return snapshot_from_dict(parsed)
+            snapshot = snapshot_from_dict(parsed)
         except (ValueError, TypeError, KeyError) as exc:
             raise SessionResumeError(
                 f"session snapshot failed to decode: {path}",
                 reason="corrupt",
                 session_id=session_id,
+                revision=revision,
                 cause=exc,
             ) from exc
+        return LoadedSessionSnapshot(snapshot=snapshot, revision=revision)
 
     def exists(self, session_id: str) -> bool:
         return self.path_for(session_id).is_file()
@@ -476,14 +561,49 @@ class FileSessionStore:
         caller clears the spent snapshot so the next attempt starts clean.
         """
         path = self.path_for(session_id)
-        try:
+        with exclusive_file_lock(self._lock_path_for(session_id)):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                return False
+            return True
+
+    def reset_if_unchanged(
+        self,
+        session_id: str,
+        expected_revision: SessionSnapshotRevision | None,
+    ) -> bool:
+        """Clear only the exact failed snapshot observed by :meth:`load`.
+
+        A missing snapshot is safe to recover only while it remains missing.
+        Any different bytes (or a vanished failed snapshot) belong to another
+        writer, so the caller must resume them or fail closed instead.
+        """
+        path = self.path_for(session_id)
+        with exclusive_file_lock(self._lock_path_for(session_id)):
+            try:
+                current = path.read_bytes()
+            except FileNotFoundError:
+                return expected_revision is None
+            if expected_revision is None or current != expected_revision.raw_bytes:
+                return False
             path.unlink()
-        except FileNotFoundError:
-            return False
-        return True
+            return True
 
 
 # --- private JSON helpers ----------------------------------------------------
+
+
+def _snapshot_text(snapshot: SessionSnapshot) -> str:
+    return json.dumps(snapshot_to_dict(snapshot), indent=2) + "\n"
+
+
+def _revision_at(path: Path) -> SessionSnapshotRevision | None:
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return None
+    return SessionSnapshotRevision.from_bytes(raw)
 
 
 def _message_record_to_dict(record: ConversationMessageRecord) -> dict[str, object]:

@@ -61,6 +61,7 @@ from dream.services.session_store import (
     SessionCostFields,
     SessionCostSnapshot,
     SessionSnapshot,
+    SessionSnapshotRevision,
     cost_snapshot_from_fields,
     extract_tool_calls,
     is_json_value,
@@ -154,11 +155,15 @@ class Session:
         id: str,
         options: SessionOptions | None = None,
         _engine: QueryEngine | None = None,
+        _snapshot_revision: SessionSnapshotRevision | None = None,
     ) -> None:
         self.id = id
         self.options = options or SessionOptions()
         self.cost = SessionCost()
         self._engine = _engine
+        # ``None`` is an optimistic claim that this new session's snapshot
+        # path is missing. Resumed sessions receive the exact loaded revision.
+        self._snapshot_revision = _snapshot_revision
         self._transcript: list[ConversationMessage] = []
         self._cancel_event: asyncio.Event | None = None
         self._closed = False
@@ -249,9 +254,18 @@ class Session:
             cost_usd=current.cost_usd - base.cost_usd,
         )
 
-    def _mark_persisted(self, cost: SessionCostSnapshot) -> None:
-        """Adopt ``cost`` as the baseline for the next usage delta."""
+    def _mark_persisted(
+        self,
+        cost: SessionCostSnapshot,
+        revision: SessionSnapshotRevision,
+    ) -> None:
+        """Advance the usage baseline and optimistic snapshot ownership."""
         self._persisted_cost = cost
+        self._snapshot_revision = revision
+
+    def _snapshot_expectation(self) -> SessionSnapshotRevision | None:
+        """Return the exact revision this session may replace; ``None`` means missing."""
+        return self._snapshot_revision
 
     def _working_dir(self) -> str | None:
         engine = self._engine
@@ -318,7 +332,7 @@ class Session:
         self._has_sent = False
         # The restored spend was already reported by the save that produced
         # this snapshot; the next delta must cover only post-resume work.
-        self._mark_persisted(snapshot.cost)
+        self._persisted_cost = snapshot.cost
 
     async def send(self, prompt: str) -> AsyncIterator[Event]:
         """Submit a user prompt and stream typed events back.

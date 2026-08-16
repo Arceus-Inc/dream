@@ -24,6 +24,7 @@ from dream.runner.events import (
     RoleError,
     RoleSessionClosed,
     RoleSessionOpened,
+    RoleSessionRecovered,
     RoleText,
     RoleToolResult,
     RoleToolStart,
@@ -170,6 +171,16 @@ def test_stdio_observer_writes_role_session_and_tool_lines() -> None:
         )
     )
     obs.on_event(
+        RoleSessionRecovered(
+            role="generator",
+            session_id="sess-1",
+            requested_session_id="sess-1",
+            reason="corrupt",
+            action="reset",
+            snapshot_preserved=False,
+        )
+    )
+    obs.on_event(
         RoleToolStart(
             role="generator",
             tool="write_file",
@@ -196,6 +207,10 @@ def test_stdio_observer_writes_role_session_and_tool_lines() -> None:
 
     out = buf.getvalue()
     assert "[generator] session open" in out
+    assert "[generator] session recovered" in out
+    assert "reason='corrupt'" in out
+    assert "action='reset'" in out
+    assert "snapshot_preserved=False" in out
     assert "[generator] tool\u2192 write_file" in out  # tool→
     assert "[generator] tool\u2190 write_file [ok]" in out  # tool←
     assert "wrote 42 bytes" in out
@@ -286,3 +301,19 @@ def test_stdio_observer_formats_head_retry_planner_skipped_sprint_escalated() ->
     assert "ledger already present" in out
     assert "[sprint 2] escalated" in out
     assert "step=s1" in out
+
+
+def test_capturing_observer_records_typed_session_recovery() -> None:
+    obs = CapturingObserver()
+    event = RoleSessionRecovered(
+        role="generator",
+        session_id="fresh",
+        requested_session_id="stale",
+        reason="working_dir_mismatch",
+        action="bypass",
+        snapshot_preserved=True,
+    )
+
+    obs.on_event(event)
+
+    assert obs.events == [event]
