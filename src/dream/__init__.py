@@ -6,6 +6,13 @@ re-exports are pinned by `tests/test_public_api.py`.
 """
 
 from dream._factory import build_harness
+from dream._immutable_json import (
+    FrozenJsonArray,
+    FrozenJsonObject,
+    FrozenJsonValue,
+    freeze_json_value,
+    thaw_json_value,
+)
 from dream.contracts.exec_plan import ExecPlan, ExecPlanLedger, ExecPlanStatus
 from dream.contracts.hook import Hook, HookEvent, HookResult, HookSpec
 from dream.contracts.memory import (
@@ -50,7 +57,7 @@ from dream.events import (
     TurnComplete,
 )
 from dream.harness import Harness, HarnessConfig
-from dream.observability import tail_events
+from dream.observability import RunTrace, tail_events
 from dream.services.session_store import (
     FileSessionStore,
     SessionHandle,
@@ -71,6 +78,9 @@ __all__ = [
     "ExecPlanLedger",
     "ExecPlanStatus",
     "FileSessionStore",
+    "FrozenJsonArray",
+    "FrozenJsonObject",
+    "FrozenJsonValue",
     "Harness",
     "HarnessConfig",
     "Hook",
@@ -97,6 +107,7 @@ __all__ = [
     "ProviderEvent",
     "ProviderUsage",
     "RunTaskError",
+    "RunTrace",
     "SandboxError",
     "Session",
     "SessionCost",
@@ -117,5 +128,7 @@ __all__ = [
     "UsageSnapshot",
     "__version__",
     "build_harness",
+    "freeze_json_value",
     "tail_events",
+    "thaw_json_value",
 ]

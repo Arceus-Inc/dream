@@ -25,6 +25,7 @@ from dream.services.session_store import (
     SessionHandle,
     SessionSnapshot,
     checked_session_id,
+    json_dict_from_mapping,
 )
 from dream.session import Session, SessionOptions
 
@@ -289,7 +290,7 @@ class Harness:
             model=snapshot.model,
             system_prompt=snapshot.system_prompt,
             max_turns=snapshot.max_turns,
-            metadata=snapshot.metadata,
+            metadata=json_dict_from_mapping(snapshot.metadata),
         )
         engine = None
         if self.config._engine_factory is not None:

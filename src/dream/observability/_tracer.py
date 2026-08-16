@@ -18,6 +18,7 @@ from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
+from dream._immutable_json import FrozenJsonObject
 from dream.observability._events import TraceEvent, TraceEventType
 from dream.observability._writer import TraceWriter
 from dream.utils.clock import Clock, SystemClock
@@ -133,7 +134,7 @@ class JsonlTracer:
                 event_type=event_type,
                 span_id=span_id,
                 parent_span_id=parent_span_id,
-                attributes=attributes,
+                attributes=FrozenJsonObject.capture(attributes),
             )
         )
 

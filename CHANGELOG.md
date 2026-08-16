@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `RunTrace.read()` aggregates a session's existing JSONL `TraceEvent` stream
+  into an immutable typed value. Nested JSON on snapshots and traces is captured
+  as public `FrozenJsonObject` / `FrozenJsonArray` values via `capture` /
+  `freeze_json_value`; `thaw` / `thaw_json_value` restore plain lists and dicts
+  for live `SessionOptions` and the JSON codec.
 - `SprintRunResult.evaluation` exposes the typed `EvaluationRecord | None`, and
   `USER_PROMPT_SUBMIT` hook payloads include the configured role when present.
 - Durable session save/resume: `FileSessionStore` under `DreamPaths.sessions_dir`,
@@ -90,6 +95,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exported surface.
 
 ### Changed
+- **Breaking:** `SessionSnapshot.messages`, message `content`, and `tool_calls`
+  are tuples. `SessionSnapshot.metadata`, tool-use / tool-call `input`, and
+  `TraceEvent.attributes` are `FrozenJsonObject` (nested arrays are
+  `FrozenJsonArray`) rather than mutable dicts and lists. Direct FrozenJson
+  constructors recursively seal nested values; object equality ignores key
+  order. Resume still thaws snapshot metadata into live `SessionOptions`.
+  Malformed non-mapping trace `attributes` decode as an empty frozen object.
 - Evaluator default tools restore ``query_logs``; ``build_harness`` enables
   the observability pack by default so the name is registered.
 - Consumer docs (`HARNESS.md`, `SDK_GUIDE.md`) document the Level-2 default
