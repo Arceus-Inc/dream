@@ -7,11 +7,12 @@ evaluator. ``make_generator_head`` forwards that beat into ``run_role``.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, TypeVar
 
 if TYPE_CHECKING:
+    from dream.engine._messages import ConversationMessage
     from dream.harness import Harness
     from dream.planner import LedgerStep
     from dream.runner.events import RunTaskObserver
@@ -124,6 +125,7 @@ def make_generator_head(
     harness_dir: Path | None = None,
     observer: RunTaskObserver | None = None,
     session_scope: str | None = None,
+    resume_messages: Sequence[ConversationMessage] | None = None,
 ) -> Callable[
     [str, int, SprintContract | None, LedgerStep],
     Awaitable[None],
@@ -132,12 +134,16 @@ def make_generator_head(
 
     ``task_intent`` is embedded as a data block so the original Intent stays
     visible beside the sprint contract. Phase protocol lives in standing orders.
+    ``resume_messages`` seeds the first generator session; each sprint/retry
+    then rebinds to that run's transcript so later beats keep prior history
+    instead of replaying the original list.
     """
     from dream.runner.role import role_session_id
 
     session_id = (
         None if session_scope is None else role_session_id(session_scope, "generator")
     )
+    prior_messages: list[ConversationMessage] = list(resume_messages or ())
 
     async def generator(
         task_id: str,
@@ -145,6 +151,7 @@ def make_generator_head(
         contract: SprintContract | None,
         step: LedgerStep,
     ) -> None:
+        nonlocal prior_messages
         prompt = format_sprint_beat(
             task_id=task_id,
             sprint_number=sprint_number,
@@ -153,13 +160,15 @@ def make_generator_head(
             task_intent=task_intent,
             audience="generator",
         )
-        await harness.run_role(
+        result = await harness.run_role(
             "generator",
             prompt,
             harness_dir=harness_dir,
             observer=observer,
             session_id=session_id,
+            resume_messages=prior_messages,
         )
+        prior_messages = list(result.messages)
 
     return generator
 

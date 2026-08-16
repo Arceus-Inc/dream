@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +33,7 @@ from dream.session import Session, SessionOptions
 if TYPE_CHECKING:
     from dream.config.paths import DreamPaths
     from dream.engine._engine import QueryEngine
+    from dream.engine._messages import ConversationMessage
     from dream.planner import PlannerCallable
     from dream.roles import RoleManifest, RoleName
     from dream.runner.events import RunTaskObserver
@@ -170,6 +171,7 @@ class Harness:
         *,
         session_id: str | None = None,
         store: FileSessionStore | None = None,
+        resume_messages: Sequence[ConversationMessage] | None = None,
     ) -> Session:
         """Create a new Session, binding an engine if one is configured.
 
@@ -188,6 +190,10 @@ class Harness:
         otherwise save over each other while both still hold a handle. Continue
         that session with :meth:`resume_session` or clear it with
         :meth:`reset_session` first.
+
+        ``resume_messages`` seeds the session transcript before the first
+        ``send`` so a caller (chorus ledger, FileSessionStore) can continue
+        an existing conversation rather than starting cold.
         """
         import uuid
 
@@ -199,7 +205,12 @@ class Harness:
         engine = None
         if self.config._engine_factory is not None:
             engine = self.config._engine_factory(resolved_id, opts)
-        return Session(id=resolved_id, options=opts, _engine=engine)
+        return Session(
+            id=resolved_id,
+            options=opts,
+            _engine=engine,
+            resume_messages=list(resume_messages) if resume_messages else None,
+        )
 
     def _maybe_session_store(self, store: FileSessionStore | None) -> FileSessionStore | None:
         if store is not None:
@@ -370,6 +381,7 @@ class Harness:
         harness_dir: Path | None = None,
         observer: RunTaskObserver | None = None,
         session_id: str | None = None,
+        resume_messages: Sequence[ConversationMessage] | None = None,
     ) -> RunRoleResult:
         """Run one session as a named role; return its assistant text + cost.
 
@@ -389,6 +401,10 @@ class Harness:
         ``session_id`` names the role thread so a later call continues it
         instead of starting over; the run's :class:`SessionHandle` comes back
         on the result. Nothing is persisted when it is omitted.
+
+        ``resume_messages`` seeds a freshly opened session transcript before
+        ``send``. A successful snapshot resume for ``session_id`` already
+        carries that history, so the seed is used only on a cold start.
         """
         # Local import keeps the harness <-> runner module graph
         # one-way: ``dream.runner`` imports from ``dream.planner`` /
@@ -404,6 +420,7 @@ class Harness:
             harness_dir=harness_dir,
             observer=observer,
             session_id=session_id,
+            resume_messages=resume_messages,
         )
 
     async def run_task(
@@ -423,6 +440,7 @@ class Harness:
         rubric: str | None = None,
         plan_admission: PlanAdmission | None = None,
         session_scope: str | None = None,
+        resume_messages: Sequence[ConversationMessage] | None = None,
     ) -> RunTaskResult:
         """Run an end-to-end task: planner → bounded sprint loop.
 
@@ -446,6 +464,10 @@ class Harness:
         same scope continues those conversations rather than restarting them.
         A caller driving the harness in short windows keeps one key per task.
         Explicitly supplied heads are left alone — they own their own sessions.
+
+        ``resume_messages`` seeds the autowired generator session with prior
+        typed transcript (chorus ledger / FileSessionStore). Custom
+        ``generator_execute`` heads must handle resume themselves.
         """
         from dataclasses import replace as _replace
 
@@ -470,6 +492,7 @@ class Harness:
             observer=meter,
             worktree_root=root,
             session_scope=session_scope,
+            resume_messages=resume_messages,
         )
 
         # ``kwargs`` is hand-built (rather than passing real keyword args) so the
@@ -510,6 +533,7 @@ class Harness:
         observer: RunTaskObserver | None,
         worktree_root: Path | None = None,
         session_scope: str | None = None,
+        resume_messages: Sequence[ConversationMessage] | None = None,
     ) -> tuple[PlannerCallable, GeneratorExecute, EvaluatorRun]:
         """Fill any ``None`` head with its production factory (10-I autowire).
 
@@ -518,7 +542,8 @@ class Harness:
         untouched. Returns the three resolved heads in run_task argument order.
 
         ``session_scope`` is forwarded to each factory so its role runs in a
-        resumable thread under that scope.
+        resumable thread under that scope. ``resume_messages`` seeds only the
+        autowired generator; later sprints capture the live transcript.
         """
         if (
             planner is not None
@@ -547,6 +572,7 @@ class Harness:
                 harness_dir=harness_dir,
                 observer=observer,
                 session_scope=session_scope,
+                resume_messages=resume_messages,
             )
         if evaluator_run is None:
             evaluator_run = make_evaluator_head(
