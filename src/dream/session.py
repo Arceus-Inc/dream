@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -161,6 +161,7 @@ class Session:
         options: SessionOptions | None = None,
         _engine: QueryEngine | None = None,
         _snapshot_revision: SessionSnapshotRevision | None = None,
+        resume_messages: Sequence[ConversationMessage] | None = None,
     ) -> None:
         self.id = id
         self.options = options or SessionOptions()
@@ -169,7 +170,14 @@ class Session:
         # ``None`` is an optimistic claim that this new session's snapshot
         # path is missing. Resumed sessions receive the exact loaded revision.
         self._snapshot_revision = _snapshot_revision
-        self._transcript: list[ConversationMessage] = []
+        # Seed prior transcript before the first ``send`` so ``run_session``
+        # resumes the conversation (skips orientation when non-empty).
+        # Prompt-submit indices stay empty for seeded history: those turns
+        # were not issued through this Session, so rewind cannot target them.
+        if resume_messages:
+            self._transcript = list(sanitize_conversation_messages(resume_messages))
+        else:
+            self._transcript = []
         self._prompt_indices: list[int] = []
         self._cancel_event: asyncio.Event | None = None
         self._closed = False

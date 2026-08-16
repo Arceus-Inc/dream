@@ -58,6 +58,13 @@ from dream.events import (
     TurnComplete,
 )
 from dream.harness import Harness, HarnessConfig
+from dream.messages import (
+    ConversationMessage,
+    ImageBlock,
+    TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+)
 from dream.observability import RunTrace, tail_events
 from dream.replay import (
     DuplicateHarnessVariantIdError,
@@ -97,6 +104,7 @@ __version__ = "0.1.0"
 __all__ = [
     "Compacted",
     "CompactionError",
+    "ConversationMessage",
     "DreamError",
     "DuplicateHarnessVariantIdError",
     "DuplicateReplayCaseIdError",
@@ -119,6 +127,7 @@ __all__ = [
     "HookEvent",
     "HookResult",
     "HookSpec",
+    "ImageBlock",
     "IncompleteReplayResultError",
     "InvalidReplayUsageError",
     "MemoryDelta",
@@ -167,11 +176,14 @@ __all__ = [
     "SkillRevisionRef",
     "StopReason",
     "TaskCancelled",
+    "TextBlock",
     "TextDelta",
     "Tool",
     "ToolContext",
     "ToolProfileRef",
     "ToolResult",
+    "ToolResultBlock",
+    "ToolUseBlock",
     "ToolUseResult",
     "ToolUseStart",
     "TurnComplete",

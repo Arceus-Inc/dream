@@ -24,13 +24,14 @@ discipline only (the v1 contract every role is built around).
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from dream.engine._cost import UsageSnapshot
+from dream.engine._messages import ConversationMessage
 from dream.errors import SessionResumeError, SessionResumeFailure
 from dream.events import Error, Event, TextDelta, ToolUseResult, ToolUseStart
 from dream.roles import (
@@ -131,6 +132,9 @@ class RunRoleResult:
     # The pointer to resume this role thread later — ``None`` unless the
     # caller named the session via ``session_id``.
     session_handle: SessionHandle | None = None
+    # Live transcript after this run (prior seed + this send). Generator
+    # sprints rebind this so later beats keep history without snapshot store.
+    messages: tuple[ConversationMessage, ...] = ()
 
 
 def resolve_role_manifest(
@@ -179,6 +183,7 @@ async def run_role(
     harness_dir: Path | None = None,
     observer: RunTaskObserver | None = None,
     session_id: str | None = None,
+    resume_messages: Sequence[ConversationMessage] | None = None,
 ) -> RunRoleResult:
     """Run one session as ``role``; return assistant text + cost.
 
@@ -186,8 +191,8 @@ async def run_role(
     ``options.system_prompt``, marks the manifest on
     ``SessionOptions.metadata`` (keys :data:`ROLE_NAME_METADATA_KEY` /
     :data:`ROLE_MANIFEST_METADATA_KEY`), opens a session via
-    ``harness.start_session``, drains ``session.send(intent)`` to
-    completion, and surfaces the result. The session is closed even on
+    ``harness.start_session`` (optionally seeding ``resume_messages``), drains
+    ``session.send(intent)`` to completion, and surfaces the result. The session is closed even on
     the error path. An ``events.Error`` mid-stream becomes a
     :class:`RoleSessionError`.
 
@@ -234,7 +239,9 @@ async def run_role(
         metadata=metadata,
     )
 
-    opened = await _open_role_session(harness, effective, session_id)
+    opened = await _open_role_session(
+        harness, effective, session_id, resume_messages=resume_messages
+    )
     session = opened.session
     owns_session_id = opened.owns_requested_id
 
@@ -330,6 +337,7 @@ async def run_role(
         cost=session.cost,
         events=tuple(captured),
         session_handle=handle,
+        messages=tuple(session.transcript),
     )
 
 
@@ -337,15 +345,21 @@ async def _open_role_session(
     harness: Harness,
     options: SessionOptions,
     session_id: str | None,
+    *,
+    resume_messages: Sequence[ConversationMessage] | None = None,
 ) -> OpenedRoleSession:
     """Open the named role thread; say whether this run may save under it.
 
     Returns the session and whether it owns ``session_id``. Only a run that
     owns the name is allowed to write a snapshot there.
+
+    ``resume_messages`` seeds a cold ``start_session``. A successful
+    ``resume_session`` already restored the snapshot transcript, so the
+    seed is not applied on that path.
     """
     if session_id is None:
         return OpenedRoleSession(
-            session=await harness.start_session(options),
+            session=await harness.start_session(options, resume_messages=resume_messages),
             owns_requested_id=False,
         )
     try:
@@ -359,7 +373,9 @@ async def _open_role_session(
             # resumable from the workspace that wrote it. Run the role on an
             # anonymous session so finishing here can't save over it.
             return OpenedRoleSession(
-                session=await harness.start_session(options),
+                session=await harness.start_session(
+                    options, resume_messages=resume_messages
+                ),
                 owns_requested_id=False,
                 recovery=SessionRecoveryNotice(
                     requested_session_id=exc.session_id,
@@ -373,7 +389,11 @@ async def _open_role_session(
         # starting fresh over its snapshot.
         if await harness._reset_session_if_unchanged(session_id, exc.revision):
             return OpenedRoleSession(
-                session=await harness.start_session(options, session_id=session_id),
+                session=await harness.start_session(
+                    options,
+                    session_id=session_id,
+                    resume_messages=resume_messages,
+                ),
                 owns_requested_id=True,
                 recovery=SessionRecoveryNotice(
                     requested_session_id=exc.session_id,

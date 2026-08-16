@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `resume_messages` on `Harness.start_session`, `Harness.run_role`, and
+  `Harness.run_task` (autowired generator) so callers can seed typed transcript
+  from a durable store (chorus ledger / FileSessionStore) instead of
+  intent-string injection. The autowired generator captures the live transcript
+  after each sprint/retry so later beats keep prior history rather than
+  replaying the original list. Public `dream.messages` types:
+  `ConversationMessage`, `TextBlock`, `ToolUseBlock`, `ToolResultBlock`,
+  `ImageBlock`.
 - Hermes-style human rewind: `Session.list_checkpoints` / `Session.restore_checkpoint`
   restore the worktree and truncate matching transcript turns. Turn boundaries
   come from the session (prompt-submit indices), not message inspection.

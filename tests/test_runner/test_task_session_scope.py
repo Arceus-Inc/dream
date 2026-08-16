@@ -45,6 +45,7 @@ class _RecordingHarness:
         harness_dir: Path | None = None,
         observer: Any = None,
         session_id: str | None = None,
+        resume_messages: object = None,
     ) -> RunRoleResult:
         self.calls.append((str(role), session_id))
         return RunRoleResult(

@@ -6,10 +6,10 @@ Spec 00 invariant #1 — *the tool-call atom* — mechanically enforceable: the
 engine can find dangling ``ToolUseBlock``s structurally instead of by
 string-matching the provider's output.
 
-This module is internal: nothing here is re-exported from ``dream/__init__.py``.
-The two pure functions ``sanitize_conversation_messages`` and
-``has_pending_continuation`` are the only safety rail between an interrupted
-turn and the next provider call.
+This module is internal. Public callers import the same types from
+``dream.messages`` (re-exported on the package). The two pure functions
+``sanitize_conversation_messages`` and ``has_pending_continuation`` are
+the only safety rail between an interrupted turn and the next provider call.
 """
 
 from __future__ import annotations
