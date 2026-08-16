@@ -24,6 +24,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as public `FrozenJsonObject` / `FrozenJsonArray` values via `capture` /
   `freeze_json_value`; `thaw` / `thaw_json_value` restore plain lists and dicts
   for live `SessionOptions` and the JSON codec.
+- Replay variant comparison: `ReplayComparator` runs the same ordered
+  `ReplayCase` suite against two pinned `HarnessVariant`s, comparing canonical
+  `SessionSnapshot` and `RunTrace` values. Promotion is blocked on a candidate
+  critical failure; identity, completeness, artifact, and cumulative-usage
+  mismatches fail closed (`ReplayIdentityMismatchError`,
+  `IncompleteReplayResultError`, `InvalidReplayUsageError`). Non-finite source
+  or result costs are rejected before usage deltas. The replay types and errors
+  are public exports.
 - `SprintRunResult.evaluation` exposes the typed `EvaluationRecord | None`, and
   `USER_PROMPT_SUBMIT` hook payloads include the configured role when present.
 - Durable session save/resume: `FileSessionStore` under `DreamPaths.sessions_dir`,
