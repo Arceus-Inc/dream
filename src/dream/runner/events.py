@@ -170,6 +170,7 @@ class RoleToolResult:
     tool: str
     is_error: bool
     content: str
+    structured: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
