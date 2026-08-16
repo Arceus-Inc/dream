@@ -8,10 +8,15 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Literal, Protocol
 
 from dream.engine._cost import UsageSnapshot
+from dream.errors import SessionResumeFailure
 from dream.sprint._evaluation import EvaluationOutcome
+
+# How Dream continued after it could not resume a named role session.
+# Chorus #111 decodes these exact values on ``RoleSessionRecovered.action``.
+RoleSessionRecoveryAction = Literal["reset", "bypass", "resume"]
 
 __all__ = [
     "ContractWritten",
@@ -26,6 +31,8 @@ __all__ = [
     "RoleError",
     "RoleSessionClosed",
     "RoleSessionOpened",
+    "RoleSessionRecovered",
+    "RoleSessionRecoveryAction",
     "RoleText",
     "RoleToolResult",
     "RoleToolStart",
@@ -143,6 +150,26 @@ class RoleSessionOpened:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class RoleSessionRecovered:
+    """A named role session could not be resumed and Dream recovered it.
+
+    ``session_id`` is the active recovered session; ``requested_session_id``
+    is the handle that failed to resume. ``reason`` matches
+    :data:`dream.errors.SessionResumeFailure`. ``action`` is ``reset``
+    (fresh transcript under the requested id), ``bypass`` (anonymous
+    session; snapshot left alone), or ``resume`` (a concurrent replacement
+    snapshot was kept).
+    """
+
+    role: str
+    session_id: str
+    requested_session_id: str
+    reason: SessionResumeFailure
+    action: RoleSessionRecoveryAction
+    snapshot_preserved: bool
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class RoleSessionClosed:
     role: str
     session_id: str
@@ -195,6 +222,7 @@ RunTaskEvent = (
     | EvaluatorCompleted
     | HeadRetry
     | RoleSessionOpened
+    | RoleSessionRecovered
     | RoleSessionClosed
     | RoleText
     | RoleToolStart

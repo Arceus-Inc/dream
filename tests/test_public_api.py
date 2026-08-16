@@ -25,6 +25,7 @@ EXPECTED_PUBLIC_API: frozenset[str] = frozenset({
     "DreamError", "ProviderError", "SandboxError", "PermissionError",
     "HookError", "PluginError", "CompactionError",
     "RunTaskError", "TaskCancelled", "SessionResumeError",
+    "SessionSaveConflictError",
     # contracts
     "Tool", "ToolResult", "ToolContext",
     "Hook", "HookEvent", "HookResult", "HookSpec",

@@ -35,9 +35,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   directory unless `allow_working_dir_change=True`; snapshots record
   `working_dir` at schema version 2, and a version-1 file — written before the
   field existed, so with no directory to check — is refused as a
-  `schema_mismatch` rather than resumed anywhere.
-- `SessionHandle`, `SessionSnapshot`, `FileSessionStore`, and
-  `SessionResumeError` are public exports.
+  `schema_mismatch` rather than resumed anywhere. Readable failures carry the
+  exact snapshot `revision` so recovery can refuse to clobber a concurrent
+  replacement.
+- `SessionHandle`, `SessionSnapshot`, `FileSessionStore`,
+  `SessionResumeError`, and `SessionSaveConflictError` are public exports.
+  Snapshot writes compare-and-swap against the revision a session opened;
+  a concurrent replacement raises `SessionSaveConflictError` unchanged.
 - `Harness.run_role(session_id=...)` names a role thread so it survives the
   process: the session resumes that snapshot when one is readable and
   `RunRoleResult.session_handle` carries the pointer plus the run's usage delta.
@@ -45,7 +49,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   same name instead of failing the run. A snapshot taken under another working
   directory is left alone — the run gets a fresh unnamed session and no handle,
   so the transcript stays resumable from the workspace that wrote it. Omitting
-  `session_id` persists nothing, as before.
+  `session_id` persists nothing, as before. Recovery is a typed
+  `RoleSessionRecovered` `RunTaskEvent` (`role`, `session_id`,
+  `requested_session_id`, `reason`, `action` reset/bypass/resume,
+  `snapshot_preserved`) — never a dict. `action=resume` keeps a concurrent
+  replacement snapshot.
 - `Harness.run_task(session_scope=...)` makes a whole task resumable off one
   key: each autowired head runs in its own thread under that scope
   (`{scope}-planner`, `{scope}-generator`, `{scope}-evaluator`), so a later

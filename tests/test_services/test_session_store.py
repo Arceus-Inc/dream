@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -17,7 +18,7 @@ from dream.engine._messages import (
     ToolUseBlock,
     sanitize_conversation_messages,
 )
-from dream.errors import SessionResumeError
+from dream.errors import SessionResumeError, SessionSaveConflictError
 from dream.harness import Harness, HarnessConfig
 from dream.services.session_store import (
     SCHEMA_VERSION,
@@ -161,6 +162,7 @@ def test_load_unparseable_file_reports_corrupt(tmp_path: Path) -> None:
     with pytest.raises(SessionResumeError) as excinfo:
         store.load("s1")
     assert excinfo.value.reason == "corrupt"
+    assert excinfo.value.revision is not None
 
 
 def test_load_future_schema_reports_mismatch(tmp_path: Path) -> None:
@@ -169,6 +171,25 @@ def test_load_future_schema_reports_mismatch(tmp_path: Path) -> None:
     with pytest.raises(SessionResumeError) as excinfo:
         store.load("s1")
     assert excinfo.value.reason == "schema_mismatch"
+    assert excinfo.value.revision is not None
+
+
+def test_reset_if_unchanged_preserves_replacement_snapshot(tmp_path: Path) -> None:
+    store = FileSessionStore(tmp_path)
+    path = store.path_for("s1")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{not json", encoding="utf-8")
+
+    with pytest.raises(SessionResumeError) as excinfo:
+        store.load("s1")
+    revision = excinfo.value.revision
+    assert revision is not None
+
+    replacement = b'{"schema_version": 99}\n'
+    path.write_bytes(replacement)
+
+    assert store.reset_if_unchanged("s1", revision) is False
+    assert path.read_bytes() == replacement
 
 
 def test_load_truncated_payload_reports_corrupt(tmp_path: Path) -> None:
@@ -469,6 +490,31 @@ async def test_handle_usage_delta_covers_only_work_since_previous_save(
     assert second.usage_total.input_tokens == 8
 
 
+async def test_two_sessions_opened_while_missing_cannot_overwrite_each_other(
+    tmp_path: Path,
+) -> None:
+    harness = _handle_harness(tmp_path, working_dir=tmp_path)
+    first = await harness.start_session(
+        SessionOptions(system_prompt="first owner"),
+        session_id="s1",
+    )
+    second = await harness.start_session(
+        SessionOptions(system_prompt="second owner"),
+        session_id="s1",
+    )
+
+    await harness.save_session(first)
+    with pytest.raises(SessionSaveConflictError) as excinfo:
+        await harness.save_session(second)
+
+    assert excinfo.value.expected_revision is None
+    assert excinfo.value.actual_revision is not None
+    assert excinfo.value.code == "dream.session_save_conflict"
+    store = harness.config.session_store
+    assert store is not None
+    assert store.load("s1").system_prompt == "first owner"
+
+
 async def test_resumed_session_reports_delta_from_restored_total(tmp_path: Path) -> None:
     streamer = FakeStreamer(
         turns=[
@@ -487,6 +533,29 @@ async def test_resumed_session_reports_delta_from_restored_total(tmp_path: Path)
 
     assert handle.usage_delta.input_tokens == 4
     assert handle.usage_total.input_tokens == 9
+
+
+async def test_resumed_session_cannot_overwrite_a_changed_snapshot(tmp_path: Path) -> None:
+    harness = _handle_harness(tmp_path, working_dir=tmp_path)
+    original = await harness.start_session(
+        SessionOptions(system_prompt="original"),
+        session_id="s1",
+    )
+    await harness.save_session(original)
+    resumed = await harness.resume_session("s1")
+
+    store = harness.config.session_store
+    assert store is not None
+    replacement = replace(store.load("s1"), system_prompt="replacement")
+    store.save(replacement)
+
+    with pytest.raises(SessionSaveConflictError) as excinfo:
+        await harness.save_session(resumed)
+
+    assert excinfo.value.expected_revision is not None
+    assert excinfo.value.actual_revision is not None
+    assert excinfo.value.expected_revision != excinfo.value.actual_revision
+    assert store.load("s1").system_prompt == "replacement"
 
 
 async def test_resume_rejects_snapshot_without_recorded_working_dir(

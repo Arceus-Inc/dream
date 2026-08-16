@@ -29,6 +29,7 @@ from dream.runner.events import (
     RoleError,
     RoleSessionClosed,
     RoleSessionOpened,
+    RoleSessionRecovered,
     RoleText,
     RoleToolResult,
     RoleToolStart,
@@ -274,6 +275,15 @@ class StdioObserver:
                     f"id={event.session_id!r}"
                 )
                 return self._c(DIM + colour, line)
+            case RoleSessionRecovered():
+                colour = _ROLE_COLOUR.get(event.role, "")
+                line = (
+                    f"{_INDENT_ROLE}[{event.role}] session recovered "
+                    f"id={event.session_id!r} requested={event.requested_session_id!r} "
+                    f"reason={event.reason!r} action={event.action!r} "
+                    f"snapshot_preserved={event.snapshot_preserved}"
+                )
+                return self._c(YELLOW + colour, line)
             case RoleSessionClosed():
                 return self._format_role_session_closed(event)
             case RoleText():
