@@ -755,3 +755,4 @@ def test_translate_compaction_applies_compacted_shape_to_transcript() -> None:
     # now the compacted shape, not the stale full history.
     assert post_blobs < pre_blobs
     assert cleared > 0
+    assert session._prompt_indices == []

@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   replaying the original list. Public `dream.messages` types:
   `ConversationMessage`, `TextBlock`, `ToolUseBlock`, `ToolResultBlock`,
   `ImageBlock`.
+- Hermes-style human rewind: `Session.list_checkpoints` / `Session.restore_checkpoint`
+  restore the worktree and truncate matching transcript turns. Turn boundaries
+  come from the session (prompt-submit indices), not message inspection.
+  `build_harness` auto-wires `ShadowCheckpointHook` and a shared store under
+  `DreamPaths.checkpoints_dir` (default-on; oversized trees skip via
+  `ShadowCheckpointConfig.max_files`).
 - OpenTelemetry is **default-on**: core deps ship the OTLP SDK; sessions fan
   JSONL traces to OTel (`CompositeTracer`). Endpoint defaults to
   `http://localhost:4318`; override with `OTEL_EXPORTER_OTLP_ENDPOINT`. Opt out

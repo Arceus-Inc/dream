@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from enum import Enum, StrEnum
 from pathlib import Path
 
+from dream.engine._messages import ConversationMessage
+
 
 class MutatingToolName(StrEnum):
     """Built-in tools that may mutate the working tree."""
@@ -37,6 +39,7 @@ class CheckpointOutcome(Enum):
     ALREADY_THIS_TURN = "already_this_turn"
     NO_CHANGES = "no_changes"
     DIRECTORY_TOO_BROAD = "directory_too_broad"
+    DIRECTORY_TOO_LARGE = "directory_too_large"
     GIT_UNAVAILABLE = "git_unavailable"
     FAILED = "failed"
 
@@ -57,6 +60,7 @@ class ShadowCheckpointConfig:
     enabled: bool = True
     max_snapshots: int = 20
     timeout_seconds: float = 30.0
+    max_files: int = 10_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +91,15 @@ class RestoreResult:
     detail: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class CombinedRestoreResult:
+    """Filesystem restore plus optional transcript rewind (Hermes ``/rollback``)."""
+
+    fs: RestoreResult
+    messages: tuple[ConversationMessage, ...] = ()
+    transcript_removed: int = 0
+
+
 _TOOL_TO_REASON: dict[MutatingToolName, CheckpointReason] = {
     MutatingToolName.WRITE_FILE: CheckpointReason.BEFORE_WRITE_FILE,
     MutatingToolName.APPLY_PATCH: CheckpointReason.BEFORE_APPLY_PATCH,
@@ -109,6 +122,7 @@ __all__ = [
     "CheckpointOutcome",
     "CheckpointReason",
     "CheckpointSnapshot",
+    "CombinedRestoreResult",
     "EnsureResult",
     "MutatingToolName",
     "RestoreOutcome",
