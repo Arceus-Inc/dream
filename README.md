@@ -144,7 +144,7 @@ Notably, driving this required **zero changes to `src/dream/`** — `build_defau
 | **Extensions** | [`skills/`](src/dream/skills/), [`plugins/`](src/dream/plugins/), [`hooks/`](src/dream/hooks/), [`mcp/`](src/dream/mcp/) | Progressive-disclosure skills, repo plugins, lifecycle hooks, MCP allowlist + credentials |
 | **Memory** | [`memory/`](src/dream/memory/) | Project memory catalogue + search/get; opt-in task scratchpad (`working_memory=True`) + `memory_propose` outbound queue |
 | **Background work** | [`tasks/`](src/dream/tasks/), [`services/cron.py`](src/dream/services/cron.py) | Background shell tasks, cron manifests under `.harness/cron/` (drive with your scheduler or `--once` scripts) |
-| **Observability** | [`observability/`](src/dream/observability/), [`runner/_observer.py`](src/dream/runner/_observer.py) | OTel-shaped JSONL traces, `tail_events`, macro run observer for `run_task` |
+| **Observability** | [`observability/`](src/dream/observability/), [`runner/_observer.py`](src/dream/runner/_observer.py) | OTel-shaped JSONL traces plus default-on OTLP (`OTEL_SDK_DISABLED=true` to keep JSONL only), `tail_events`, macro run observer for `run_task` |
 | **Repo contract** | [`services/repo_validator.py`](src/dream/services/repo_validator.py), [`config/paths.py`](src/dream/config/paths.py) | Session-start validator: `AGENTS.md`, required `docs/` tree, link + JSON schema checks |
 | **Contracts** | [`contracts/`](src/dream/contracts/) | Zero-dep Protocols for siblings — `__contract_version__ = "0.4.0"` |
 

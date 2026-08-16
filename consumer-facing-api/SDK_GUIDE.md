@@ -148,7 +148,9 @@ a live transcript. Event kinds include: `task.started`, `planner.started/
 completed`, `sprint.started`, contract events, generator/evaluator session
 open/close with streamed text + tool calls, `head.retry`, `sprint.escalated`,
 `task.completed`. Every role session also writes an OTel-shaped JSONL trace
-under the dream home (`DREAM_HOME`, default `~/.dream`).
+under the dream home (`DREAM_HOME`, default `~/.dream`) and fans the same
+lifecycle to OTLP (`http://localhost:4318` by default) unless
+`OTEL_SDK_DISABLED=true`.
 
 ## 5. Components
 

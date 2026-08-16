@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- OpenTelemetry is **default-on**: core deps ship the OTLP SDK; sessions fan
+  JSONL traces to OTel (`CompositeTracer`). Endpoint defaults to
+  `http://localhost:4318`; override with `OTEL_EXPORTER_OTLP_ENDPOINT`. Opt out
+  with `OTEL_SDK_DISABLED=true` (JSONL only). Process shutdown waits at most 5s
+  when no collector is listening; JSONL is unaffected. See
+  `docs/specs/divo/otel-architecture-gap.md` and `evals/otel/`.
 - `RunTrace.read()` aggregates a session's existing JSONL `TraceEvent` stream
   into an immutable typed value. Nested JSON on snapshots and traces is captured
   as public `FrozenJsonObject` / `FrozenJsonArray` values via `capture` /
